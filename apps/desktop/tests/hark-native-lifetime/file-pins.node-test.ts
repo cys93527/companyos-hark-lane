@@ -3,7 +3,7 @@
  * Share-mode denial is NOT proven offline; see native/pins-native.win-test.ts.
  */
 import assert from 'node:assert/strict';
-import { renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { ancestorsOf, LaunchPinRefused, pinLaunch, samePinnedPath } from '../../src/executor/native-lifetime/file-pins.js';
 import { createJobLifetimeAdapter } from '../../src/executor/native-lifetime/job-lifetime.js';
@@ -47,6 +47,14 @@ describe('H5 pinLaunch', () => {
     symlinkSync(`${ws.script}.real`, ws.script);
     const pinPort = createNodeFsPinPort();
     assert.match(refusal(() => pinLaunch(launch, pinPort)), /^reparse-point:/u);
+    assert.equal(pinPort.openCount(), 0);
+  });
+  it('a hard link added after verifyLaunch is refused (multi-link)', () => {
+    const ws = makeWorkspace();
+    const launch = verified(ws);
+    linkSync(ws.script, `${ws.script}.second`);
+    const pinPort = createNodeFsPinPort();
+    assert.match(refusal(() => pinLaunch(launch, pinPort)), /^multi-link:/u);
     assert.equal(pinPort.openCount(), 0);
   });
   it('a handle whose final path differs from the requested path (junction / short name) is refused', () => {

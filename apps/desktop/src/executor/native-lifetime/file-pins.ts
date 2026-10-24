@@ -144,6 +144,8 @@ export function pinLaunch(launch: VerifiedLaunch, port: FilePinPort): LaunchPins
       if ((info.attributes & FILE_ATTRIBUTE_DIRECTORY) !== 0) throw new LaunchPinRefused(`not-a-file:${t.path}`);
       const finalPath = normaliseFinalPath(info.finalPath);
       if (!samePinnedPath(finalPath, t.path)) throw new LaunchPinRefused(`path-redirected:${t.path}`);
+      // A second name (hard link) added after verifyLaunch is refused, matching verifyLaunch's single-link rule.
+      if (info.links !== 1) throw new LaunchPinRefused(`multi-link:${t.path}`);
       if (info.size > MAX_PINNED_BYTES) throw new LaunchPinRefused(`too-large:${t.path}`);
       const hash = createHash('sha256');
       const chunk = new Uint8Array(1024 * 1024);

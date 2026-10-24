@@ -49,21 +49,22 @@ describe('H5 native: share-mode pins', () => {
     const exe = join(sub, 'node.exe');
     copyFileSync(ws.exe, exe);
     const hard = join(ws.root, 'fixture-hardlink.cjs');
-    linkSync(ws.script, hard);
     const pins = pinLaunch(launchFor(ws, exe, ws.script, 'normal', 'pin'), pinPort);
+    // A hard link created WHILE pinned shares the file object: writes through it must be denied too.
+    const hardLinkCreate = attempt(() => linkSync(ws.script, hard));
     const held = {
       exeWrite: attempt(() => closeSync(openSync(exe, 'r+'))),
       exeDelete: attempt(() => unlinkSync(exe)),
       exeRename: attempt(() => renameSync(exe, `${exe}.moved`)),
       scriptWrite: attempt(() => writeFileSync(ws.script, 'swapped')),
       scriptRenameOver: attempt(() => { writeFileSync(join(ws.root, 'evil.cjs'), 'evil'); renameSync(join(ws.root, 'evil.cjs'), ws.script); }),
-      hardLinkWrite: attempt(() => writeFileSync(hard, 'swapped-through-link')),
+      hardLinkWrite: hardLinkCreate === 'ALLOWED' ? attempt(() => writeFileSync(hard, 'swapped-through-link')) : `LINK-${hardLinkCreate}`,
       parentDirRename: attempt(() => renameSync(sub, `${sub}-moved`)),
       workspaceRename: attempt(() => renameSync(ws.root, `${ws.root}-moved`)),
       scriptRead: attempt(() => readFileSync(ws.script)),
       exeRead: attempt(() => readFileSync(exe)),
     };
-    evidence('pins-held', { held, directoryCount: pins.directoryCount, files: pins.files, executableFinalPath: pins.executableFinalPath });
+    evidence('pins-held', { hardLinkCreate, held, directoryCount: pins.directoryCount, files: pins.files, executableFinalPath: pins.executableFinalPath });
     assert.deepEqual(pins.release(), []);
     const released = {
       scriptRename: attempt(() => { renameSync(ws.script, `${ws.script}.x`); renameSync(`${ws.script}.x`, ws.script); }),
@@ -77,18 +78,29 @@ describe('H5 native: share-mode pins', () => {
     assert.deepEqual(released, { scriptRename: 'ALLOWED', parentDirRename: 'ALLOWED' });
   });
 
-  it('a junction in the path is refused (reparse point / redirected), nothing stays pinned', () => {
+  it('directory swapped for a junction AFTER verifyLaunch is refused (reparse point / redirected), nothing stays pinned', () => {
     const ws = makeNativeWorkspace('hark-h5-junction');
-    const real = join(ws.root, 'real');
-    mkdirSync(real);
-    copyFileSync(ws.exe, join(real, 'node.exe'));
-    copyFileSync(ws.script, join(real, 'fixture.cjs'));
-    const link = join(ws.root, 'link');
-    symlinkSync(real, link, 'junction');
-    const reason = refusal(() => pinLaunch(launchFor(ws, join(link, 'node.exe'), join(link, 'fixture.cjs'), 'normal', 'junction'), pinPort));
+    const dir = join(ws.root, 'bin');
+    mkdirSync(dir);
+    copyFileSync(ws.exe, join(dir, 'node.exe'));
+    copyFileSync(ws.script, join(dir, 'fixture.cjs'));
+    const launch = launchFor(ws, join(dir, 'node.exe'), join(dir, 'fixture.cjs'), 'normal', 'junction');
+    const elsewhere = join(ws.root, 'elsewhere');
+    renameSync(dir, elsewhere);
+    symlinkSync(elsewhere, dir, 'junction');
+    const reason = refusal(() => pinLaunch(launch, pinPort));
     evidence('junction', { reason });
     assert.match(reason, /^(reparse-point|path-redirected):/u);
-    assert.equal(attempt(() => renameSync(real, `${real}-2`)), 'ALLOWED', 'partial pins were released');
+    assert.equal(attempt(() => renameSync(elsewhere, `${elsewhere}-2`)), 'ALLOWED', 'partial pins were released');
+  });
+
+  it('hard link added AFTER verifyLaunch is refused (multi-link)', () => {
+    const ws = makeNativeWorkspace('hark-h5-multilink');
+    const launch = launchFor(ws, ws.exe, ws.script, 'normal', 'multilink');
+    linkSync(ws.script, join(ws.root, 'second-name.cjs'));
+    const reason = refusal(() => pinLaunch(launch, pinPort));
+    evidence('multi-link', { reason });
+    assert.match(reason, /^multi-link:/u);
   });
 
   it('file swapped between verifyLaunch and pin -> refused by the hash through the handle', () => {
