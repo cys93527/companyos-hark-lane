@@ -10,6 +10,12 @@
 > 最近更新：**2026-10-13 Sprint 2 documentation state sync**（仅当前状态同步，非新功能或候选冻结）。
 
 
+## 2026-10-24 Hark lane H3 — Windows CI + native Job Object (CI only)
+- Windows CI runs on every push to the hark-lane branch (dispatch never registered). Run 40106440529 @59f0248 passed every step: offline 65/65, gates 0, koffi@3.3.3 integrity pinned, **native Job Object 7/7** on windows-2022 x64.
+- New: `apps/desktop/src/executor/native-lifetime/koffi-job-port.ts` (koffi injected, not a dependency, not wired to production) and `tests/hark-native-lifetime/native/*.win-test.ts`, run by `scripts/hark/test-hark-native.mjs` under `register-native.mjs`.
+- Failed runs are preserved, along with review findings (conhost member; TerminateProcess code 5 during cancel). See docs/hark-lane/H3_WINDOWS_CI_NATIVE.md.
+- NOT proven: native watchdog/lease transport, TOCTOU handle-pinned launch, Supervisor wiring, Electron, installer. Independent review is PENDING.
+
 ## 2026-10-24 — Hark lane: Phase 3B-3E offline (H1, review pending)
 
 - Lane root = SOURCE import, tree `c2973b1acc5099325a644a51d27814e44d9fcd28` (checkpoint `7c86f2a681cc4d348c0238a4b6119931c74e423f`); new root commit, not ancestry. Sole Writer: Hark. No source/frozen/E/Codex writes.

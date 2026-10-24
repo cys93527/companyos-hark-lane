@@ -262,3 +262,4 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
 - Hark 独立开发线（离线候选，待独立审查，不是验收结论）：[hark-lane/TAKEOVER_REPORT.md](./hark-lane/TAKEOVER_REPORT.md) ·
   [hark-lane/3B3E_OFFLINE_RESULT.md](./hark-lane/3B3E_OFFLINE_RESULT.md) ·
   [hark-lane/H2_DEPS_REGRESSION.md](./hark-lane/H2_DEPS_REGRESSION.md)
+  [hark-lane/H3_WINDOWS_CI_NATIVE.md](./hark-lane/H3_WINDOWS_CI_NATIVE.md)
