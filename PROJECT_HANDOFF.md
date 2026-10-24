@@ -1,3 +1,9 @@
+## 2026-10-25 Hark lane — H5 handle-pinned launch (TOCTOU)
+- Commits 88080fb, 7a87828. CI 40109482553: offline 87/87, native 19/19 (first run 40109275557 16/18 kept: test bug).
+- Pinning REQUIRED by default; exe/inputs/dir chain share-mode pinned; re-hash through handle; reparse/redirect/multi-link refused; image path checked before resume.
+- Hark self-review PASS (H5 scope). Independent review NOT granted. Doc: docs/hark-lane/H5_HANDLE_PINNED_LAUNCH.md
+- Next: Supervisor integration contract.
+
 ## Hark lane — H4 native lifetime completion (2026-10-24)
 - Commits 4f8ab1b, 9950b33. CI run 40107704862: offline 76/76, native 14/14, all steps success (first failures kept: local 63/65, 72/73; CI 40107390262 13/14).
 - Native proof added: binding failure (1816) never resumes; owner crash with/without watchdog; owner hang -> watchdog OWNER_UNRESPONSIVE; release path; cancel race fixed.
