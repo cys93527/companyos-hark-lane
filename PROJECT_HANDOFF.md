@@ -1,3 +1,8 @@
+## Hark lane — H4 native lifetime completion (2026-10-24)
+- Commits 4f8ab1b, 9950b33. CI run 40107704862: offline 76/76, native 14/14, all steps success (first failures kept: local 63/65, 72/73; CI 40107390262 13/14).
+- Native proof added: binding failure (1816) never resumes; owner crash with/without watchdog; owner hang -> watchdog OWNER_UNRESPONSIVE; release path; cancel race fixed.
+- Hark self-review H4 PASS; independent review still required. Next: H5 handle-pinned launch (TOCTOU). Doc: docs/hark-lane/H4_NATIVE_LIFETIME.md.
+
 ## Hark lane H2（2026-10-24 HKT，候选，待独立审查）
 - 依赖已在本线安装（frozen lockfile、ignore-scripts）。typecheck exit 0、全仓 lint exit 0、Hark 离线 65/65、门禁 exit 0。
 - vitest 全量：Hark 42/3741 失败，基线 39/3741 失败；差异经双方定向复跑确认为本机流捕获时序漂移，非 Hark 回归。详见 docs/hark-lane/H2_DEPS_REGRESSION.md。
