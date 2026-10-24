@@ -1,3 +1,9 @@
+## Hark lane — 2026-10-25 H8 per-user Windows installer (CI)
+- Added stage-desktop.mjs, installer/companyos.iss (Inno Setup, per-user), installer-smoke.ps1, workflow hark-installer.yml. No new npm deps.
+- First run 40112120130 rejected (missing persistence migrations → DB bootstrap failed; smoke didn't read log levels). Fixed d5ee0dd.
+- Run 40112501131: install/launch/uninstall 15/15 checks, DB ready, window shown. Installer sha256 2592AC21…E9A8.
+- Hark self-review PASS (H8 scope). Not signed, not tested on a real user PC, no release/tag, Independent Review not granted. See docs/hark-lane/H8_WINDOWS_INSTALLER.md.
+
 ## 2026-10-25 Hark lane — H7 stdout/stderr capture
 - Commit 1a7219b. CI 40110944441: offline 117/117, native 25/25 (green on the first push). Pipes + HANDLE_LIST, bounded, EOF after drain; the contract gains structured-output only when capture is on.
 - Hark self-review PASS (H7 scope). Independent review NOT granted. Doc: docs/hark-lane/H7_OUTPUT_CAPTURE.md
