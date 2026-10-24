@@ -97,10 +97,10 @@ jobs:
           npm ls --all 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-tree.txt')
           Copy-Item package-lock.json (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-package-lock.json')
           Pop-Location
-          $lock = Get-Content (Join-Path $dir 'package-lock.json') -Raw | ConvertFrom-Json
-          if ($lock.packages.'node_modules/koffi'.integrity -ne $env:KOFFI_SHA512) { Write-Error 'installed koffi integrity mismatch'; exit 1 }
-          $w = $lock.packages.'node_modules/@koromix/koffi-win32-x64'
-          if ($null -eq $w -or $w.integrity -ne $env:KOFFI_WIN_SHA512) { Write-Error 'installed koffi-win32-x64 integrity mismatch'; exit 1 }
+          $lock = Get-Content (Join-Path $dir 'package-lock.json') -Raw | ConvertFrom-Json -AsHashTable
+          if ($lock['packages']['node_modules/koffi']['integrity'] -ne $env:KOFFI_SHA512) { Write-Error 'installed koffi integrity mismatch'; exit 1 }
+          $w = $lock['packages']['node_modules/@koromix/koffi-win32-x64']
+          if ($null -eq $w -or $w['integrity'] -ne $env:KOFFI_WIN_SHA512) { Write-Error 'installed koffi-win32-x64 integrity mismatch'; exit 1 }
           "HARK_KOFFI_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           exit $code
 
