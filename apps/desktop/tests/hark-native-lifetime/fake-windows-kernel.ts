@@ -46,6 +46,8 @@ export type Fault =
   | 'openProcessThrows'
   | 'terminateJobThrows'
   | 'terminateJobIneffective'
+  | 'terminateProcessDeniedAlreadyExiting'
+  | 'terminateProcessDeniedStillAlive'
   | 'closeThrows';
 
 export class FakeWindowsKernel {
@@ -204,7 +206,10 @@ export class FakeWindowsKernel {
       terminateProcess: (ph, code) => {
         call('terminateProcess');
         const p = this.procOf(ph);
+        if (this.faults.has('terminateProcessDeniedStillAlive')) throw new NativeJobError('TerminateProcess', 5);
         if (!p.script.unkillable && !this.faults.has('terminateJobIneffective')) this.exit(p, code, true);
+        // Models native H4 evidence: ACCESS_DENIED for a process that is already terminating.
+        if (this.faults.has('terminateProcessDeniedAlreadyExiting')) throw new NativeJobError('TerminateProcess', 5);
       },
       members: (h): JobMemberList => {
         const j = this.jobOf(h);

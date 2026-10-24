@@ -26,8 +26,14 @@ describe('watchdog decision (pure)', () => {
     assert.deepEqual(hung.decision, { kind: 'TERMINATE', trigger: 'OWNER_UNRESPONSIVE' });
   });
   it('owner exit is checked before everything else (watchdog handle disables kill-on-close)', () => {
-    const step = evaluateWatchdog(armWatchdog(0), { ownerExited: true, lease: { sequence: 1, released: true }, now: 1 }, config);
+    const step = evaluateWatchdog(armWatchdog(0), { ownerExited: true, lease: { sequence: 1, released: false }, now: 1 }, config);
     assert.deepEqual(step.decision, { kind: 'TERMINATE', trigger: 'OWNER_EXITED' });
+    assert.deepEqual(evaluateWatchdog(armWatchdog(0), { ownerExited: true, lease: null, now: 1 }, config).decision, { kind: 'TERMINATE', trigger: 'OWNER_EXITED' });
+  });
+  it('H4: owner that released then exited -> RELEASED (drain still verified by the caller); a regressed release is not trusted', () => {
+    assert.deepEqual(evaluateWatchdog(armWatchdog(0), { ownerExited: true, lease: { sequence: 15, released: true }, now: 1 }, config).decision, { kind: 'RELEASED' });
+    const seen = evaluateWatchdog(armWatchdog(0), { ownerExited: false, lease: { sequence: 9, released: false }, now: 1 }, config).state;
+    assert.deepEqual(evaluateWatchdog(seen, { ownerExited: true, lease: { sequence: 3, released: true }, now: 2 }, config).decision, { kind: 'TERMINATE', trigger: 'OWNER_EXITED' });
   });
   it('hard deadline bounds even a heartbeating runaway owner', () => {
     let s = armWatchdog(0);

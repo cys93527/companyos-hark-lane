@@ -76,7 +76,17 @@ export function evaluateWatchdog(
   config: WatchdogConfig,
 ): { readonly state: WatchdogState; readonly decision: WatchdogDecision } {
   const { now, lease } = observation;
-  if (observation.ownerExited) return { state, decision: { kind: 'TERMINATE', trigger: 'OWNER_EXITED' } };
+  if (observation.ownerExited) {
+    // H4 (native run 40107390262): an owner that released and then exited
+    // normally can be gone before the watchdog's first tick. A well-formed,
+    // non-regressed RELEASED lease is a positive claim; the caller still has to
+    // prove the Job drained, and terminates (RELEASE_NOT_DRAINED) otherwise.
+    const releasedThenExited = lease !== null && lease.released && Number.isSafeInteger(lease.sequence) && lease.sequence >= 1
+      && (state.lastSequence === null || lease.sequence >= state.lastSequence);
+    return releasedThenExited
+      ? { state, decision: { kind: 'RELEASED' } }
+      : { state, decision: { kind: 'TERMINATE', trigger: 'OWNER_EXITED' } };
+  }
   if (now - state.armedAt >= config.hardDeadlineMs) return { state, decision: { kind: 'TERMINATE', trigger: 'HARD_DEADLINE' } };
   if (lease === null || !Number.isSafeInteger(lease.sequence) || lease.sequence < 1) {
     if (state.lastSequence !== null) return { state, decision: { kind: 'TERMINATE', trigger: 'LEASE_REGRESSED' } };

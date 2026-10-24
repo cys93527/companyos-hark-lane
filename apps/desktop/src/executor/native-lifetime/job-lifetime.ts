@@ -224,6 +224,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       record('stop-start');
       try { observe(); } catch (e) { fail(e); } // capture live descendants before they are reaped
       let jobTerminated = false;
+      let deniedTerminate: NativeJobError | null = null;
       if (job !== null) { try { port.terminateJob(job, COMPANYOS_STOP_EXIT_CODE); jobTerminated = true; } catch (e) { fail(e); } }
       // Separately covers a legacy root that never became a member, or a failed
       // TerminateJobObject. A member root is already being reaped by the Job:
@@ -231,14 +232,28 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       // 40106440529 saw ERROR_ACCESS_DENIED) and adds no proof; drain is the proof.
       // Only a NATIVELY VERIFIED member counts (a claimed/assigned one may not be).
       if (!(jobTerminated && rootMembershipVerified)) {
-        try { if (!port.hasExited(root.process)) port.terminateProcess(root.process, COMPANYOS_STOP_EXIT_CODE); } catch (e) { fail(e); }
+        try {
+          if (!port.hasExited(root.process)) port.terminateProcess(root.process, COMPANYOS_STOP_EXIT_CODE);
+        } catch (e) {
+          // ERROR_ACCESS_DENIED (5) is what Windows returns for a process that is
+          // already terminating (native run 40107390262). It is not failure by
+          // itself: defer, and report it only if the root is NOT proven exited below.
+          if (e instanceof NativeJobError && e.nativeCode === 5) { deniedTerminate = e; record('terminate-process-denied-awaiting-exit-proof', root.pid); } else fail(e);
+        }
       }
+      const settleDenied = (): void => {
+        if (deniedTerminate === null) return;
+        const rootEntry = entries.find(x => x.role === 'ROOT');
+        if (!rootEntry || rootEntry.exitCode === null) fail(deniedTerminate);
+        else record('terminate-process-denied-benign-root-exited', root?.pid);
+        deniedTerminate = null;
+      };
       const until = options.clock() + stopWaitMs;
       for (;;) {
         try {
-          if (observe()) { record('stop-drained'); return true; }
-        } catch (e) { fail(e); return false; }
-        if (options.clock() >= until) { record('stop-wait-exhausted'); return false; }
+          if (observe()) { settleDenied(); record('stop-drained'); return true; }
+        } catch (e) { settleDenied(); fail(e); return false; }
+        if (options.clock() >= until) { settleDenied(); record('stop-wait-exhausted'); return false; }
         await options.sleep(pollMs);
       }
     };

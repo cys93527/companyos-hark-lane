@@ -101,6 +101,7 @@ describe('H4 native: binding failure never resumes', () => {
     assert.equal(r.outcome, 'LAUNCH_FAILED');
     assert.equal(r.resumed, false);
     assert.ok(r.errors.some(e => e.operation === 'membership-unverified'));
+    assert.equal(r.errors.some(e => e.operation === 'TerminateProcess'), false, 'H4: ACCESS_DENIED on an exiting root is benign once exit is proven');
     assert.equal(r.processes[0]?.exitCode, COMPANYOS_STOP_EXIT_CODE);
     assert.equal(existsSync(join(ws.root, 'unverified-root.json')), false, 'the root never executed');
   });

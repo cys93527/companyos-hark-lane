@@ -155,6 +155,23 @@ describe('3B-3E lifetime: cancellation, timeout, races', () => {
     assert.equal(kernel.openHandleCount(), 0);
   });
 
+  it('H4: TerminateProcess ACCESS_DENIED on a root that then provably exits is benign (recorded, not an error)', async () => {
+    const { kernel, adapter } = setup({ legacy: true, noAtomic: true, faults: ['assignThrows', 'terminateProcessDeniedAlreadyExiting'] });
+    const r = await adapter.run(launch());
+    assert.equal(r.outcome, 'LAUNCH_FAILED');
+    assert.equal(r.errors.some(e => e.operation === 'TerminateProcess'), false);
+    assert.ok(r.events.some(e => e.name === 'terminate-process-denied-benign-root-exited'));
+    assert.equal(kernel.liveProcesses().length, 0);
+  });
+
+  it('H4: TerminateProcess ACCESS_DENIED on a root that stays alive is reported and ends STOP_UNPROVEN', async () => {
+    const { adapter } = setup({ legacy: true, noAtomic: true, faults: ['assignThrows', 'terminateProcessDeniedStillAlive'] });
+    const r = await adapter.run(launch());
+    assert.equal(r.outcome, 'STOP_UNPROVEN');
+    assert.ok(r.errors.some(e => e.operation === 'TerminateProcess' && e.nativeCode === 5));
+    assert.equal(adapter.quarantined, true);
+  });
+
   it('active process limit bounds a fork storm; everything is reaped on timeout', async () => {
     const storm = Array.from({ length: 40 }, (_, i) => ({ afterMs: 1 + i, script: {} }));
     const { kernel, adapter } = setup({ script: { spawn: storm } });
