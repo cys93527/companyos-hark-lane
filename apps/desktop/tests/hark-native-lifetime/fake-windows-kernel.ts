@@ -13,6 +13,9 @@ export interface Script {
   readonly spawn?: readonly { readonly afterMs: number; readonly script: Script; readonly image?: string }[];
   /** Models a process the kernel cannot reap (stuck in a driver): terminate is ineffective. */
   readonly unkillable?: boolean;
+  /** H7: written to the inherited stdout/stderr when the process first runs. */
+  readonly stdout?: string;
+  readonly stderr?: string;
 }
 
 interface Proc {
@@ -26,9 +29,12 @@ interface Proc {
   script: Script;
   startedAt: number;
   spawned: Set<number>;
+  stdio: { out: number; err: number } | null;
+  wrote: boolean;
 }
+interface Pipe { data: Buffer; ownerWriteOpen: boolean; holders: Set<number> }
 interface Job { id: number; flags: number; limit: number; members: Set<number>; total: number; terminated: number; openHandles: number }
-interface HandleRec { kind: 'job' | 'process' | 'thread'; target: number; inherit: boolean; closed: boolean; owner: 'owner' | 'watchdog' }
+interface HandleRec { kind: 'job' | 'process' | 'thread' | 'pipeRead' | 'pipeWrite'; target: number; inherit: boolean; closed: boolean; owner: 'owner' | 'watchdog' }
 
 export type Fault =
   | 'createJobThrows'
@@ -48,7 +54,8 @@ export type Fault =
   | 'terminateJobIneffective'
   | 'terminateProcessDeniedAlreadyExiting'
   | 'terminateProcessDeniedStillAlive'
-  | 'closeThrows';
+  | 'closeThrows'
+  | 'pipeWriteNotInheritable';
 
 export class FakeWindowsKernel {
   now = 0;
@@ -60,6 +67,8 @@ export class FakeWindowsKernel {
   readonly procs = new Map<number, Proc>();
   readonly faults = new Set<Fault>();
   readonly calls: string[] = [];
+  readonly pipes = new Map<number, Pipe>();
+  private nextPipe = 1;
   private resumed = false;
   /** Default program for any launched image. */
   rootScript: Script = { exitAfterMs: 20, exitCode: 0 };
@@ -88,7 +97,7 @@ export class FakeWindowsKernel {
     }
     const pid = this.nextPid;
     this.nextPid += 4;
-    const p: Proc = { pid, created: String(1_000_000 + this.now * 10_000 + pid), image, state: suspended ? 'suspended' : 'running', suspendCount: suspended ? 1 : 0, exitCode: null, job, script, startedAt: this.now, spawned: new Set() };
+    const p: Proc = { pid, created: String(1_000_000 + this.now * 10_000 + pid), image, state: suspended ? 'suspended' : 'running', suspendCount: suspended ? 1 : 0, exitCode: null, job, script, startedAt: this.now, spawned: new Set(), stdio: null, wrote: false };
     this.procs.set(pid, p);
     if (job !== null) { const j = this.jobs.get(job)!; j.members.add(pid); j.total += 1; }
     if (!suspended) this.executedCount += 1;
@@ -114,9 +123,15 @@ export class FakeWindowsKernel {
         (p.script.spawn ?? []).forEach((s, index) => {
           if (age >= s.afterMs && !p.spawned.has(index)) {
             p.spawned.add(index);
-            this.spawnProc(s.image ?? 'C:\\Windows\\System32\\child.exe', s.script, p.job, false);
+            const c = this.spawnProc(s.image ?? 'C:\\Windows\\System32\\child.exe', s.script, p.job, false);
+            if (c && p.stdio) this.attachStdio(c, p.stdio); // descendants inherit std handles
           }
         });
+        if (!p.wrote) {
+          p.wrote = true;
+          if (p.stdio && p.script.stdout) this.pipes.get(p.stdio.out)!.data = Buffer.concat([this.pipes.get(p.stdio.out)!.data, Buffer.from(p.script.stdout)]);
+          if (p.stdio && p.script.stderr) this.pipes.get(p.stdio.err)!.data = Buffer.concat([this.pipes.get(p.stdio.err)!.data, Buffer.from(p.script.stderr)]);
+        }
         if (p.script.exitAfterMs !== undefined && age >= p.script.exitAfterMs) this.exit(p, p.script.exitCode ?? 0, false);
       }
     }
@@ -130,8 +145,14 @@ export class FakeWindowsKernel {
   duplicateJobForWatchdog(job: NativeHandle): NativeHandle {
     return this.issue('job', this.rec(job, 'job').target, 'watchdog');
   }
+  private attachStdio(p: Proc, stdio: { out: number; err: number }): void {
+    p.stdio = stdio;
+    this.pipes.get(stdio.out)!.holders.add(p.pid);
+    this.pipes.get(stdio.err)!.holders.add(p.pid);
+  }
   private closeRec(_h: NativeHandle, r: HandleRec): void {
     r.closed = true;
+    if (r.kind === 'pipeWrite') this.pipes.get(r.target)!.ownerWriteOpen = false;
     if (r.kind === 'job') {
       const j = this.jobs.get(r.target)!;
       j.openHandles -= 1;
@@ -166,12 +187,41 @@ export class FakeWindowsKernel {
         j.limit = limit;
       },
       limits: (h) => { const j = this.jobOf(h); return { flags: j.flags, activeProcessLimit: j.limit }; },
-      createSuspendedInJob: (h, exe) => {
+      createSuspendedInJob: (h, exe, _cmd, _cwd, _env, stdio) => {
         call('createSuspendedInJob');
         if (this.faults.has('createProcessThrows')) throw new NativeJobError('CreateProcessW', 2);
         const j = this.jobOf(h);
+        let ids: { out: number; err: number } | null = null;
+        if (stdio) {
+          const out = this.rec(stdio.stdout, 'pipeWrite');
+          const err = this.rec(stdio.stderr, 'pipeWrite');
+          if (!out.inherit || !err.inherit) throw new NativeJobError('CreateProcessW(HANDLE_LIST)', 87);
+          ids = { out: out.target, err: err.target };
+        }
         const p = this.spawnProc(exe, this.rootScript, this.faults.has('atomicCreateNotMember') ? null : j.id, true)!;
+        if (ids) this.attachStdio(p, ids);
         return this.handlesFor(p);
+      },
+      createOutputPipe: () => {
+        call('createOutputPipe');
+        const id = this.nextPipe++;
+        this.pipes.set(id, { data: Buffer.alloc(0), ownerWriteOpen: true, holders: new Set() });
+        const read = this.issue('pipeRead', id);
+        const write = this.issue('pipeWrite', id);
+        this.handles.get(write)!.inherit = !this.faults.has('pipeWriteNotInheritable');
+        return { read, write };
+      },
+      pipeAvailable: (h) => {
+        const pipe = this.pipes.get(this.rec(h, 'pipeRead').target)!;
+        if (pipe.data.length > 0) return pipe.data.length;
+        const writers = pipe.ownerWriteOpen || [...pipe.holders].some(pid => this.procs.get(pid)!.state !== 'exited');
+        return writers ? 0 : -1;
+      },
+      readPipe: (h, max) => {
+        const pipe = this.pipes.get(this.rec(h, 'pipeRead').target)!;
+        const out = pipe.data.subarray(0, max);
+        pipe.data = pipe.data.subarray(out.length);
+        return Uint8Array.from(out);
       },
       createSuspended: (exe) => {
         call('createSuspended');

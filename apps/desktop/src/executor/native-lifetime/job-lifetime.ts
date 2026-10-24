@@ -81,6 +81,22 @@ export interface LifetimeOptions {
    */
   readonly launchPinning?: 'REQUIRED' | 'NOT_ENFORCED';
   readonly pinPort?: FilePinPort;
+  /**
+   * H7: capture stdout/stderr through two anonymous pipes. The child inherits ONLY
+   * their write ends (HANDLE_LIST); the owner closes its write ends right after
+   * creation, so EOF arrives once every holder (root + descendants) has exited.
+   * Bytes beyond maxBytes per stream are drained and counted, never kept.
+   */
+  readonly captureOutput?: { readonly maxBytes: number };
+}
+
+export interface CapturedOutput {
+  readonly stdout: Uint8Array;
+  readonly stderr: Uint8Array;
+  /** Bytes produced beyond maxBytes (discarded). */
+  readonly droppedBytes: { readonly stdout: number; readonly stderr: number };
+  /** Both streams reached EOF (every writer closed). False = output may be partial. */
+  readonly complete: boolean;
 }
 
 export interface ObservedProcess extends NativeProcessIdentity {
@@ -107,6 +123,8 @@ export interface LifetimeResult {
   readonly quarantined: boolean;
   /** H5: executable + inputs were held pinned from re-hash until after drain. */
   readonly launchPinned: boolean;
+  /** H7: null when capture was not requested. */
+  readonly output: CapturedOutput | null;
 }
 
 interface Entry {
@@ -122,7 +140,15 @@ export interface JobLifetimeAdapter {
   readonly quarantined: boolean;
   /** H6: the pinning mode this adapter enforces (consumers refuse NOT_ENFORCED). */
   readonly launchPinning: 'REQUIRED' | 'NOT_ENFORCED';
+  readonly outputCapture: boolean;
 }
+
+const concat = (chunks: readonly Uint8Array[]): Uint8Array => {
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
+};
 
 export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeAdapter {
   const port = options.port;
@@ -155,7 +181,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       outcome: 'LAUNCH_FAILED', identity, assignmentMode: null, orphanWindowExposed: false, resumed: false,
       drained: true, terminationProven: true, identityCoverageComplete: true, rootPid: null, processes: [],
       accounting: null, errors: [{ operation, nativeCode: null }], events, handlesClosed: true, quarantined,
-      launchPinned: false,
+      launchPinned: false, output: null,
     });
 
     if (host.platform !== 'win32' || host.arch !== 'x64') return refuse('unsupported-host', null);
@@ -165,6 +191,11 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
     if (busy) return refuse('adapter-busy', identity);
     const pinning = options.launchPinning ?? 'REQUIRED';
     if (pinning === 'REQUIRED' && !options.pinPort) return refuse('launch-pinning-unavailable', identity);
+    const capture = options.captureOutput ?? null;
+    if (capture && (!port.createOutputPipe || !port.pipeAvailable || !port.readPipe || !port.createSuspendedInJob || assignmentPolicy !== 'ATOMIC_REQUIRED'
+      || !Number.isSafeInteger(capture.maxBytes) || capture.maxBytes <= 0)) {
+      return refuse('output-capture-unavailable', identity);
+    }
     if (assignmentPolicy === 'ATOMIC_REQUIRED' && typeof port.createSuspendedInJob !== 'function') {
       return refuse('atomic-job-assignment-unavailable', identity);
     }
@@ -180,6 +211,25 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
     let resumed = false;
     let rootMembershipVerified = false;
     let pins: LaunchPins | null = null;
+    interface Stream { read: NativeHandle | null; write: NativeHandle | null; chunks: Uint8Array[]; kept: number; dropped: number; eof: boolean }
+    const streams: Stream[] = [];
+    const pump = (): void => {
+      if (!capture || !port.pipeAvailable || !port.readPipe) return;
+      for (const st of streams) {
+        if (st.eof || st.read === null) continue;
+        for (let guard = 0; guard < 64; guard += 1) {
+          const n = port.pipeAvailable(st.read);
+          if (n < 0) { st.eof = true; break; }
+          if (n === 0) break;
+          const bytes = port.readPipe(st.read, Math.min(n, 1 << 20));
+          if (bytes.length === 0) break;
+          const room = Math.max(0, capture.maxBytes - st.kept);
+          if (room > 0) { const keep = bytes.subarray(0, room); st.chunks.push(Uint8Array.from(keep)); st.kept += keep.length; }
+          st.dropped += Math.max(0, bytes.length - room);
+        }
+      }
+    };
+
     let drained = false;
     let coverage = false;
     let terminationProven = false;
@@ -304,8 +354,25 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       const env = Uint8Array.from(launch.environmentBlock); // never hand the shared buffer to native code
       if (port.createSuspendedInJob && assignmentPolicy === 'ATOMIC_REQUIRED') {
         mode = 'ATOMIC';
-        root = port.createSuspendedInJob(job, launch.executablePath, launch.commandLine, launch.cwd, env);
+        let stdio: { stdout: NativeHandle; stderr: NativeHandle } | undefined;
+        if (capture && port.createOutputPipe) {
+          for (let i = 0; i < 2; i += 1) {
+            const pipe = port.createOutputPipe();
+            streams.push({ read: pipe.read, write: pipe.write, chunks: [], kept: 0, dropped: 0, eof: false });
+            // Read ends must never leak into the child: verify they are NOT inheritable.
+            if ((port.handleFlags(pipe.read) & HANDLE_FLAG_INHERIT) !== 0) throw new Error('pipe-read-inheritable');
+          }
+          stdio = { stdout: streams[0]!.write!, stderr: streams[1]!.write! };
+          record('output-pipes-created');
+        }
+        root = port.createSuspendedInJob(job, launch.executablePath, launch.commandLine, launch.cwd, env, stdio);
         handles.push(root.process, root.thread);
+        // Owner write ends close now: EOF then means every child-side holder exited.
+        for (const st of streams) {
+          const w = st.write;
+          st.write = null;
+          if (w !== null) port.close(w);
+        }
         remember(root.process, root.pid, 'ROOT', true);
       } else {
         mode = 'LEGACY_ASSIGN';
@@ -336,6 +403,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
         record('resumed', root.pid);
         for (;;) {
           beat();
+          pump();
           const reason: LifetimeOutcome | null = signal?.aborted ? 'CANCELLED' : deadlineReached() ? 'TIMEOUT' : null;
           if (reason !== null) {
             outcome = reason; // first observed stop reason wins over any late zero exit
@@ -363,6 +431,20 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       terminationProven = await stop();
       drained = terminationProven;
     } finally {
+      // Final drain: after the Job is drained every writer is gone, so EOF is reachable.
+      if (capture && terminationProven) {
+        for (let i = 0; i < 50 && streams.some(st => !st.eof); i += 1) {
+          try { pump(); } catch (e) { fail(e); break; }
+          if (streams.some(st => !st.eof)) await options.sleep(pollMs);
+        }
+      }
+      for (const st of streams) {
+        for (const h of [st.write, st.read]) {
+          if (h === null) continue;
+          try { port.close(h); } catch (e) { handlesClosed = false; fail(e); }
+        }
+        st.write = null; st.read = null;
+      }
       // Job first: if anything is still alive, the last Job handle close kills it.
       for (const h of handles) {
         try { port.close(h); } catch (e) { handlesClosed = false; fail(e); }
@@ -386,6 +468,11 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       terminationProven, identityCoverageComplete: coverage, rootPid: root?.pid ?? null,
       processes: entries.map(e => Object.freeze({ ...e.identity, role: e.role, exitCode: e.exitCode })),
       accounting, errors, events, handlesClosed, quarantined, launchPinned: pins !== null,
+      output: capture ? Object.freeze({
+        stdout: concat(streams[0]?.chunks ?? []), stderr: concat(streams[1]?.chunks ?? []),
+        droppedBytes: { stdout: streams[0]?.dropped ?? 0, stderr: streams[1]?.dropped ?? 0 },
+        complete: streams.length === 2 && streams.every(st => st.eof),
+      }) : null,
     };
   }
 
@@ -393,5 +480,6 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
     run,
     get quarantined() { return quarantined; },
     launchPinning: options.launchPinning ?? 'REQUIRED',
+    outputCapture: options.captureOutput !== undefined,
   };
 }

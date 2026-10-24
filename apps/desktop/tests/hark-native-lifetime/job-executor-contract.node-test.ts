@@ -46,7 +46,7 @@ function rig(opts: { faults?: Fault[]; script?: Script; onSleep?: (k: FakeWindow
     host: SIMULATED_WINDOWS_HOST, pollMs: 10, stopWaitMs: 200, pinPort: createNodeFsPinPort(),
   });
   const seen: VerifiedLaunch[] = [];
-  const adapter: JobLifetimeAdapter = { run: (l, s) => { seen.push(l); return real.run(l, s); }, get quarantined() { return real.quarantined; }, launchPinning: real.launchPinning };
+  const adapter: JobLifetimeAdapter = { run: (l, s) => { seen.push(l); return real.run(l, s); }, get quarantined() { return real.quarantined; }, launchPinning: real.launchPinning, outputCapture: real.outputCapture };
   const provider = createNativeJobExecutorProvider({ operations: { build: OP }, adapter, policy: TEST_POLICY, nowIso: () => new Date(0).toISOString() });
   return { kernel, provider, seen };
 }
@@ -154,6 +154,7 @@ describe('H6 contract: never success without proof (C9), adapter throw latches',
     run: async () => { if (result instanceof Error) throw result; return { outcome: 'EXITED', drained: true, terminationProven: true, identityCoverageComplete: true, resumed: true, errors: [], processes: [], ...result } as LifetimeResult; },
     quarantined: false,
     launchPinning: 'REQUIRED',
+    outputCapture: false,
   });
   const make = (a: JobLifetimeAdapter) => createNativeJobExecutorProvider({ operations: { build: OP }, adapter: a, policy: TEST_POLICY, nowIso: () => '' });
   it('EXITED without drain -> uncertain + blocked', async () => {

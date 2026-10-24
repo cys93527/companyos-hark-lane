@@ -26,6 +26,10 @@ export interface KoffiLike {
 }
 
 const ERROR_MORE_DATA = 234;
+const ERROR_BROKEN_PIPE = 109;
+const PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x20002;
+const STARTF_USESTDHANDLES = 0x100;
+const HANDLE_FLAG_INHERIT_BIT = 0x1;
 const ERROR_INSUFFICIENT_BUFFER = 122;
 const WAIT_OBJECT_0 = 0;
 const WAIT_TIMEOUT = 258;
@@ -85,6 +89,9 @@ export function createKoffiJobPort(koffi: KoffiLike, host: { platform: string; a
   const getProcessTimes = fn('int __stdcall GetProcessTimes(uintptr_t process, void *created, void *exited, void *kernel, void *user)');
   const queryImageName = fn('int __stdcall QueryFullProcessImageNameW(uintptr_t process, uint32 flags, void *buffer, void *size)');
   const closeHandle = fn('int __stdcall CloseHandle(uintptr_t handle)');
+  const createPipe = fn('int __stdcall CreatePipe(void *read, void *write, void *sa, uint32 size)');
+  const peekNamedPipe = fn('int __stdcall PeekNamedPipe(uintptr_t pipe, void *buffer, uint32 size, void *read, void *avail, void *left)');
+  const readFile = fn('int __stdcall ReadFile(uintptr_t handle, void *buffer, uint32 bytes, void *read, void *overlapped)');
 
   const lastError = (): number => Number(getLastError());
   const check = (ok: unknown, operation: string): void => {
@@ -126,11 +133,12 @@ export function createKoffiJobPort(koffi: KoffiLike, host: { platform: string; a
       const info = query(job, JOB_CLASS_EXTENDED_LIMITS, EXTENDED_LIMITS_SIZE, 'QueryInformationJobObject(limits)');
       return { flags: info.readUInt32LE(16), activeProcessLimit: info.readUInt32LE(40) };
     },
-    createSuspendedInJob(job, executable, commandLine, cwd, environmentBlock) {
+    createSuspendedInJob(job, executable, commandLine, cwd, environmentBlock, stdio) {
       const heap = toHandle(getProcessHeap());
       const sizeOut = Buffer.alloc(8);
+      const attrCount = stdio ? 2 : 1;
       // First call only reports the size; it is documented to fail with INSUFFICIENT_BUFFER.
-      if (initAttrs(0n, 1, 0, sizeOut) || lastError() !== ERROR_INSUFFICIENT_BUFFER) {
+      if (initAttrs(0n, attrCount, 0, sizeOut) || lastError() !== ERROR_INSUFFICIENT_BUFFER) {
         throw new NativeJobError('InitializeProcThreadAttributeList(size)', lastError());
       }
       const listSize = sizeOut.readBigUInt64LE(0);
@@ -138,29 +146,76 @@ export function createKoffiJobPort(koffi: KoffiLike, host: { platform: string; a
       if (list === 0n) throw new NativeJobError('HeapAlloc(attribute-list)', null);
       // The JOB_LIST value must stay valid until the list is deleted: raw heap, not a JS buffer.
       const jobArray = toHandle(heapAlloc(heap, HEAP_ZERO_MEMORY, 8n));
+      const inheritArray = stdio ? toHandle(heapAlloc(heap, HEAP_ZERO_MEMORY, 16n)) : 0n;
       let initialised = false;
       try {
         if (jobArray === 0n) throw new NativeJobError('HeapAlloc(job-list)', null);
+        if (stdio && inheritArray === 0n) throw new NativeJobError('HeapAlloc(handle-list)', null);
         const handleBytes = Buffer.alloc(8);
         handleBytes.writeBigUInt64LE(job, 0);
         moveToRaw(jobArray, handleBytes, 8n);
-        check(initAttrs(list, 1, 0, sizeOut), 'InitializeProcThreadAttributeList');
+        check(initAttrs(list, attrCount, 0, sizeOut), 'InitializeProcThreadAttributeList');
         initialised = true;
         check(updateAttr(list, 0, BigInt(PROC_THREAD_ATTRIBUTE_JOB_LIST), jobArray, 8n, null, null), 'UpdateProcThreadAttribute(JOB_LIST)');
         const si = Buffer.alloc(STARTUPINFOEXW_SIZE);
         si.writeUInt32LE(STARTUPINFOEXW_SIZE, 0);
         si.writeBigUInt64LE(list, STARTUPINFOW_SIZE);
+        if (stdio) {
+          // H7: inherit EXACTLY the two pipe write ends; the Job handle and everything else stay private.
+          const pair = Buffer.alloc(16);
+          pair.writeBigUInt64LE(stdio.stdout, 0);
+          pair.writeBigUInt64LE(stdio.stderr, 8);
+          moveToRaw(inheritArray, pair, 16n);
+          check(updateAttr(list, 0, BigInt(PROC_THREAD_ATTRIBUTE_HANDLE_LIST), inheritArray, 16n, null, null), 'UpdateProcThreadAttribute(HANDLE_LIST)');
+          si.writeUInt32LE(STARTF_USESTDHANDLES, 60);
+          si.writeBigUInt64LE(0n, 80);
+          si.writeBigUInt64LE(stdio.stdout, 88);
+          si.writeBigUInt64LE(stdio.stderr, 96);
+        }
         const pi = Buffer.alloc(PROCESS_INFORMATION_SIZE);
         check(
-          createProcess(executable, commandBuffer(commandLine), null, null, 0, BASE_CREATE_FLAGS | EXTENDED_STARTUPINFO_PRESENT, Buffer.from(environmentBlock), cwd, si, pi),
-          'CreateProcessW(JOB_LIST)',
+          createProcess(executable, commandBuffer(commandLine), null, null, stdio ? 1 : 0, BASE_CREATE_FLAGS | EXTENDED_STARTUPINFO_PRESENT, Buffer.from(environmentBlock), cwd, si, pi),
+          stdio ? 'CreateProcessW(JOB_LIST+HANDLE_LIST)' : 'CreateProcessW(JOB_LIST)',
         );
         return toProcessInfo(pi);
       } finally {
         if (initialised) deleteAttrs(list);
         heapFree(heap, 0, list);
         if (jobArray !== 0n) heapFree(heap, 0, jobArray);
+        if (inheritArray !== 0n) heapFree(heap, 0, inheritArray);
       }
+    },
+    createOutputPipe() {
+      const r = Buffer.alloc(8);
+      const w = Buffer.alloc(8);
+      const sa = Buffer.alloc(24);
+      sa.writeUInt32LE(24, 0);
+      sa.writeInt32LE(1, 16); // write end must be inheritable for STARTF_USESTDHANDLES
+      check(createPipe(r, w, sa, 64 * 1024), 'CreatePipe');
+      const read = r.readBigUInt64LE(0);
+      const write = w.readBigUInt64LE(0);
+      if (!setHandleInfo(read, HANDLE_FLAG_INHERIT_BIT, 0)) {
+        const code = lastError();
+        closeHandle(read);
+        closeHandle(write);
+        throw new NativeJobError('SetHandleInformation(pipe-read)', code);
+      }
+      return { read, write };
+    },
+    pipeAvailable(read) {
+      const avail = Buffer.alloc(4);
+      if (!peekNamedPipe(read, null, 0, null, avail, null)) {
+        const code = lastError();
+        if (code === ERROR_BROKEN_PIPE) return -1;
+        throw new NativeJobError('PeekNamedPipe', code);
+      }
+      return avail.readUInt32LE(0);
+    },
+    readPipe(read, max) {
+      const buf = Buffer.alloc(max);
+      const got = Buffer.alloc(4);
+      check(readFile(read, buf, max, got, null), 'ReadFile(pipe)');
+      return Uint8Array.from(buf.subarray(0, got.readUInt32LE(0)));
     },
     createSuspended(executable, commandLine, cwd, environmentBlock) {
       const si = Buffer.alloc(STARTUPINFOW_SIZE);

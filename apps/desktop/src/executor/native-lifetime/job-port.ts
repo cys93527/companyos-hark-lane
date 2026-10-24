@@ -41,6 +41,10 @@ export interface JobLimitsReadback {
   readonly activeProcessLimit: number;
 }
 
+/** H7: anonymous pipe; the write end is inheritable, the read end is not. */
+export interface OutputPipe { readonly read: NativeHandle; readonly write: NativeHandle }
+export interface StdioHandles { readonly stdout: NativeHandle; readonly stderr: NativeHandle }
+
 export interface WindowsJobPort {
   createJob(): NativeHandle;
   /** Clear HANDLE_FLAG_INHERIT on the Job handle; must be read back separately. */
@@ -60,7 +64,15 @@ export interface WindowsJobPort {
     commandLine: string,
     cwd: string,
     environmentBlock: Uint8Array,
+    /** H7: inherit EXACTLY these two write ends (PROC_THREAD_ATTRIBUTE_HANDLE_LIST); nothing else. */
+    stdio?: StdioHandles,
   ): NativeProcessHandles;
+  /** H7 output capture (optional; atomic launch only). */
+  createOutputPipe?(): OutputPipe;
+  /** Bytes ready to read without blocking; 0 = none yet; -1 = all writers closed and empty (EOF). */
+  pipeAvailable?(read: NativeHandle): number;
+  /** Reads at most `max` bytes; only called with max <= pipeAvailable(). */
+  readPipe?(read: NativeHandle, max: number): Uint8Array;
   /** LEGACY: CREATE_SUSPENDED outside the Job; caller must assign before resume. */
   createSuspended(
     executable: string,

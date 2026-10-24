@@ -35,7 +35,13 @@ else if (mode === 'tree') {
   const child = require('node:child_process').spawn(process.execPath, [__filename, 'leaf', tag], { stdio: 'ignore', windowsHide: true, shell: false });
   child.on('error', e => write(tag + '-spawn-error.json', { code: e.code }));
   setInterval(() => {}, 1000);
-} else if (mode === 'leaf') { write(tag + '-leaf.json', { pid: process.pid }); setInterval(() => {}, 1000); }
+} else if (mode === 'print') { process.stdout.write(JSON.stringify({ ok: true, pid: process.pid })); process.stderr.write('diag-line'); }
+else if (mode === 'flood') { const chunk = 'x'.repeat(64 * 1024); for (let i = 0; i < 48; i += 1) process.stdout.write(chunk); }
+else if (mode === 'inheritleaf') {
+  process.stdout.write('root-out;');
+  require('node:child_process').spawn(process.execPath, [__filename, 'leafprint', tag], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true, shell: false });
+} else if (mode === 'leafprint') { setTimeout(() => { process.stdout.write('leaf-out;'); }, 300); }
+else if (mode === 'leaf') { write(tag + '-leaf.json', { pid: process.pid }); setInterval(() => {}, 1000); }
 else { process.exitCode = 99; }
 `;
 
