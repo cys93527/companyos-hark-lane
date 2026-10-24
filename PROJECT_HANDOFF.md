@@ -1,3 +1,8 @@
+## Hark lane H2（2026-10-24 HKT，候选，待独立审查）
+- 依赖已在本线安装（frozen lockfile、ignore-scripts）。typecheck exit 0、全仓 lint exit 0、Hark 离线 65/65、门禁 exit 0。
+- vitest 全量：Hark 42/3741 失败，基线 39/3741 失败；差异经双方定向复跑确认为本机流捕获时序漂移，非 Hark 回归。详见 docs/hark-lane/H2_DEPS_REGRESSION.md。
+- 新增 `.github/workflows/hark-windows.yml`（手动触发，未运行）。Windows native、Electron、安装包仍 NOT RUN。
+
 # CompanyOS — PROJECT HANDOFF
 
 > 单一事实来源：**本文件描述“现在到底是什么状态”**（AGENTS.md §0.1）。

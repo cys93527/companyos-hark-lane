@@ -1,0 +1,81 @@
+name: hark-windows
+
+# Hark lane Windows x64 evidence runner. Manual dispatch only: nothing runs on
+# push. No secrets, no Provider/DSH, no Electron binary, no native binding
+# (koffi stays unapproved), no system/ACL/firewall changes, no release/tag.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hark-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    name: hark offline gate (windows x64, node 24.19.0)
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      COMPANYOS_TEST_MODE: OFFLINE
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm 11.25.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+
+      - name: Use Node 24.19.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+
+      - name: Host identity
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          $info = [ordered]@{
+            commit = (git rev-parse HEAD); tree = (git rev-parse 'HEAD^{tree}')
+            os = [System.Environment]::OSVersion.VersionString; arch = $env:PROCESSOR_ARCHITECTURE
+            node = (node --version); pnpm = (pnpm --version); runner = $env:RUNNER_NAME
+          }
+          $info | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/host.json
+          Get-Content hark-evidence/host.json
+
+      - name: Install (frozen lockfile, no lifecycle scripts)
+        shell: pwsh
+        run: pnpm install --frozen-lockfile --ignore-scripts 2>&1 | Tee-Object hark-evidence/install.log; exit $LASTEXITCODE
+
+      - name: Typecheck
+        shell: pwsh
+        run: pnpm -s typecheck 2>&1 | Tee-Object hark-evidence/typecheck.log; exit $LASTEXITCODE
+
+      - name: Scoped lint (Hark lane files)
+        shell: pwsh
+        run: pnpm -s exec eslint apps/desktop/src/executor/native-lifetime apps/desktop/tests/hark-native-lifetime scripts/hark 2>&1 | Tee-Object hark-evidence/lint-scoped.log; exit $LASTEXITCODE
+
+      - name: Hark offline lifetime tests (simulated kernel)
+        shell: pwsh
+        run: node scripts/hark/test-hark-offline.mjs 2>&1 | Tee-Object hark-evidence/hark-offline.log; exit $LASTEXITCODE
+
+      - name: Architecture gates
+        shell: pwsh
+        run: |
+          node scripts/check-boundaries.mjs 2>&1 | Tee-Object hark-evidence/check-boundaries.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/check-architecture.mjs 2>&1 | Tee-Object hark-evidence/check-architecture.log
+          exit $LASTEXITCODE
+
+      - name: Upload evidence (always, first failure kept)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hark-windows-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: hark-evidence/
+          retention-days: 30

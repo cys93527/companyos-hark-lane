@@ -150,8 +150,8 @@ export async function runOwnerWatchdog(input: {
       lease = null;
       trigger = 'LEASE_REGRESSED';
     }
-    const step = trigger === 'LEASE_REGRESSED'
-      ? { state, decision: { kind: 'TERMINATE', trigger: 'LEASE_REGRESSED' } as WatchdogDecision }
+    const step: { readonly state: WatchdogState; readonly decision: WatchdogDecision } = trigger === 'LEASE_REGRESSED'
+      ? { state, decision: { kind: 'TERMINATE', trigger: 'LEASE_REGRESSED' } }
       : evaluateWatchdog(state, { ownerExited, lease, now: clock() }, input.config);
     state = step.state;
     if (step.decision.kind === 'RELEASED') {

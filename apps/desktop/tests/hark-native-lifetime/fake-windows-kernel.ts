@@ -142,93 +142,92 @@ export class FakeWindowsKernel {
   jobIdOf(h: NativeHandle): number { return this.rec(h, 'job').target; }
 
   port(): WindowsJobPort {
-    const k = this;
-    const call = (name: string): void => { k.calls.push(name); };
+    const call = (name: string): void => { this.calls.push(name); };
     const base: WindowsJobPort = {
-      createJob() {
+      createJob: () => {
         call('createJob');
-        if (k.faults.has('createJobThrows')) throw new NativeJobError('CreateJobObjectW', 5);
-        const id = k.nextJob++;
-        k.jobs.set(id, { id, flags: 0, limit: 0, members: new Set(), total: 0, terminated: 0, openHandles: 0 });
-        const h = k.issue('job', id);
-        k.handles.get(h)!.inherit = k.faults.has('inheritStuck');
+        if (this.faults.has('createJobThrows')) throw new NativeJobError('CreateJobObjectW', 5);
+        const id = this.nextJob++;
+        this.jobs.set(id, { id, flags: 0, limit: 0, members: new Set(), total: 0, terminated: 0, openHandles: 0 });
+        const h = this.issue('job', id);
+        this.handles.get(h)!.inherit = this.faults.has('inheritStuck');
         return h;
       },
-      clearInherit(h) { call('clearInherit'); const r = k.rec(h); if (!k.faults.has('inheritStuck')) r.inherit = false; },
-      handleFlags(h) { return k.rec(h).inherit ? 1 : 0; },
-      configure(h, limit) {
+      clearInherit: (h) => { call('clearInherit'); const r = this.rec(h); if (!this.faults.has('inheritStuck')) r.inherit = false; },
+      handleFlags: (h) => { return this.rec(h).inherit ? 1 : 0; },
+      configure: (h, limit) => {
         call('configure');
-        const j = k.jobOf(h);
+        const j = this.jobOf(h);
         j.flags = 0x2000 | 0x8;
-        if (k.faults.has('configureDropsKillOnClose')) j.flags &= ~0x2000;
-        if (k.faults.has('configureAddsBreakaway')) j.flags |= 0x800;
+        if (this.faults.has('configureDropsKillOnClose')) j.flags &= ~0x2000;
+        if (this.faults.has('configureAddsBreakaway')) j.flags |= 0x800;
         j.limit = limit;
       },
-      limits(h) { const j = k.jobOf(h); return { flags: j.flags, activeProcessLimit: j.limit }; },
-      createSuspendedInJob(h, exe) {
+      limits: (h) => { const j = this.jobOf(h); return { flags: j.flags, activeProcessLimit: j.limit }; },
+      createSuspendedInJob: (h, exe) => {
         call('createSuspendedInJob');
-        if (k.faults.has('createProcessThrows')) throw new NativeJobError('CreateProcessW', 2);
-        const j = k.jobOf(h);
-        const p = k.spawnProc(exe, k.rootScript, k.faults.has('atomicCreateNotMember') ? null : j.id, true)!;
-        return k.handlesFor(p);
+        if (this.faults.has('createProcessThrows')) throw new NativeJobError('CreateProcessW', 2);
+        const j = this.jobOf(h);
+        const p = this.spawnProc(exe, this.rootScript, this.faults.has('atomicCreateNotMember') ? null : j.id, true)!;
+        return this.handlesFor(p);
       },
-      createSuspended(exe) {
+      createSuspended: (exe) => {
         call('createSuspended');
-        if (k.faults.has('createProcessThrows')) throw new NativeJobError('CreateProcessW', 2);
-        return k.handlesFor(k.spawnProc(exe, k.rootScript, null, true)!);
+        if (this.faults.has('createProcessThrows')) throw new NativeJobError('CreateProcessW', 2);
+        return this.handlesFor(this.spawnProc(exe, this.rootScript, null, true)!);
       },
-      assign(h, ph) {
+      assign: (h, ph) => {
         call('assign');
-        if (k.faults.has('assignThrows')) throw new NativeJobError('AssignProcessToJobObject', 5);
-        if (k.faults.has('assignSilentlyIgnored')) return;
-        const j = k.jobOf(h); const p = k.procOf(ph);
+        if (this.faults.has('assignThrows')) throw new NativeJobError('AssignProcessToJobObject', 5);
+        if (this.faults.has('assignSilentlyIgnored')) return;
+        const j = this.jobOf(h); const p = this.procOf(ph);
         p.job = j.id; j.members.add(p.pid); j.total += 1;
       },
-      isInJob(h, ph) { const j = k.jobOf(h); const p = k.procOf(ph); return p.job === j.id; },
-      resume(th) {
+      isInJob: (h, ph) => { const j = this.jobOf(h); const p = this.procOf(ph); return p.job === j.id; },
+      resume: (th) => {
         call('resume');
-        const p = k.procOf(th);
-        k.resumed = true;
-        if (k.faults.has('resumeReturnsZero')) return 0;
-        const previous = p.suspendCount + (k.faults.has('resumeReturnsTwo') ? 1 : 0);
-        if (k.faults.has('resumeReturnsTwo')) return previous; // still suspended in reality
+        const p = this.procOf(th);
+        this.resumed = true;
+        if (this.faults.has('resumeReturnsZero')) return 0;
+        const previous = p.suspendCount + (this.faults.has('resumeReturnsTwo') ? 1 : 0);
+        if (this.faults.has('resumeReturnsTwo')) return previous; // still suspended in reality
         p.suspendCount = Math.max(0, p.suspendCount - 1);
-        if (p.suspendCount === 0 && p.state === 'suspended') { p.state = 'running'; p.startedAt = k.now; k.executedCount += 1; }
+        if (p.suspendCount === 0 && p.state === 'suspended') { p.state = 'running'; p.startedAt = this.now; this.executedCount += 1; }
         return previous;
       },
-      terminateJob(h, code) {
+      terminateJob: (h, code) => {
         call('terminateJob');
-        if (k.faults.has('terminateJobThrows')) throw new NativeJobError('TerminateJobObject', 5);
-        if (k.faults.has('terminateJobIneffective')) return;
-        k.killJob(k.jobOf(h), code);
+        if (this.faults.has('terminateJobThrows')) throw new NativeJobError('TerminateJobObject', 5);
+        if (this.faults.has('terminateJobIneffective')) return;
+        this.killJob(this.jobOf(h), code);
       },
-      terminateProcess(ph, code) {
+      terminateProcess: (ph, code) => {
         call('terminateProcess');
-        const p = k.procOf(ph);
-        if (!p.script.unkillable && !k.faults.has('terminateJobIneffective')) k.exit(p, code, true);
+        const p = this.procOf(ph);
+        if (!p.script.unkillable && !this.faults.has('terminateJobIneffective')) this.exit(p, code, true);
       },
-      members(h): JobMemberList {
-        const j = k.jobOf(h);
-        if (k.faults.has('membersThrowAfterResume') && k.resumed) throw new NativeJobError('QueryInformationJobObject', 234);
+      members: (h): JobMemberList => {
+        const j = this.jobOf(h);
+        if (this.faults.has('membersThrowAfterResume') && this.resumed) throw new NativeJobError('QueryInformationJobObject', 234);
         const listed = [...j.members];
-        if (k.faults.has('membersTruncated') && listed.length > 0) return { assigned: listed.length, listed: listed.slice(0, -1) };
+        if (this.faults.has('membersTruncated') && listed.length > 0) return { assigned: listed.length, listed: listed.slice(0, -1) };
         return { assigned: listed.length, listed };
       },
-      accounting(h): JobAccounting { const j = k.jobOf(h); return { totalProcesses: j.total, activeProcesses: j.members.size, totalTerminated: j.terminated }; },
-      openProcess(pid) {
+      accounting: (h): JobAccounting => { const j = this.jobOf(h); return { totalProcesses: j.total, activeProcesses: j.members.size, totalTerminated: j.terminated }; },
+      openProcess: (pid) => {
         call('openProcess');
-        if (k.faults.has('openProcessThrows')) throw new NativeJobError('OpenProcess', 87);
-        if (!k.procs.has(pid)) throw new NativeJobError('OpenProcess', 87);
-        return k.issue('process', pid);
+        if (this.faults.has('openProcessThrows')) throw new NativeJobError('OpenProcess', 87);
+        if (!this.procs.has(pid)) throw new NativeJobError('OpenProcess', 87);
+        return this.issue('process', pid);
       },
-      identity(ph, pid) { const p = k.procOf(ph); if (p.pid !== pid) throw new NativeJobError('identity-pid-mismatch', null); return { pid, createdAt100ns: p.created, imagePath: p.image }; },
-      hasExited(ph) { return k.procOf(ph).state === 'exited'; },
-      exitCode(ph) { const p = k.procOf(ph); return p.exitCode ?? 259; },
-      close(h) {
+      identity: (ph, pid) => { const p = this.procOf(ph); if (p.pid !== pid) throw new NativeJobError('identity-pid-mismatch', null); return { pid, createdAt100ns: p.created, imagePath: p.image }; },
+      hasExited: (ph) => { return this.procOf(ph).state === 'exited'; },
+      exitCode: (ph) => { const p = this.procOf(ph); return p.exitCode ?? 259; },
+      close: (h) => {
         call('close');
-        const r = k.rec(h);
-        if (k.faults.has('closeThrows') && r.kind === 'thread') throw new NativeJobError('CloseHandle', 6);
-        k.closeRec(h, r);
+        const r = this.rec(h);
+        if (this.faults.has('closeThrows') && r.kind === 'thread') throw new NativeJobError('CloseHandle', 6);
+        this.closeRec(h, r);
       },
     };
     return base;
