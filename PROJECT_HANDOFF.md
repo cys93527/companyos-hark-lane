@@ -4,6 +4,14 @@
 > 设计见 `docs/`，纪律见 `AGENTS.md`，执行路线见 `docs/EXECUTION_ROADMAP.md`。
 > 最近更新：**2026-10-13 Sprint 2 documentation state sync**（仅当前状态同步，非新功能或候选冻结）。
 
+
+## 2026-10-24 — Hark lane: Phase 3B-3E offline (H1, review pending)
+
+- Lane root = SOURCE import, tree `c2973b1acc5099325a644a51d27814e44d9fcd28` (checkpoint `7c86f2a681cc4d348c0238a4b6119931c74e423f`); new root commit, not ancestry. Sole Writer: Hark. No source/frozen/E/Codex writes.
+- New offline lifetime layer under `apps/desktop/src/executor/native-lifetime/` (port, launch pins, Job lifetime adapter, independent owner-hang watchdog contract). Not wired to production; not a sandbox; no permission factory.
+- Final offline run: 65 tests / 65 PASS / 0 FAIL, exit 0 (simulated Win32 kernel). Three earlier failing runs (test-side bugs) preserved. Native Windows: NOT RUN. koffi: BLOCKED (not installed). Typecheck/Lint/Vitest: NOT RUN (no deps).
+- Details: `docs/hark-lane/TAKEOVER_REPORT.md`, `docs/hark-lane/3B3E_OFFLINE_RESULT.md`. Next: independent review; authorization requests for dependency install and a Windows x64 test host.
+
 ## 2026-10-24 — Phase 3B-3B trusted budget proof contract (implementation; review pending)
 
 - Boss accepted Phase 3B-1 and Phase 3B-2 independent review. Their Local Draft/real desktop persistence and deterministic exact-file delivery scopes remain accepted; earlier implementation-stage review-pending/NOT RUN entries below remain historical. No real AI acceptance is implied.
