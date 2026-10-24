@@ -120,6 +120,41 @@ describe('3B-3E lifetime: cancellation, timeout, races', () => {
     assert.equal(kernel.liveProcesses().length, 0);
   });
 
+  it('H4: cancel with a natively verified member root reaps via TerminateJobObject only (no racing TerminateProcess)', async () => {
+    const controller = new AbortController();
+    const { kernel, adapter } = setup({ script: {}, onSleep: k => { if (k.now >= 50) controller.abort(); } });
+    const r = await adapter.run(launch(), controller.signal);
+    assert.equal(r.outcome, 'CANCELLED');
+    assert.equal(kernel.calls.includes('terminateJob'), true);
+    assert.equal(kernel.calls.includes('terminateProcess'), false);
+    assert.deepEqual(r.errors, []);
+    assert.equal(kernel.liveProcesses().length, 0);
+  });
+
+  it('H4: TerminateJobObject failure still falls back to TerminateProcess on the root', async () => {
+    const controller = new AbortController();
+    const { kernel, adapter } = setup({ faults: ['terminateJobThrows'], script: {}, onSleep: k => { if (k.now >= 50) controller.abort(); } });
+    const r = await adapter.run(launch(), controller.signal);
+    assert.equal(kernel.calls.includes('terminateProcess'), true);
+    assert.ok(r.errors.some(e => e.operation === 'TerminateJobObject'));
+  });
+
+  it('H4: onJobReady sees the configured Job before any process exists; a throw means nothing is created', async () => {
+    const seen: string[] = [];
+    const kernel = new FakeWindowsKernel();
+    const base = { port: kernel.port(), clock: () => kernel.now, sleep: async (ms: number) => { kernel.advance(ms); }, host: SIMULATED_WINDOWS_HOST, pollMs: 10 };
+    const ok = await createJobLifetimeAdapter({ ...base, onJobReady: () => { seen.push(kernel.calls.join(',')); } }).run(launch());
+    assert.equal(ok.outcome, 'EXITED');
+    assert.ok(seen[0]?.includes('configure'));
+    assert.equal(seen[0]?.includes('createSuspendedInJob'), false);
+    const before = kernel.calls.filter(c => c === 'createSuspendedInJob').length;
+    const refused = await createJobLifetimeAdapter({ ...base, onJobReady: () => { throw new Error('watchdog-arm-failed'); } }).run(launch());
+    assert.equal(refused.outcome, 'LAUNCH_FAILED');
+    assert.ok(refused.errors.some(e => e.operation === 'watchdog-arm-failed'));
+    assert.equal(kernel.calls.filter(c => c === 'createSuspendedInJob').length, before);
+    assert.equal(kernel.openHandleCount(), 0);
+  });
+
   it('active process limit bounds a fork storm; everything is reaped on timeout', async () => {
     const storm = Array.from({ length: 40 }, (_, i) => ({ afterMs: 1 + i, script: {} }));
     const { kernel, adapter } = setup({ script: { spawn: storm } });

@@ -240,3 +240,40 @@ export function createKoffiJobPort(koffi: KoffiLike, host: { platform: string; a
     },
   };
 }
+
+/** H4: least-privilege handle transfer into a process the owner created (watchdog). */
+export interface NativeHandleTransfer {
+  /** Pseudo handle of the calling process; only meaningful as a DuplicateHandle source. */
+  currentProcessHandle(): NativeHandle;
+  /** Duplicate `handle` into `targetProcess` with exactly `access` (never SAME_ACCESS); returns the value valid in the target. */
+  duplicateInto(targetProcess: NativeHandle, handle: NativeHandle, access: number): NativeHandle;
+}
+
+/** JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE — all the watchdog needs on the Job. */
+export const WATCHDOG_JOB_ACCESS = 0x0004 | 0x0008;
+/** SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION — watch the owner, nothing more. */
+export const WATCHDOG_OWNER_ACCESS = 0x00100000 | 0x00001000;
+
+export function createKoffiHandleTransfer(koffi: KoffiLike, host: { platform: string; arch: string } = process): NativeHandleTransfer {
+  if (host.platform !== 'win32' || host.arch !== 'x64') throw new NativeJobError('unsupported-host', null);
+  if (koffi.version !== KOFFI_PINNED_VERSION || koffi.sizeof('uintptr_t') !== 8) throw new NativeJobError('binding-refused', null);
+  const systemRoot = process.env['SystemRoot'] ?? process.env['SYSTEMROOT'];
+  if (!systemRoot || !/^[A-Za-z]:\\[^\\/:*?"<>|]+$/u.test(systemRoot)) throw new NativeJobError('system-root-refused', null);
+  const lib = koffi.load(`${systemRoot}\\System32\\kernel32.dll`);
+  const getLastError = lib.func('uint32 __stdcall GetLastError()');
+  const getCurrentProcess = lib.func('uintptr_t __stdcall GetCurrentProcess()');
+  const duplicate = lib.func('int __stdcall DuplicateHandle(uintptr_t srcProcess, uintptr_t src, uintptr_t dstProcess, void *dst, uint32 access, int inherit, uint32 options)');
+  return {
+    currentProcessHandle: () => toHandle(getCurrentProcess()),
+    duplicateInto(targetProcess, handle, access) {
+      if (!Number.isSafeInteger(access) || access <= 0) throw new NativeJobError('duplicate-access-refused', null);
+      const out = Buffer.alloc(8);
+      if (!duplicate(toHandle(getCurrentProcess()), handle, targetProcess, out, access, 0, 0)) {
+        throw new NativeJobError('DuplicateHandle', Number(getLastError()));
+      }
+      const value = out.readBigUInt64LE(0);
+      if (value === 0n) throw new NativeJobError('DuplicateHandle-null', null);
+      return value;
+    },
+  };
+}

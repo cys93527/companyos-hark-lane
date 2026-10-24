@@ -64,6 +64,13 @@ export interface LifetimeOptions {
   readonly activeProcessLimit?: number;
   readonly maxObservedProcesses?: number;
   readonly lease?: OwnerLeaseWriter;
+  /**
+   * H4: called once with the configured, verified Job handle BEFORE any process
+   * exists, so an independent watchdog can be armed (it duplicates the handle).
+   * If it throws, nothing is created and the run is LAUNCH_FAILED. The callee
+   * must not close or retain this handle; it owns only its own duplicate.
+   */
+  readonly onJobReady?: (job: NativeHandle) => void;
 }
 
 export interface ObservedProcess extends NativeProcessIdentity {
@@ -154,6 +161,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
     let root: NativeProcessHandles | null = null;
     let mode: AssignmentMode | null = null;
     let resumed = false;
+    let rootMembershipVerified = false;
     let drained = false;
     let coverage = false;
     let terminationProven = false;
@@ -215,9 +223,16 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       if (root === null) return true;
       record('stop-start');
       try { observe(); } catch (e) { fail(e); } // capture live descendants before they are reaped
-      if (job !== null) { try { port.terminateJob(job, COMPANYOS_STOP_EXIT_CODE); } catch (e) { fail(e); } }
-      // Separately covers a legacy root that never became a member.
-      try { if (!port.hasExited(root.process)) port.terminateProcess(root.process, COMPANYOS_STOP_EXIT_CODE); } catch (e) { fail(e); }
+      let jobTerminated = false;
+      if (job !== null) { try { port.terminateJob(job, COMPANYOS_STOP_EXIT_CODE); jobTerminated = true; } catch (e) { fail(e); } }
+      // Separately covers a legacy root that never became a member, or a failed
+      // TerminateJobObject. A member root is already being reaped by the Job:
+      // calling TerminateProcess on it then races its exit (native H3 run
+      // 40106440529 saw ERROR_ACCESS_DENIED) and adds no proof; drain is the proof.
+      // Only a NATIVELY VERIFIED member counts (a claimed/assigned one may not be).
+      if (!(jobTerminated && rootMembershipVerified)) {
+        try { if (!port.hasExited(root.process)) port.terminateProcess(root.process, COMPANYOS_STOP_EXIT_CODE); } catch (e) { fail(e); }
+      }
       const until = options.clock() + stopWaitMs;
       for (;;) {
         try {
@@ -241,6 +256,10 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
         throw new Error('job-limits-unverified');
       }
       record('job-configured');
+      if (options.onJobReady) {
+        options.onJobReady(job);
+        record('job-handed-to-watchdog');
+      }
       const env = Uint8Array.from(launch.environmentBlock); // never hand the shared buffer to native code
       if (port.createSuspendedInJob && assignmentPolicy === 'ATOMIC_REQUIRED') {
         mode = 'ATOMIC';
@@ -257,6 +276,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       }
       record('created-suspended', root.pid);
       if (!port.isInJob(job, root.process)) throw new Error('membership-unverified');
+      rootMembershipVerified = true;
       record('membership-verified', root.pid);
       beat();
       if (signal?.aborted || deadlineReached()) {

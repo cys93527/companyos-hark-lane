@@ -208,6 +208,7 @@ describe('H3 native: lifetime adapter end to end', () => {
     const r = await run;
     report('cancel', { outcome: r.outcome, errors: r.errors });
     assert.equal(r.outcome, 'CANCELLED');
+    assert.deepEqual(r.errors, [], 'H4: no racing TerminateProcess on a verified member root');
     assert.equal(r.drained, true);
     assert.equal(alive(rootPid), false);
   });
