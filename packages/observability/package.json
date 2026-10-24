@@ -1,0 +1,25 @@
+{
+  "name": "@companyos/observability",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CompanyOS observability — structured JSON-lines logging with redaction, correlation ids and rotating file sink.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "clean": "node ../../scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@companyos/core": "workspace:*"
+  }
+}

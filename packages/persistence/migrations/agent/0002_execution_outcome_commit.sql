@@ -1,0 +1,18 @@
+-- POST-CODEX 40d7892 re-audit — F5-C-R1: the durable POST-COMMIT ownership marker.
+--
+-- The supervisor Decision sink commits its Decision in the SAME transaction that
+-- stamps this marker on the owning AgentExecution while the row is still RUNNING.
+-- The marker is the durable fact that lets settlement arbitration distinguish,
+-- without any in-memory state:
+--   RUNNING, marker NULL        → still decision-authorized (a commit may stamp it)
+--   marker NOT NULL             → the outcome is COMMITTED for THIS exact row
+--   terminal, marker NULL       → terminal before any Decision commit
+--
+-- Once stamped: the row's outcome is authoritative — generic failure/cancel/timeout
+-- settlements are refused (they may not reinterpret the committed turn), recovery
+-- converges the row to the committed COMPLETED state, and a late sink without
+-- authority (row no longer RUNNING) can never stamp it.
+--
+-- Nullable by design: every non-supervisor execution (and every legacy row) legally
+-- carries NULL — absence is the ordinary state, never a fabricated commit.
+ALTER TABLE agent_executions ADD COLUMN outcome_committed_at TEXT NULL;

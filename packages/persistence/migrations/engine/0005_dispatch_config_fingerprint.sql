@@ -1,0 +1,17 @@
+-- Sprint25 — the provider dispatch gains the CONFIGURATION FINGERPRINT it ran under.
+--
+-- Config-drift safety for frozen attempts (§21): an ExecutionAttempt is frozen
+-- once claimed. Recording the fingerprint of the effective, source-annotated
+-- provider configuration at claim time is what lets a resumed attempt compare
+-- "the config I ran under" against "the config I would run under now" instead of
+-- silently picking up whatever the live environment says. A drifted resume fails
+-- closed with a typed CONFIG_DRIFT condition; it never substitutes.
+--
+-- The fingerprint is a derivation over configuration VALUES AND THEIR SOURCES
+-- (deterministic sha256-26, see engine `execution-safety.ts`). It is never a
+-- secret: configuration values are validated as non-secret at load time, so a
+-- fingerprint can never encode credential material.
+--
+-- Additive only: existing rows keep NULL (their provenance predates the field),
+-- which the store treats as "no recorded fingerprint" — never as "matched".
+ALTER TABLE provider_dispatches ADD COLUMN config_fingerprint TEXT;

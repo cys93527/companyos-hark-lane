@@ -1,0 +1,53 @@
+# --- node / pnpm ---
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+*.tsbuildinfo
+
+# --- build output ---
+dist/
+build/
+out/
+release/
+coverage/
+*.asar
+
+# --- local runtime state (never commit a user database) ---
+.data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+logs/
+*.log
+
+# --- env / secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+# Test-only CA for the broker HTTPS transport suite (self-signed for 127.0.0.1;
+# committed on purpose — the deterministic tests need it on a fresh clone).
+!tests/fixtures/broker-test-*.pem
+*.key
+*.p12
+*.pfx
+
+# --- editor / os ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- scratch ---
+.planning/probe.cjs
+.tmp/
+tmp/
+# pnpm check failure diagnostics (T20-05 §34; local only)
+.check-failures/
+.companyos-embedded/

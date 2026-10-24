@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (node ${{ matrix.node }})
+    # Independent Ubuntu compatibility gate; required check names stay unchanged.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - '22.x'
+          - '24.x'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+
+      - name: Use Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        env:
+          # CI only typechecks/builds the desktop shell; the Electron binary is not needed.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Prepare exact offline test resources (no Kernel execution)
+        run: node scripts/prepare-offline-resources.mjs
+
+      - name: Workspace integrity
+        run: node scripts/check-workspace.mjs
+
+      - name: pnpm check (lint + typecheck + boundaries + test + build)
+        run: pnpm check
+
+      - name: Tooling self-tests (node --test)
+        run: pnpm test:scripts

@@ -1,0 +1,25 @@
+{
+  "name": "@companyos/pack-dev-company",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CompanyOS first-party DevCompany industry Pack (codename CodeFleet) — INERT readonly product data only: canonical manifest + companion model-binding policy. DATA/CONFIG ONLY (ADR-0024); no runtime behaviour, no loader, no installer.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "clean": "node ../../scripts/clean.mjs"
+  },
+  "dependencies": {
+    "@companyos/core": "workspace:*"
+  }
+}

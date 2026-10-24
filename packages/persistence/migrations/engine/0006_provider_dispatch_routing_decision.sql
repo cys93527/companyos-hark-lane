@@ -1,0 +1,22 @@
+-- Stage 8B — the provider dispatch gains the ROUTING DECISION it ran under.
+--
+-- The Smart Router V1 decision (Stage 8 §B) is SELECTION EVIDENCE for ONE canonical
+-- ExecutionAttempt: which profile was selected, under which policy version, which
+-- candidates were eligible, which were rejected with which reason, and how the
+-- deterministic scoring broke down. It is recorded on the SAME per-attempt durable
+-- owner that already carries the provider binding (provider_dispatches, indexed by
+-- attempt_id) — deliberately NOT a new router table: a second router database would
+-- become a second selection truth beside the ExecutionAttempt.
+--
+-- The payload is the JSON evidence projection of the RoutingDecision (attemptId,
+-- policyVersion, eligibleCandidates, rejectedCandidates+reason, scoreBreakdown,
+-- selectedProfileId, decisionPolicy). It carries NO raw model reasoning: the router
+-- is a deterministic decision function and its explanation is machine-readable
+-- evidence, not chain-of-thought.
+--
+-- Additive only: pre-Stage-8B rows keep NULL — "no routing decision recorded",
+-- which the store treats as the legacy DETERMINISTIC_V1 selection path, never as
+-- "matched". The value is written ONCE at claim time; an attempt never re-routes
+-- internally (Stage 7B), so a resumed attempt compares the recorded decision and
+-- refuses a conflict instead of silently switching models.
+ALTER TABLE provider_dispatches ADD COLUMN routing_decision_json TEXT;

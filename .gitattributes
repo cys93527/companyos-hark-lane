@@ -1,0 +1,2 @@
+# Preserve the audited byte fixture, including its upstream CRLF bytes.
+/tests/fixtures/kernel-readonly/bin.js.txt -text

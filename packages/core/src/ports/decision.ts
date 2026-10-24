@@ -1,0 +1,2 @@
+import type { DecisionRecord } from '../domain/decision.js';
+export interface DecisionStorePort { create(record: DecisionRecord): Promise<void>; update(record: DecisionRecord): Promise<void>; get(decisionId: string, version?: number|null): Promise<DecisionRecord|null>; listVersions(decisionId: string): Promise<readonly DecisionRecord[]>; listActive(companyId: string, limit?: number): Promise<readonly DecisionRecord[]>; listAll(): Promise<readonly DecisionRecord[]>; }

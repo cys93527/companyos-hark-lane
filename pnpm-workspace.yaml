@@ -1,0 +1,18 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+  - 'packs/*'
+
+# pnpm >= 11 blocks dependency lifecycle scripts by default (ERR_PNPM_IGNORED_BUILDS)
+# and moved this setting from package.json into pnpm-workspace.yaml.
+#
+#   esbuild  — must run: vite shells out to its platform binary.
+#   electron — set to false on purpose: the postinstall downloads a ~120 MB runtime
+#              binary that this environment could not fetch (ECONNRESET). Types and
+#              the API surface ship inside the npm tarball, which is everything
+#              `pnpm typecheck` / `pnpm build` / `pnpm check` need. Run
+#              `pnpm approve-builds` (or `pnpm rebuild electron`) on a machine with
+#              unrestricted egress to enable `pnpm dev`. See PROJECT_HANDOFF.md.
+allowBuilds:
+  esbuild: true
+  electron: false

@@ -1,0 +1,22 @@
+{
+  "name": "@companyos/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CompanyOS Core — industry-agnostic domain kernel, lifecycle state machine and ports. ZERO runtime dependencies (ADR-0005).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "clean": "node ../../scripts/clean.mjs"
+  }
+}

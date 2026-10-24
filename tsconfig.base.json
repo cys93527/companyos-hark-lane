@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@companyos/core": ["./packages/core/src/index.ts"],
+      "@companyos/contracts": ["./packages/contracts/src/index.ts"],
+      "@companyos/engine": ["./packages/engine/src/index.ts"],
+      "@companyos/persistence": ["./packages/persistence/src/index.ts"],
+      "@companyos/observability": ["./packages/observability/src/index.ts"],
+      "@companyos/pack-dev-company": ["./packs/dev-company/src/index.ts"]
+    }
+  }
+}
