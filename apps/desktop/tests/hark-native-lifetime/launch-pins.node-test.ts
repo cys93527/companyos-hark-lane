@@ -1,7 +1,7 @@
 /** Hark lane 3B-3E — launch identity pinning, environment block, argv quoting (real files, no execution). */
 import assert from 'node:assert/strict';
 import { linkSync, mkdirSync, symlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   buildEnvironmentBlock, compareEnvironmentNames, isVerifiedLaunch, LaunchRefused, quoteWindowsArgument, verifyLaunch,
@@ -9,6 +9,9 @@ import {
 import { baseRequest, makeWorkspace, TEST_POLICY } from './support.js';
 
 const ws = makeWorkspace();
+// Canonical filesystem root of the workspace's own volume ('/' on POSIX, e.g. 'D:\\' on Windows).
+// A bare '/' is drive-relative on Windows and is refused earlier as path-not-canonical.
+const outsideRoot = parse(ws.root).root;
 const refused = (fn: () => unknown, reason: string | RegExp): void => {
   assert.throws(fn, (e: unknown) => e instanceof LaunchRefused && (typeof reason === 'string' ? e.reason === reason : reason.test(e.reason)));
 };
@@ -70,7 +73,7 @@ describe('verifyLaunch', () => {
     refused(() => verifyLaunch(baseRequest(own), TEST_POLICY), 'path-not-single-link-file');
   });
   it('refuses cwd outside the workspace, non-.exe targets, bad durations and identities', () => {
-    refused(() => verifyLaunch(baseRequest(ws, { cwd: '/' }), TEST_POLICY), 'cwd-outside-workspace');
+    refused(() => verifyLaunch(baseRequest(ws, { cwd: outsideRoot }), TEST_POLICY), 'cwd-outside-workspace');
     refused(() => verifyLaunch(baseRequest(ws, { executable: { path: ws.script, sha256: ws.scriptSha } }), TEST_POLICY), 'executable-not-exe');
     for (const timeoutMs of [0, -1, 600_001, 1.5, Number.NaN]) refused(() => verifyLaunch(baseRequest(ws, { timeoutMs }), TEST_POLICY), 'duration-refused');
     refused(() => verifyLaunch(baseRequest(ws, { identity: { runId: '', taskId: 't', attemptId: 'a' } }), TEST_POLICY), 'identity-incomplete');
@@ -96,7 +99,7 @@ describe('environment block', () => {
     refused(() => buildEnvironmentBlock({ ...env, COMPANYOS_TEST_MODE: 'LIVE' }, ws.root, TEST_POLICY), 'environment-test-mode');
   });
   it('profile directories must exist inside the workspace', () => {
-    refused(() => buildEnvironmentBlock({ ...env, TEMP: '/' }, ws.root, TEST_POLICY), 'environment-profile-outside-workspace');
+    refused(() => buildEnvironmentBlock({ ...env, TEMP: outsideRoot }, ws.root, TEST_POLICY), 'environment-profile-outside-workspace');
     refused(() => buildEnvironmentBlock({ ...env, TEMP: join(ws.root, 'missing') }, ws.root, TEST_POLICY), 'path-missing');
   });
   it('is ordinal case-insensitively sorted, UTF-16LE, double-NUL terminated', () => {
