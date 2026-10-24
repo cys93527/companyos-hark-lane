@@ -1,9 +1,11 @@
 name: hark-windows
 
-# Hark lane Windows x64 evidence runner. Runs on manual dispatch and on push to
+# Hark lane Windows x64 evidence runner. koffi@3.3.3 is installed ONLY here
+# (user approval 2026-10-24, CI only): outside the repo, lifecycle scripts off,
+# tarball integrity checked against the pinned sha512 before install. Runs on manual dispatch and on push to
 # the hark-lane branch only (added because the workflow was never registered for
 # dispatch). No secrets, no Provider/DSH, no Electron binary, no native binding
-# (koffi stays unapproved), no system/ACL/firewall changes, no release/tag.
+# beyond koffi, no system/ACL/firewall changes, no release/tag.
 on:
   workflow_dispatch:
   push:
@@ -75,6 +77,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-architecture.mjs 2>&1 | Tee-Object hark-evidence/check-architecture.log
           exit $LASTEXITCODE
+
+      - name: Fetch koffi 3.3.3 (CI only, integrity pinned, no lifecycle scripts)
+        shell: pwsh
+        env:
+          KOFFI_SHA512: sha512-XWNI4eyxJJzR2MakPZzR3QeZ06JOklLbxglin0dHhx/qIQCby8lqHs9Acq4Q7CpCKnOrBSj+6b9J5y69wfr2ZA==
+          KOFFI_WIN_SHA512: sha512-tLTF17wl4CCwOlo1Tt0NbduwUduDvM6c8JSyearcLu6hpNHQo44RF3rKN2i7UkxwCqXyiudZK0lS421CC/TPZA==
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'hark-koffi'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $a = (npm view koffi@3.3.3 dist.integrity).Trim()
+          $b = (npm view '@koromix/koffi-win32-x64@3.3.3' dist.integrity).Trim()
+          "koffi=$a`nkoffi-win32-x64=$b" | Tee-Object hark-evidence/koffi-integrity.txt
+          if ($a -ne $env:KOFFI_SHA512 -or $b -ne $env:KOFFI_WIN_SHA512) { Write-Error 'koffi integrity mismatch'; exit 1 }
+          Set-Content -Encoding utf8 (Join-Path $dir 'package.json') '{"private":true,"name":"hark-koffi","version":"0.0.0","dependencies":{"koffi":"3.3.3"}}'
+          Push-Location $dir
+          npm install --ignore-scripts --no-audit --no-fund 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-install.log')
+          $code = $LASTEXITCODE
+          npm ls --all 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-tree.txt')
+          Copy-Item package-lock.json (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-package-lock.json')
+          Pop-Location
+          $lock = Get-Content (Join-Path $dir 'package-lock.json') -Raw | ConvertFrom-Json
+          if ($lock.packages.'node_modules/koffi'.integrity -ne $env:KOFFI_SHA512) { Write-Error 'installed koffi integrity mismatch'; exit 1 }
+          $w = $lock.packages.'node_modules/@koromix/koffi-win32-x64'
+          if ($null -eq $w -or $w.integrity -ne $env:KOFFI_WIN_SHA512) { Write-Error 'installed koffi-win32-x64 integrity mismatch'; exit 1 }
+          "HARK_KOFFI_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          exit $code
+
+      - name: Hark NATIVE Job Object tests (koffi, windows x64)
+        shell: pwsh
+        run: node scripts/hark/test-hark-native.mjs 2>&1 | Tee-Object hark-evidence/hark-native.log; exit $LASTEXITCODE
 
       - name: Upload evidence (always, first failure kept)
         if: always()
