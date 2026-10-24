@@ -1,3 +1,7 @@
+## 2026-10-25 Hark lane — H6 Supervisor integration contract
+- Commit bc81549. CI 40110364994: offline 107/107, native 21/21. Not production-wired (guard test). One surviving mutant found and fixed (provider own latch).
+- Hark self-review PASS (H6 scope). Independent review NOT granted. Doc: docs/hark-lane/H6_SUPERVISOR_CONTRACT.md
+
 ## 2026-10-25 Hark lane — H5 handle-pinned launch (TOCTOU)
 - Commits 88080fb, 7a87828. CI 40109482553: offline 87/87, native 19/19 (first run 40109275557 16/18 kept: test bug).
 - Pinning REQUIRED by default; exe/inputs/dir chain share-mode pinned; re-hash through handle; reparse/redirect/multi-link refused; image path checked before resume.
