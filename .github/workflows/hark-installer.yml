@@ -1,0 +1,103 @@
+name: hark-installer
+
+# Hark lane H8 (user approval 2026-10-25: build the installer on CI). Builds the
+# CompanyOS desktop app, stages it with the locked Electron 44.5.1 runtime (the
+# binary is downloaded by electron's own install.js, which checks it against the
+# package's bundled SHA-256 checksums), packages a PER-USER Inno Setup installer
+# (preinstalled on the runner; nothing new is downloaded for it), then runs an
+# install -> launch -> uninstall smoke. No new npm dependencies, no signing, no
+# secrets, no Provider/DSH, no release/tag, no machine-wide/ACL/firewall changes.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hark-lane
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hark-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    name: build + per-user install smoke (windows x64)
+    runs-on: windows-2022
+    timeout-minutes: 40
+    env:
+      COMPANYOS_TEST_MODE: OFFLINE
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+
+      - name: Host identity
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          [ordered]@{ commit = (git rev-parse HEAD); os = [Environment]::OSVersion.VersionString; arch = $env:PROCESSOR_ARCHITECTURE; node = (node --version); pnpm = (pnpm --version) } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/host.json
+          Get-Content hark-evidence/host.json
+
+      - name: Install (frozen lockfile, no lifecycle scripts)
+        shell: pwsh
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: pnpm install --frozen-lockfile --ignore-scripts 2>&1 | Tee-Object hark-evidence/install.log; exit $LASTEXITCODE
+
+      - name: Build
+        shell: pwsh
+        run: pnpm run build 2>&1 | Tee-Object hark-evidence/build.log; exit $LASTEXITCODE
+
+      - name: Electron runtime (locked version, checksum-verified by electron/install.js)
+        shell: pwsh
+        working-directory: apps/desktop
+        run: |
+          $el = (Resolve-Path node_modules/electron).Path
+          node "$el/install.js" 2>&1 | Tee-Object ../../hark-evidence/electron-install.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dist = Join-Path $el 'dist'
+          [ordered]@{ package = (Get-Content (Join-Path $el 'package.json') | ConvertFrom-Json).version; dist = $dist; version = (Get-Content (Join-Path $dist 'version') -Raw).Trim(); electronExeSha256 = (Get-FileHash (Join-Path $dist 'electron.exe') -Algorithm SHA256).Hash } | ConvertTo-Json | Tee-Object ../../hark-evidence/electron.json
+          "ELECTRON_DIST=$dist" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Stage app
+        shell: pwsh
+        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
+
+      - name: Package installer (Inno Setup preinstalled on the runner)
+        shell: pwsh
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { Write-Host 'ISCC not found on runner; NOT installing it (would be a new download needing approval).'; exit 3 }
+          $ver = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          & $iscc "/DStageDir=$env:RUNNER_TEMP\companyos-stage\app" "/DAppVersion=$ver" "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer" installer\companyos.iss 2>&1 | Tee-Object hark-evidence/iscc.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem hark-installer\*.exe | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)  $($_.Length)" } | Tee-Object hark-evidence/installer-sha256.txt
+          [ordered]@{ iscc = $iscc; isccVersion = (Get-Item $iscc).VersionInfo.ProductVersion } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/iscc.json
+
+      - name: Per-user install / launch / uninstall smoke
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem hark-installer\*.exe | Select-Object -First 1).FullName
+          ./scripts/hark/installer-smoke.ps1 -Setup $setup -Evidence "$env:GITHUB_WORKSPACE\hark-evidence\smoke"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hark-installer-evidence
+          path: hark-evidence
+          if-no-files-found: warn
+
+      - name: Upload installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hark-installer
+          path: hark-installer
+          if-no-files-found: warn
