@@ -1,10 +1,14 @@
 name: hark-windows
 
-# Hark lane Windows x64 evidence runner. Manual dispatch only: nothing runs on
-# push. No secrets, no Provider/DSH, no Electron binary, no native binding
+# Hark lane Windows x64 evidence runner. Runs on manual dispatch and on push to
+# the hark-lane branch only (added because the workflow was never registered for
+# dispatch). No secrets, no Provider/DSH, no Electron binary, no native binding
 # (koffi stays unapproved), no system/ACL/firewall changes, no release/tag.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - hark-lane
 
 permissions:
   contents: read
