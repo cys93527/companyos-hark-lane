@@ -8,11 +8,13 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createJobLifetimeAdapter } from '../../../src/executor/native-lifetime/job-lifetime.js';
 import { COMPANYOS_STOP_EXIT_CODE, NativeJobError, type WindowsJobPort } from '../../../src/executor/native-lifetime/job-port.js';
-import { createKoffiJobPort } from '../../../src/executor/native-lifetime/koffi-job-port.js';
+import { createKoffiFilePinPort, createKoffiJobPort } from '../../../src/executor/native-lifetime/koffi-job-port.js';
 import { verifyLaunch, type VerifiedLaunch } from '../../../src/executor/native-lifetime/launch-pins.js';
 import { evidence, loadKoffi, makeNativeWorkspace, sleep } from './native-support.js';
 
-const port = createKoffiJobPort(loadKoffi());
+const koffi = loadKoffi();
+const port = createKoffiJobPort(koffi);
+const pinPort = createKoffiFilePinPort(koffi);
 const ws = makeNativeWorkspace('hark-h4-bind');
 const createInJob: NonNullable<WindowsJobPort['createSuspendedInJob']> = (() => {
   const f = port.createSuspendedInJob;
@@ -96,7 +98,7 @@ describe('H4 native: binding failure never resumes', () => {
     // Only the ROOT membership read-back lies (first call); later identity checks are real.
     let calls = 0;
     const lying: WindowsJobPort = { ...port, isInJob: (job, p) => (calls++ === 0 ? false : port.isInJob(job, p)) };
-    const r = await createJobLifetimeAdapter({ port: lying, clock: () => Date.now(), sleep, pollMs: 20, stopWaitMs: 5_000 }).run(launch('normal', 'unverified'));
+    const r = await createJobLifetimeAdapter({ port: lying, clock: () => Date.now(), sleep, pollMs: 20, stopWaitMs: 5_000, pinPort }).run(launch('normal', 'unverified'));
     evidence('membership-unverified', { outcome: r.outcome, resumed: r.resumed, processes: r.processes, errors: r.errors });
     assert.equal(r.outcome, 'LAUNCH_FAILED');
     assert.equal(r.resumed, false);

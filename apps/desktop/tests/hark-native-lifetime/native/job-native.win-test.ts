@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createJobLifetimeAdapter, type LifetimeOptions } from '../../../src/executor/native-lifetime/job-lifetime.js';
 import { JOB_FORBIDDEN_FLAGS, JOB_REQUIRED_FLAGS, type WindowsJobPort } from '../../../src/executor/native-lifetime/job-port.js';
-import { createKoffiJobPort, type KoffiLike } from '../../../src/executor/native-lifetime/koffi-job-port.js';
+import { createKoffiFilePinPort, createKoffiJobPort, type KoffiLike } from '../../../src/executor/native-lifetime/koffi-job-port.js';
 import { verifyLaunch, type LaunchRequest, type VerifiedLaunch } from '../../../src/executor/native-lifetime/launch-pins.js';
 
 const koffiDir = process.env['HARK_KOFFI_DIR'];
@@ -25,6 +25,7 @@ if (process.platform !== 'win32' || process.arch !== 'x64' || !koffiDir) {
 }
 const koffi = createRequire(join(koffiDir, 'package.json'))('koffi') as KoffiLike;
 const port: WindowsJobPort = createKoffiJobPort(koffi);
+const pinPort = createKoffiFilePinPort(koffi);
 
 const sha = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -72,7 +73,7 @@ function launch(mode: string, tag: string, timeoutMs: number): VerifiedLaunch {
 }
 
 function adapter() {
-  const options: LifetimeOptions = { port, clock: () => Date.now(), sleep, assignment: 'ATOMIC_REQUIRED', pollMs: 20, stopWaitMs: 5_000 };
+  const options: LifetimeOptions = { port, clock: () => Date.now(), sleep, assignment: 'ATOMIC_REQUIRED', pollMs: 20, stopWaitMs: 5_000, pinPort };
   return createJobLifetimeAdapter(options);
 }
 

@@ -8,6 +8,7 @@ import { createJobLifetimeAdapter, type LifetimeOptions, type OwnerLeaseWriter }
 import { COMPANYOS_STOP_EXIT_CODE } from '../../src/executor/native-lifetime/job-port.js';
 import type { VerifiedLaunch } from '../../src/executor/native-lifetime/launch-pins.js';
 import { FakeWindowsKernel, withoutAtomic, type Fault, type Script } from './fake-windows-kernel.js';
+import { createNodeFsPinPort } from './node-fs-pin-port.js';
 import { makeWorkspace, SIMULATED_WINDOWS_HOST, verified } from './support.js';
 
 const ws = makeWorkspace();
@@ -25,6 +26,7 @@ function setup(opts: { faults?: Fault[]; script?: Script; legacy?: boolean; noAt
     assignment: opts.legacy ? 'LEGACY_ASSIGN_ALLOWED' : 'ATOMIC_REQUIRED',
     pollMs: 10,
     stopWaitMs: opts.stopWaitMs ?? 200,
+    pinPort: createNodeFsPinPort(),
     ...(opts.lease ? { lease: opts.lease } : {}),
   };
   return { kernel, adapter: createJobLifetimeAdapter(options) };
@@ -142,7 +144,7 @@ describe('3B-3E lifetime: cancellation, timeout, races', () => {
   it('H4: onJobReady sees the configured Job before any process exists; a throw means nothing is created', async () => {
     const seen: string[] = [];
     const kernel = new FakeWindowsKernel();
-    const base = { port: kernel.port(), clock: () => kernel.now, sleep: async (ms: number) => { kernel.advance(ms); }, host: SIMULATED_WINDOWS_HOST, pollMs: 10 };
+    const base = { port: kernel.port(), clock: () => kernel.now, sleep: async (ms: number) => { kernel.advance(ms); }, host: SIMULATED_WINDOWS_HOST, pollMs: 10, pinPort: createNodeFsPinPort() };
     const ok = await createJobLifetimeAdapter({ ...base, onJobReady: () => { seen.push(kernel.calls.join(',')); } }).run(launch());
     assert.equal(ok.outcome, 'EXITED');
     assert.ok(seen[0]?.includes('configure'));

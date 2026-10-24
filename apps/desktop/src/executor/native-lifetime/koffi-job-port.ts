@@ -13,6 +13,7 @@
  *
  * Struct offsets are the documented Windows x64 ABI; every other ABI is refused.
  */
+import type { FilePinPort } from './file-pins.js';
 import { NativeJobError, type JobAccounting, type JobLimitsReadback, type JobMemberList, type NativeHandle, type NativeProcessHandles, type NativeProcessIdentity, type WindowsJobPort } from './job-port.js';
 
 export const KOFFI_PINNED_VERSION = '3.3.3';
@@ -274,6 +275,65 @@ export function createKoffiHandleTransfer(koffi: KoffiLike, host: { platform: st
       const value = out.readBigUInt64LE(0);
       if (value === 0n) throw new NativeJobError('DuplicateHandle-null', null);
       return value;
+    },
+  };
+}
+
+/**
+ * H5: FilePinPort over kernel32 (see file-pins.ts). Files: GENERIC_READ, share
+ * READ only. Directories: FILE_LIST_DIRECTORY (so the share mode is enforced) |
+ * FILE_READ_ATTRIBUTES | SYNCHRONIZE, share READ|WRITE (deny DELETE). Both with
+ * FILE_FLAG_OPEN_REPARSE_POINT so a link is pinned as itself and then refused.
+ */
+export function createKoffiFilePinPort(koffi: KoffiLike, host: { platform: string; arch: string } = process): FilePinPort {
+  if (host.platform !== 'win32' || host.arch !== 'x64') throw new NativeJobError('unsupported-host', null);
+  if (koffi.version !== KOFFI_PINNED_VERSION || koffi.sizeof('uintptr_t') !== 8) throw new NativeJobError('binding-refused', null);
+  const systemRoot = process.env['SystemRoot'] ?? process.env['SYSTEMROOT'];
+  if (!systemRoot || !/^[A-Za-z]:\\[^\\/:*?"<>|]+$/u.test(systemRoot)) throw new NativeJobError('system-root-refused', null);
+  const lib = koffi.load(`${systemRoot}\\System32\\kernel32.dll`);
+  const getLastError = lib.func('uint32 __stdcall GetLastError()');
+  const createFile = lib.func('uintptr_t __stdcall CreateFileW(str16 name, uint32 access, uint32 share, void *sa, uint32 disposition, uint32 flags, uintptr_t template)');
+  const getInfo = lib.func('int __stdcall GetFileInformationByHandle(uintptr_t handle, void *info)');
+  const getFinalPath = lib.func('uint32 __stdcall GetFinalPathNameByHandleW(uintptr_t handle, void *buffer, uint32 chars, uint32 flags)');
+  const readFile = lib.func('int __stdcall ReadFile(uintptr_t handle, void *buffer, uint32 bytes, void *read, void *overlapped)');
+  const closeHandle = lib.func('int __stdcall CloseHandle(uintptr_t handle)');
+  const INVALID = 0xffffffffffffffffn;
+  const OPEN_EXISTING = 3;
+  const OPEN_REPARSE = 0x00200000;
+  const BACKUP_SEMANTICS = 0x02000000;
+  const open = (path: string, access: number, share: number, flags: number, op: string): NativeHandle => {
+    if (path.includes('\0') || !/^[A-Za-z]:\\/u.test(path)) throw new NativeJobError(`${op}-path-refused`, null);
+    const h = toHandle(createFile(path, access, share, null, OPEN_EXISTING, flags, 0n));
+    if (h === INVALID || h === 0n) throw new NativeJobError(op, Number(getLastError()));
+    return h;
+  };
+  return {
+    openFilePinned: path => open(path, 0x80000000, 0x1, OPEN_REPARSE | 0x08000000, 'CreateFileW(pin-file)'),
+    openDirectoryPinned: path => open(path, 0x1 | 0x80 | 0x00100000, 0x1 | 0x2, OPEN_REPARSE | BACKUP_SEMANTICS, 'CreateFileW(pin-dir)'),
+    info(handle) {
+      const b = Buffer.alloc(52);
+      if (!getInfo(handle, b)) throw new NativeJobError('GetFileInformationByHandle', Number(getLastError()));
+      const chars = 32_768;
+      const name = Buffer.alloc(chars * 2);
+      const n = Number(getFinalPath(handle, name, chars, 0));
+      if (n === 0 || n >= chars) throw new NativeJobError('GetFinalPathNameByHandleW', Number(getLastError()));
+      return {
+        finalPath: name.toString('utf16le', 0, n * 2),
+        attributes: b.readUInt32LE(0),
+        volumeSerial: b.readUInt32LE(28),
+        size: b.readUInt32LE(32) * 2 ** 32 + b.readUInt32LE(36),
+        links: b.readUInt32LE(40),
+        fileIndex: ((BigInt(b.readUInt32LE(44)) << 32n) | BigInt(b.readUInt32LE(48))).toString(),
+      };
+    },
+    read(handle, into) {
+      const view = Buffer.from(into.buffer, into.byteOffset, into.byteLength);
+      const got = Buffer.alloc(4);
+      if (!readFile(handle, view, Math.min(view.length, 0x7fffffff), got, null)) throw new NativeJobError('ReadFile', Number(getLastError()));
+      return got.readUInt32LE(0);
+    },
+    close(handle) {
+      if (!closeHandle(handle)) throw new NativeJobError('CloseHandle(pin)', Number(getLastError()));
     },
   };
 }

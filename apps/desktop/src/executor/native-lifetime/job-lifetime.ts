@@ -28,6 +28,7 @@
  *      (owner-watchdog.ts). This adapter's own timer is not hang-safe: if the
  *      owner's event loop stalls, only the watchdog can enforce the deadline.
  */
+import { LaunchPinRefused, pinLaunch, samePinnedPath, type FilePinPort, type LaunchPins } from './file-pins.js';
 import {
   COMPANYOS_STOP_EXIT_CODE,
   HANDLE_FLAG_INHERIT,
@@ -71,6 +72,15 @@ export interface LifetimeOptions {
    * must not close or retain this handle; it owns only its own duplicate.
    */
   readonly onJobReady?: (job: NativeHandle) => void;
+  /**
+   * H5: handle-pinned launch. REQUIRED (default) means the executable, every
+   * input and their directory chain are pinned (deny write/delete) and
+   * re-hashed through the handle before any Job or process exists, and the
+   * root's image path is checked before resume. Without a pinPort, REQUIRED
+   * refuses with zero native calls.
+   */
+  readonly launchPinning?: 'REQUIRED' | 'NOT_ENFORCED';
+  readonly pinPort?: FilePinPort;
 }
 
 export interface ObservedProcess extends NativeProcessIdentity {
@@ -95,6 +105,8 @@ export interface LifetimeResult {
   readonly events: readonly { readonly name: string; readonly atMs: number; readonly pid?: number }[];
   readonly handlesClosed: boolean;
   readonly quarantined: boolean;
+  /** H5: executable + inputs were held pinned from re-hash until after drain. */
+  readonly launchPinned: boolean;
 }
 
 interface Entry {
@@ -141,6 +153,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       outcome: 'LAUNCH_FAILED', identity, assignmentMode: null, orphanWindowExposed: false, resumed: false,
       drained: true, terminationProven: true, identityCoverageComplete: true, rootPid: null, processes: [],
       accounting: null, errors: [{ operation, nativeCode: null }], events, handlesClosed: true, quarantined,
+      launchPinned: false,
     });
 
     if (host.platform !== 'win32' || host.arch !== 'x64') return refuse('unsupported-host', null);
@@ -148,6 +161,8 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
     const identity = launch.identity;
     if (quarantined) return refuse('adapter-quarantined', identity);
     if (busy) return refuse('adapter-busy', identity);
+    const pinning = options.launchPinning ?? 'REQUIRED';
+    if (pinning === 'REQUIRED' && !options.pinPort) return refuse('launch-pinning-unavailable', identity);
     if (assignmentPolicy === 'ATOMIC_REQUIRED' && typeof port.createSuspendedInJob !== 'function') {
       return refuse('atomic-job-assignment-unavailable', identity);
     }
@@ -162,6 +177,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
     let mode: AssignmentMode | null = null;
     let resumed = false;
     let rootMembershipVerified = false;
+    let pins: LaunchPins | null = null;
     let drained = false;
     let coverage = false;
     let terminationProven = false;
@@ -260,6 +276,14 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
     const deadlineReached = (): boolean => options.clock() - start >= launch.timeoutMs;
 
     try {
+      if (pinning === 'REQUIRED' && options.pinPort) {
+        try {
+          pins = pinLaunch(launch, options.pinPort);
+        } catch (e) {
+          throw e instanceof LaunchPinRefused ? new Error(`launch-pin-${e.reason.split(':')[0] ?? 'refused'}`) : e;
+        }
+        record('launch-pinned');
+      }
       job = port.createJob();
       handles.push(job);
       record('job-created');
@@ -293,6 +317,11 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       if (!port.isInJob(job, root.process)) throw new Error('membership-unverified');
       rootMembershipVerified = true;
       record('membership-verified', root.pid);
+      if (pins) {
+        const rootIdentity = entries.find(e => e.role === 'ROOT')?.identity;
+        if (!rootIdentity || !samePinnedPath(rootIdentity.imagePath, pins.executableFinalPath)) throw new Error('image-path-mismatch');
+        record('image-path-verified', root.pid);
+      }
       beat();
       if (signal?.aborted || deadlineReached()) {
         outcome = signal?.aborted ? 'CANCELLED' : 'TIMEOUT';
@@ -337,6 +366,11 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
         try { port.close(h); } catch (e) { handlesClosed = false; fail(e); }
       }
       record('handles-close-attempted');
+      // Pins outlive the processes: released only after every handle (Job first) was closed.
+      if (pins) {
+        for (const err of pins.release()) fail(new Error(`pin-release:${err}`));
+        record('pins-released');
+      }
       if (!terminationProven || !handlesClosed) {
         outcome = 'STOP_UNPROVEN';
         quarantined = true;
@@ -349,7 +383,7 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
       outcome, identity, assignmentMode: mode, orphanWindowExposed: mode === 'LEGACY_ASSIGN', resumed, drained,
       terminationProven, identityCoverageComplete: coverage, rootPid: root?.pid ?? null,
       processes: entries.map(e => Object.freeze({ ...e.identity, role: e.role, exitCode: e.exitCode })),
-      accounting, errors, events, handlesClosed, quarantined,
+      accounting, errors, events, handlesClosed, quarantined, launchPinned: pins !== null,
     };
   }
 

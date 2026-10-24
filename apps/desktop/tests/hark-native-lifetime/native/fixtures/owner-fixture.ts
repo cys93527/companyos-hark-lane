@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createJobLifetimeAdapter } from '../../../../src/executor/native-lifetime/job-lifetime.js';
-import { createKoffiHandleTransfer, createKoffiJobPort } from '../../../../src/executor/native-lifetime/koffi-job-port.js';
+import { createKoffiFilePinPort, createKoffiHandleTransfer, createKoffiJobPort } from '../../../../src/executor/native-lifetime/koffi-job-port.js';
 import { createFileLeaseWriter } from '../../../../src/executor/native-lifetime/lease-file.js';
 import { verifyLaunch } from '../../../../src/executor/native-lifetime/launch-pins.js';
 import { armNativeWatchdog } from '../../../../src/executor/native-lifetime/watchdog-process.js';
@@ -21,6 +21,7 @@ if (!['crash', 'crash-wd', 'hang-wd', 'release-wd'].includes(mode) || !root || !
 const koffi = loadKoffi();
 const port = createKoffiJobPort(koffi);
 const transfer = createKoffiHandleTransfer(koffi);
+const pinPort = createKoffiFilePinPort(koffi);
 const exe = join(root, 'node.exe');
 const script = join(root, 'fixture.cjs');
 const temp = join(root, 'tmp');
@@ -47,6 +48,7 @@ const adapter = createJobLifetimeAdapter({
   sleep,
   pollMs: 20,
   stopWaitMs: 5_000,
+  pinPort,
   ...(lease ? { lease } : {}),
   ...(withWatchdog ? {
     onJobReady: (job: bigint) => {
