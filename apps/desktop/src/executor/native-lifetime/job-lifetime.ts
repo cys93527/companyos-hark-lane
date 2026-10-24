@@ -120,6 +120,8 @@ interface Entry {
 export interface JobLifetimeAdapter {
   run(launch: VerifiedLaunch, signal?: AbortSignal): Promise<LifetimeResult>;
   readonly quarantined: boolean;
+  /** H6: the pinning mode this adapter enforces (consumers refuse NOT_ENFORCED). */
+  readonly launchPinning: 'REQUIRED' | 'NOT_ENFORCED';
 }
 
 export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeAdapter {
@@ -390,5 +392,6 @@ export function createJobLifetimeAdapter(options: LifetimeOptions): JobLifetimeA
   return {
     run,
     get quarantined() { return quarantined; },
+    launchPinning: options.launchPinning ?? 'REQUIRED',
   };
 }
