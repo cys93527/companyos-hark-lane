@@ -27,6 +27,10 @@ Check 'app-alive-after-25s' $alive ("hasExited=" + $app.HasExited + $(if ($app.H
 $logs = Get-ChildItem (Join-Path $userData 'logs') -File -ErrorAction SilentlyContinue
 Check 'userdata-logs-written' ($logs.Count -gt 0) (($logs | ForEach-Object Name) -join ',')
 if ($logs) { $logs | ForEach-Object { Copy-Item $_.FullName (Join-Path $Evidence ("app-" + $_.Name)) } }
+$errLines = @($logs | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_ -match '"level":"(error|fatal)"' })
+Check 'no-error-log-lines' ($errLines.Count -eq 0) (($errLines | Select-Object -First 3) -join ' | ')
+$dbReady = @($logs | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_ -match 'database bootstrap failed' })
+Check 'database-bootstrapped' ($dbReady.Count -eq 0) "bootstrap-failures=$($dbReady.Count)"
 $data = Get-ChildItem (Join-Path $userData 'data') -Recurse -File -ErrorAction SilentlyContinue
 Check 'userdata-data-created' ($data.Count -gt 0) (($data | ForEach-Object Name) -join ',')
 $windows = Get-Process -Id $app.Id -ErrorAction SilentlyContinue | Select-Object -ExpandProperty MainWindowTitle
