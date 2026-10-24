@@ -1,3 +1,7 @@
+## 2026-10-25 Hark lane — H7 stdout/stderr capture
+- Commit 1a7219b. CI 40110944441: offline 117/117, native 25/25 (green on the first push). Pipes + HANDLE_LIST, bounded, EOF after drain; the contract gains structured-output only when capture is on.
+- Hark self-review PASS (H7 scope). Independent review NOT granted. Doc: docs/hark-lane/H7_OUTPUT_CAPTURE.md
+
 ## 2026-10-25 Hark lane — H6 Supervisor integration contract
 - Commit bc81549. CI 40110364994: offline 107/107, native 21/21. Not production-wired (guard test). One surviving mutant found and fixed (provider own latch).
 - Hark self-review PASS (H6 scope). Independent review NOT granted. Doc: docs/hark-lane/H6_SUPERVISOR_CONTRACT.md
