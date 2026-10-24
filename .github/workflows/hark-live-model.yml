@@ -1,0 +1,80 @@
+name: hark-live-model
+
+# Hark lane H9 (user approval 2026-10-25: run a tiny project on the cloud machine with
+# their DeepSeek key, minimal compute). MANUAL DISPATCH ONLY — never on push.
+# Reuses the already-tested installer artifact (no rebuild), installs it per-user,
+# makes exactly ONE capped model call (max 300 output tokens, 60 s) through the
+# installed app's own adapter on its bundled runtime, launches the app once with the
+# model configured, then uninstalls. Key comes only from the repo secret
+# COMPANYOS_MODEL_API_KEY; it is never echoed. No DSH, no release/tag, no ACL changes.
+on:
+  workflow_dispatch:
+    inputs:
+      installer_run_id:
+        description: hark-installer run whose installer artifact to test
+        default: '40112501131'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  live:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      COS_MODEL_PROVIDER_ID: model.deepseek
+      COS_MODEL_BASE_URL: https://api.deepseek.com
+      COS_MODEL_ID: deepseek-chat
+      COS_MODEL_TIMEOUT_MS: '60000'
+      COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer
+          path: hark-installer
+          run-id: ${{ inputs.installer_run_id }}
+          github-token: ${{ github.token }}
+      - name: Install (per-user, silent)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          if ([string]::IsNullOrWhiteSpace($env:COMPANYOS_MODEL_API_KEY)) { Write-Host 'secret COMPANYOS_MODEL_API_KEY is not set: no model call made'; exit 3 }
+          $setup = (Get-ChildItem hark-installer\*.exe | Select-Object -First 1).FullName
+          "$((Get-FileHash $setup -Algorithm SHA256).Hash)  $(Split-Path $setup -Leaf)" | Tee-Object hark-evidence/installer-sha256.txt
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\CompanyOS-HarkLive'
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$dir`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          "APPDIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Tiny project via the installed app's model adapter (1 call)
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          & "$env:APPDIR\CompanyOS.exe" scripts/hark/live-model-smoke.mjs "$env:APPDIR" "$env:GITHUB_WORKSPACE\hark-evidence"
+          exit $LASTEXITCODE
+      - name: Launch the app once with the model configured (startup only, no goal)
+        shell: pwsh
+        run: |
+          $app = Start-Process "$env:APPDIR\CompanyOS.exe" -PassThru
+          Start-Sleep -Seconds 20
+          $alive = -not $app.HasExited
+          $log = Join-Path $env:APPDATA 'CompanyOS\logs\desktop.log'
+          Copy-Item $log hark-evidence/app-desktop.log -ErrorAction SilentlyContinue
+          & taskkill.exe /PID $app.Id /T /F | Out-Null
+          $errs = @(Get-Content $log | Where-Object { $_ -match '"level":"(error|fatal)"' })
+          [ordered]@{ alive = $alive; errorLines = $errs.Count; modelRouterReady = [bool](Select-String -Path $log -Pattern 'model router ready' -Quiet) } | ConvertTo-Json | Tee-Object hark-evidence/app-launch.json
+          if (Select-String -Path hark-evidence/app-desktop.log -SimpleMatch $env:COMPANYOS_MODEL_API_KEY -Quiet) { Write-Host 'KEY LEAKED INTO LOG'; Remove-Item hark-evidence/app-desktop.log; exit 9 }
+          if (-not $alive -or $errs.Count -gt 0) { exit 1 }
+      - name: Uninstall
+        if: always()
+        shell: pwsh
+        run: |
+          $u = Join-Path $env:APPDIR 'unins000.exe'
+          if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hark-live-model-evidence
+          path: hark-evidence
