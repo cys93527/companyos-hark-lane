@@ -259,6 +259,7 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
 - 仓库治理：[../AGENTS.md](../AGENTS.md) · [../PRODUCT_PLAN.md](../PRODUCT_PLAN.md) ·
   [../PROJECT_HANDOFF.md](../PROJECT_HANDOFF.md) · [../README.md](../README.md)
 - 有界执行安全（Boss ADR-A/B/C，候选待独立审查）：[ADR-0032](./adr/0032-goal-execution-safety.md)
+- 可信预算证明绑定（桌面外层，候选待独立审查）：[ADR-0033](./adr/0033-trusted-budget-proof-binding.md)
 - Hark 独立开发线（离线候选，待独立审查，不是验收结论）：[hark-lane/TAKEOVER_REPORT.md](./hark-lane/TAKEOVER_REPORT.md) ·
   [hark-lane/3B3E_OFFLINE_RESULT.md](./hark-lane/3B3E_OFFLINE_RESULT.md) ·
   [hark-lane/H2_DEPS_REGRESSION.md](./hark-lane/H2_DEPS_REGRESSION.md) ·
@@ -272,4 +273,6 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
   [hark-lane/H11_BUDGET_UI.md](./hark-lane/H11_BUDGET_UI.md) ·
   [hark-lane/H12_RESTART_UNKNOWN.md](./hark-lane/H12_RESTART_UNKNOWN.md) ·
   [hark-lane/H12B_TYPED_CANCEL_TERMINAL.md](./hark-lane/H12B_TYPED_CANCEL_TERMINAL.md) ·
+  [hark-lane/H12C_HYGIENE_RECONCILIATION.md](./hark-lane/H12C_HYGIENE_RECONCILIATION.md) ·
+  [hark-lane/H13_UPGRADE_RETENTION.md](./hark-lane/H13_UPGRADE_RETENTION.md) ·
   [hark-lane/ROADMAP.md](./hark-lane/ROADMAP.md)

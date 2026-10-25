@@ -10,6 +10,8 @@
 #ifndef OutDir
   #define OutDir "out"
 #endif
+; H12c: Simplified Chinese wizard. The workflow passes /DZhCnMessages=<path> when the
+; runner's Inno Setup ships Languages\ChineseSimplified.isl (nothing is downloaded).
 
 [Setup]
 AppId={{6B0E7C4A-3D1F-4E8B-9A62-C0A5E1F7D2B9}
@@ -30,9 +32,24 @@ WizardStyle=modern
 UninstallDisplayIcon={app}\CompanyOS.exe
 UninstallDisplayName=CompanyOS
 CloseApplications=yes
+ShowLanguageDialog=no
+LanguageDetectionMethod=none
+
+[Languages]
+#ifdef ZhCnMessages
+Name: "chs"; MessagesFile: "{#ZhCnMessages}"
+#else
+Name: "en"; MessagesFile: "compiler:Default.isl"
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[InstallDelete]
+; H13: every install (upgrade, downgrade, reinstall) replaces the app payload WHOLE. Inno
+; never removes files a previous version shipped, so without this a downgrade would keep the
+; newer build's files (e.g. a newer migration) and mix two versions. userData is untouched.
+Type: filesandordirs; Name: "{app}\resources"
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

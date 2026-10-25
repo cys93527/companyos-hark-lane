@@ -75,10 +75,41 @@ jobs:
           $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { Write-Host 'ISCC not found on runner; NOT installing it (would be a new download needing approval).'; exit 3 }
           $ver = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
-          & $iscc "/DStageDir=$env:RUNNER_TEMP\companyos-stage\app" "/DAppVersion=$ver" "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer" installer\companyos.iss 2>&1 | Tee-Object hark-evidence/iscc.log
+          # H12c: Simplified Chinese wizard from the runner's own Inno languages (no download).
+          $langDir = Join-Path (Split-Path $iscc) 'Languages'
+          Get-ChildItem $langDir -Recurse -Filter *.isl -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($langDir.Length + 1) } | Out-File -Encoding utf8 hark-evidence/iscc-languages.txt
+          $zh = Get-ChildItem $langDir -Recurse -Filter 'ChineseSimplified.isl' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $isccArgs = @("/DStageDir=$env:RUNNER_TEMP\companyos-stage\app", "/DAppVersion=$ver", "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer")
+          if ($zh) { $isccArgs += "/DZhCnMessages=$($zh.FullName)" }
+          & $iscc @isccArgs installer\companyos.iss 2>&1 | Tee-Object hark-evidence/iscc.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem hark-installer\*.exe | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)  $($_.Length)" } | Tee-Object hark-evidence/installer-sha256.txt
-          [ordered]@{ iscc = $iscc; isccVersion = (Get-Item $iscc).VersionInfo.ProductVersion } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/iscc.json
+          [ordered]@{ iscc = $iscc; isccVersion = (Get-Item $iscc).VersionInfo.ProductVersion; isccFileVersion = (Get-Item $iscc).VersionInfo.FileVersion; wizardLanguage = $(if ($zh) { 'zh-CN (' + $zh.FullName + ')' } else { 'en (ChineseSimplified.isl not shipped by the runner Inno Setup)' }) } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/iscc.json
+
+      - name: Package probe-newer installer (H13 upgrade/downgrade CI only)
+        shell: pwsh
+        run: |
+          # A COPY of the same staged app, one patch version up, carrying ONE extra probe
+          # migration (scripts/hark/fixtures/h13-0010_h13_upgrade_probe.sql). Consumed only by
+          # the hark-upgrade workflow to prove upgrade retention + downgrade refusal.
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          $src = "$env:RUNNER_TEMP\companyos-stage\app"
+          $next = "$env:RUNNER_TEMP\companyos-stage-next\app"
+          New-Item -ItemType Directory -Force (Split-Path $next) | Out-Null
+          Copy-Item $src $next -Recurse -Force
+          Copy-Item scripts/hark/fixtures/h13-0010_h13_upgrade_probe.sql "$next\resources\app\node_modules\@companyos\persistence\migrations\engine\0010_h13_upgrade_probe.sql"
+          $ver = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          $parts = $ver.Split('.'); $nextVer = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          foreach ($pj in "$next\resources\app\package.json", "$next\resources\app\apps\desktop\package.json") {
+            $j = Get-Content $pj -Raw | ConvertFrom-Json; $j.version = $nextVer; $j | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8NoBOM $pj
+          }
+          $langDir = Join-Path (Split-Path $iscc) 'Languages'
+          $zh = Get-ChildItem $langDir -Recurse -Filter 'ChineseSimplified.isl' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $isccArgs = @("/DStageDir=$next", "/DAppVersion=$nextVer", "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer-next")
+          if ($zh) { $isccArgs += "/DZhCnMessages=$($zh.FullName)" }
+          & $iscc @isccArgs installer\companyos.iss 2>&1 | Out-File -Encoding utf8 hark-evidence/iscc-next.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem hark-installer-next\*.exe | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)  $($_.Length)  version=$nextVer" } | Tee-Object hark-evidence/installer-next-sha256.txt
 
       - name: Per-user install / launch / uninstall smoke
         shell: pwsh
@@ -100,4 +131,12 @@ jobs:
         with:
           name: hark-installer
           path: hark-installer
+          if-no-files-found: warn
+
+      - name: Upload probe-newer installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hark-installer-next
+          path: hark-installer-next
           if-no-files-found: warn

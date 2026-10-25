@@ -1,0 +1,60 @@
+name: hark-upgrade
+
+# Hark lane H13: upgrade / downgrade / uninstall data retention on the INSTALLED app.
+# Uses the two installers the push-triggered hark-installer run built for THIS commit:
+#   hark-installer      (vN, the product build)
+#   hark-installer-next (vN+1 = the same staged app + one CI-only probe migration)
+# then runs scripts/hark/upgrade-retention.ps1 against the real per-user userData.
+# No rebuild, no network beyond artifact download, no Provider/DSH, no secrets, no tag/release.
+on:
+  workflow_dispatch:
+    inputs:
+      installer_run_id:
+        description: hark-installer run whose two installer artifacts to use
+        required: true
+  workflow_run:
+    workflows: [hark-installer]
+    types: [completed]
+    branches: [hark-lane]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  upgrade:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      INSTALLER_RUN_ID: ${{ inputs.installer_run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer
+          path: hark-installer
+          run-id: ${{ env.INSTALLER_RUN_ID }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer-next
+          path: hark-installer-next
+          run-id: ${{ env.INSTALLER_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Upgrade / downgrade / uninstall retention
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          [ordered]@{ commit = (git rev-parse HEAD); installerRunId = $env:INSTALLER_RUN_ID; os = [Environment]::OSVersion.VersionString } | ConvertTo-Json | Tee-Object hark-evidence/host.json
+          $base = (Get-ChildItem hark-installer\*.exe | Select-Object -First 1).FullName
+          $next = (Get-ChildItem hark-installer-next\*.exe | Select-Object -First 1).FullName
+          foreach ($f in $base, $next) { "$((Get-FileHash $f -Algorithm SHA256).Hash)  $(Split-Path $f -Leaf)" | Tee-Object -Append hark-evidence/installers-sha256.txt }
+          ./scripts/hark/upgrade-retention.ps1 -Base $base -Next $next -Evidence "$env:GITHUB_WORKSPACE\hark-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hark-upgrade-evidence
+          path: hark-evidence
