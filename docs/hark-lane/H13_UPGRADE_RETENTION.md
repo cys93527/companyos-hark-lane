@@ -29,4 +29,4 @@ hark-upgrade 40212306477 @4a9ba6a failed one check, `p5-no-bootstrap-failure`. T
 2. Product: in the p3 downgrade launch the 0.1.0 app logged `database bootstrap failed … SCHEMA_FROM_NEWER_VERSION` six times: every renderer call re-entered the lazy workflow bootstrap and re-opened the newer database. The refusal is terminal for the process; `apps/desktop/src/database-bootstrap-policy.ts` (`isDatabaseBootstrapRetryable`) now stops the re-open (only `OPEN_FAILED` is retried). New CI check `p3-refusal-not-retried` (exactly one refusal line per launch); unit test `apps/desktop/tests/h13-database-bootstrap-policy.test.ts`.
 
 ## CI
-Run ids and results: PROJECT_HANDOFF.md (H13 section).
+First run hark-upgrade 40212306477 @4a9ba6a: 1 check red (above, fixed in eae6ed7). GREEN @4f31563: hark-upgrade 40218221052 — 34/34 checks (p1 base install, p2 upgrade 0.1.0 → 0.1.1 keeps every migration + owner row and applies the probe migration, p3 downgrade: typed refusal logged exactly once, data unchanged, no stale newer payload, p4 uninstall keeps %APPDATA%\CompanyOS data, p5 reinstall of 0.1.1 opens the retained database). Hark self-review PASS (not independent review).

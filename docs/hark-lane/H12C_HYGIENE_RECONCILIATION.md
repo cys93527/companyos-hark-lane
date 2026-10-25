@@ -28,4 +28,4 @@ Hark lane, self-review only (label: Hark self-review PASS when gates and CI are 
 - `docs/tests/docs-links.test.ts` stripped paths with a Windows-only `\\`, so on Linux every doc looked unreachable (189) and the one real gap was hidden. Now platform-independent; the real gap (ADR-0033 not linked from INDEX) is fixed.
 
 ## Gates / CI
-See PROJECT_HANDOFF.md (H12c section) for the gate numbers and CI run ids.
+CI GREEN @4f31563: hark-windows 40217749251, hark-installer 40217749262 (wizard zh-CN via in-repo isl, `Inno Setup: Language=chs`), hark-restart 40218221060 (4 phases, p1 = Stop-Process -Force, p4 operator reconciliation), hark-upgrade 40218221052. Gate numbers: PROJECT_HANDOFF.md (H12c+H13 section). Hark self-review PASS (not independent review).

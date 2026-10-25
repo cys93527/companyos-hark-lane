@@ -13,12 +13,12 @@ not independent review), NEXT, BLOCKED(<who must approve / provide>), NOT RUN.
 | 5 | Replaceable Provider, real model call | H9 | DONE (1 DeepSeek call, CI) |
 | 6 | Trusted price / budget proof / cost authorization | H10 | DONE layer: operator-attested proof source + cap (CNY 1) + live planning Goal (H10b) |
 | 7 | Goal/Plan/Run/Task/Attempt trusted state, real progress + cost visible to the boss | H11 | DONE read-only view (run.budget); was: renderer shows budget cap / reserved / settled / UNKNOWN; budget approval UI (renderer cannot grant trust: approval written by main-process operator action only) |
-| 8 | Persistence recovery: restart consistency, cancel terminal not overwritten, no auto-replay of UNKNOWN paid call | H12, H12b | DONE (self-review) on CI: hark-restart 40198306740 @c233140; H12b typed cancel terminal (FAILED/cancelled → CANCELLED projection, migration 0009, startup cancel convergence, fenced boss reads) — see H12B_TYPED_CANCEL_TERMINAL.md; NEXT H12c: UNKNOWN operator reconciliation, hard-kill harness, migration chain hygiene |
-| 9 | Installer upgrade / downgrade / data-retention policy | H13 | NEXT: CI install v0.1.0 → v0.1.1 → uninstall, userData retained per policy |
+| 8 | Persistence recovery: restart consistency, cancel terminal not overwritten, no auto-replay of UNKNOWN paid call | H12, H12b | DONE (self-review) on CI: hark-restart 40198306740 @c233140; H12b typed cancel terminal (FAILED/cancelled → CANCELLED projection, migration 0009, startup cancel convergence, fenced boss reads) — see H12B_TYPED_CANCEL_TERMINAL.md; H12c DONE (operator UNKNOWN reconciliation, real hard kill, migration hygiene + typed downgrade refusal) — hark-restart 40218221060 @4f31563 |
+| 9 | Installer upgrade / downgrade / data-retention policy | H13 | DONE (self-review) on CI: hark-upgrade 40218221052 @4f31563 (upgrade, downgrade refusal, uninstall retention, reinstall); zh-CN wizard |
 | 10 | Controlled real tools / DSH runtime, actual file Artifact/CAS/Validation/Handoff on a real goal | — | BLOCKED(user: approved DSH runtime source + licence; native.job production wiring approval) |
 | 11 | Windows file/network isolation (beyond Job Object) | — | BLOCKED(user: ACL/firewall/account changes approval) |
 | 12 | Ordinary-user desktop acceptance, same-device comparison with Codex lane | — | BLOCKED(user + independent reviewer) |
-| 13 | Ubuntu gate where applicable | H14 | NEXT: run full offline gate on ubuntu CI (no secrets) |
+| 13 | Ubuntu gate where applicable | H14 | IN PROGRESS: hark-ubuntu workflow + triaged env-only baseline |
 | 14 | tag / release | — | BLOCKED(user) |
 
 Rules carried by every stage: keep first failures, never add counts across runs,
