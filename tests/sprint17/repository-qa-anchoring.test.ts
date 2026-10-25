@@ -55,9 +55,9 @@ const ids = {
 const nowIso = (): string => new Date(Date.parse('2026-09-27T00:00:00.000Z') + ++seq * 1_000).toISOString();
 const clock = { now: (): number => Date.parse('2026-09-27T00:00:00.000Z') + seq * 1_000, nowIso };
 
-const OK_SCRIPT = `process.stdout.write('clean run' + String.fromCharCode(10));process.exit(0);`;
+const OK_SCRIPT = `process.stdout.write('clean run' + String.fromCharCode(10));process.exitCode = 0;`;
 /** A command that MUTATES the repository (writes an untracked file into the workspace). */
-const MUTATING_SCRIPT = `require('node:fs').writeFileSync(process.cwd() + '/MUTATED', 'written by the command');process.stdout.write('mutated' + String.fromCharCode(10));process.exit(0);`;
+const MUTATING_SCRIPT = `require('node:fs').writeFileSync(process.cwd() + '/MUTATED', 'written by the command');process.stdout.write('mutated' + String.fromCharCode(10));process.exitCode = 0;`;
 
 const specOf = (toolId: string) => {
   const spec = REPOSITORY_PROCESS_TOOL_SPECS.find((entry) => entry.toolId === toolId);

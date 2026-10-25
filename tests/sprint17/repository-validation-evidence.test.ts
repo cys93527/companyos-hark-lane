@@ -70,9 +70,9 @@ const ids = {
 const nowIso = (): string => new Date(Date.parse('2026-09-27T00:00:00.000Z') + ++seq * 1_000).toISOString();
 const clock = { now: (): number => Date.parse('2026-09-27T00:00:00.000Z') + seq * 1_000, nowIso };
 
-const QA_SCRIPT = `process.stdout.write('qa run' + String.fromCharCode(10));process.exit(0);`;
-const FAILING_QA_SCRIPT = `process.stdout.write('failing' + String.fromCharCode(10));process.stderr.write('nope' + String.fromCharCode(10));process.exit(7);`;
-const MUTATING_QA_SCRIPT = `require('node:fs').writeFileSync(process.cwd() + '/MUTATED', 'x');process.exit(0);`;
+const QA_SCRIPT = `process.stdout.write('qa run' + String.fromCharCode(10));process.exitCode = 0;`;
+const FAILING_QA_SCRIPT = `process.stdout.write('failing' + String.fromCharCode(10));process.stderr.write('nope' + String.fromCharCode(10));process.exitCode = 7;`;
+const MUTATING_QA_SCRIPT = `require('node:fs').writeFileSync(process.cwd() + '/MUTATED', 'x');process.exitCode = 0;`;
 
 interface Harness {
   readonly db: DurableDatabase;

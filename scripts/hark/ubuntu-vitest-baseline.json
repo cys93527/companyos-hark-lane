@@ -1,0 +1,18 @@
+{
+  "schema": "companyos/hark-ubuntu-vitest-baseline/1",
+  "rule": "Only ENVIRONMENT-BOUND failures may be listed, each with its reason. A real defect is fixed, never listed. Any failure not listed fails the gate; a listed entry that passes is reported so the list only shrinks.",
+  "entries": [
+    {
+      "id": "docs/tests/handoff.test.ts > PROJECT_HANDOFF.md > records the closed sprint state, closed mainlines and non-orchestrating Handoff boundary",
+      "reason": "Needs the git tag sprint-11.0.0, which does not exist in the hark-lane repository; creating tags is approval-blocked (no tag/release)."
+    },
+    {
+      "id": "tests/production/headless-guard-explicit-extension.test.ts > LIVE-SMOKE-FIX-08B — artifacts (materialized guard + patch template) > the staged headless shell guard script exists and installs both cmd functions",
+      "reason": "Reads .companyos-embedded/dsh-runtime/ (gitignored), materialized only from an installed DSH runtime; DSH runtime is approval-blocked (ROADMAP #10)."
+    },
+    {
+      "id": "tests/production/headless-guard-explicit-extension.test.ts > LIVE-SMOKE-FIX-08B — artifacts (materialized guard + patch template) > the patch template configures the EXISTING terminal-pwsh row (top level, not a duplicate insert)",
+      "reason": "Reads .companyos-embedded/dsh-runtime/profile-patch-template.yml (gitignored), materialized only from an installed DSH runtime; approval-blocked (ROADMAP #10)."
+    }
+  ]
+}

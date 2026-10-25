@@ -28,6 +28,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import {
   domainError,
@@ -36,6 +37,7 @@ import {
   type ArtifactContentStore,
   type DomainError,
   type Result,
+  type ToolCancelReason,
 } from '@companyos/core';
 
 import type { RepositoryCommandDescriptor } from './workspace.js';
@@ -215,14 +217,14 @@ export interface RepositoryProcessRunInput {
 export interface RepositoryProcessRunner {
   run(input: RepositoryProcessRunInput): Promise<Result<ProcessRunOutcome, DomainError>>;
   /** `ToolPort.cancel` seam: abort the in-flight process for one invocation id. */
-  cancel(invocationId: string): Promise<Result<true, DomainError>>;
+  cancel(invocationId: string, reason?: ToolCancelReason): Promise<Result<true, DomainError>>;
   /**
    * Abort and WAIT for the run to settle, returning its bounded outcome so a caller can
    * publish failure evidence for a run the registry itself terminated (its timeout path
    * discards the adapter's own error, so this is the only way the evidence survives).
    * `null` means nothing was in flight for that invocation.
    */
-  cancelAndAwait(invocationId: string): Promise<Result<ProcessRunOutcome | null, DomainError>>;
+  cancelAndAwait(invocationId: string, reason?: ToolCancelReason): Promise<Result<ProcessRunOutcome | null, DomainError>>;
   /** In-flight count (process-local; diagnostics only). */
   activeCount(): number;
 }
@@ -310,6 +312,54 @@ interface RunningProcess {
   readonly elapsedMs: () => number;
 }
 
+/**
+ * H14 — every live descendant of `rootPid` on Linux, read from /proc (parent links), so a
+ * tree stop also reaches a grandchild that left the child's process group (`setsid`, a
+ * `detached: true` spawn). Before H14 the POSIX stop signalled only the child's group and
+ * such a grandchild survived the cancel (found by the Ubuntu gate). Empty off Linux or
+ * when /proc is unreadable: the process-group signal is then the whole stop.
+ */
+export const linuxDescendantPids = (
+  rootPid: number,
+  proc: { readonly list: () => readonly string[]; readonly stat: (pid: string) => string } = {
+    list: () => readdirSync('/proc'),
+    stat: (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8'),
+  },
+): number[] => {
+  const children = new Map<number, number[]>();
+  let entries: readonly string[];
+  try {
+    entries = proc.list();
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    if (!/^[0-9]+$/u.test(entry)) continue;
+    let stat: string;
+    try {
+      stat = proc.stat(entry);
+    } catch {
+      continue; // exited between the listing and the read
+    }
+    // `pid (comm) state ppid …` — comm may contain spaces/parentheses: parse after the LAST ')'.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const ppid = Number(fields[1]);
+    if (!Number.isInteger(ppid)) continue;
+    const list = children.get(ppid) ?? [];
+    list.push(Number(entry));
+    children.set(ppid, list);
+  }
+  const out: number[] = [];
+  const queue = [...(children.get(rootPid) ?? [])];
+  while (queue.length > 0) {
+    const pid = queue.shift()!;
+    if (out.includes(pid)) continue;
+    out.push(pid);
+    queue.push(...(children.get(pid) ?? []));
+  }
+  return out;
+};
+
 export const createRepositoryProcessRunner = (deps: RepositoryProcessRunnerDeps): RepositoryProcessRunner => {
   const running = new Map<string, RunningProcess>();
 
@@ -342,10 +392,33 @@ export const createRepositoryProcessRunner = (deps: RepositoryProcessRunnerDeps)
         return;
       }
       if (child.pid !== undefined) {
+        const rootPid = child.pid;
+        if (process.platform === 'linux') {
+          // Freeze first (group + every descendant found, repeated until no new one appears),
+          // so nothing can fork past the walk; then kill everything that was frozen.
+          const frozen = new Set<number>();
+          const signal = (pid: number, sig: NodeJS.Signals): void => {
+            try {
+              process.kill(pid, sig);
+            } catch {
+              // already gone
+            }
+          };
+          signal(-rootPid, 'SIGSTOP');
+          for (let round = 0; round < 8; round += 1) {
+            const found = linuxDescendantPids(rootPid).filter((pid) => !frozen.has(pid));
+            if (found.length === 0) break;
+            for (const pid of found) {
+              frozen.add(pid);
+              signal(pid, 'SIGSTOP');
+            }
+          }
+          for (const pid of frozen) signal(pid, 'SIGKILL');
+        }
         try {
           // The child was spawned detached: it leads its own process group, so the whole
-          // tree dies from one signal instead of leaking grandchildren.
-          process.kill(-child.pid, 'SIGKILL');
+          // group dies from one signal.
+          process.kill(-rootPid, 'SIGKILL');
           return;
         } catch {
           // group already gone — fall through to the direct child
@@ -503,7 +576,7 @@ export const createRepositoryProcessRunner = (deps: RepositoryProcessRunnerDeps)
 
   return {
     run,
-    async cancel(invocationId: string): Promise<Result<true, DomainError>> {
+    async cancel(invocationId: string, reason?: ToolCancelReason): Promise<Result<true, DomainError>> {
       const located = await locate(invocationId);
       if (!located.ok) return err(located.error);
       const entry = located.value === null ? undefined : running.get(located.value);
@@ -511,10 +584,10 @@ export const createRepositoryProcessRunner = (deps: RepositoryProcessRunnerDeps)
         // Nothing in flight for that execution: an idempotent, honest "already finished".
         return ok(true);
       }
-      entry.terminate(cancellationReasonOf(entry));
+      entry.terminate(reason ?? cancellationReasonOf(entry));
       return ok(true);
     },
-    async cancelAndAwait(invocationId: string): Promise<Result<ProcessRunOutcome | null, DomainError>> {
+    async cancelAndAwait(invocationId: string, reason?: ToolCancelReason): Promise<Result<ProcessRunOutcome | null, DomainError>> {
       const located = await locate(invocationId);
       if (!located.ok) return err(located.error);
       const entry = located.value === null ? undefined : running.get(located.value);
@@ -522,7 +595,7 @@ export const createRepositoryProcessRunner = (deps: RepositoryProcessRunnerDeps)
         // Nothing in flight: the run finished (or never started) before the cancellation.
         return ok(null);
       }
-      entry.terminate(cancellationReasonOf(entry));
+      entry.terminate(reason ?? cancellationReasonOf(entry));
       // Wait for the run to be summarized: the outcome (with previews, digests and CAS
       // refs) is what a caller must publish as durable failure evidence.
       await entry.settled;
@@ -535,10 +608,13 @@ export const createRepositoryProcessRunner = (deps: RepositoryProcessRunnerDeps)
 };
 
 /**
- * A cancellation is a TIMEOUT when it lands on the run's own deadline: the ToolRegistry
- * only ever cancels a timed-out invocation, and the run knows the deadline it was given.
- * Anything earlier is an explicit cancellation. The classification is recorded, never
- * guessed afterwards.
+ * Fallback classification for a cancel that carries NO reason (a legacy caller): a TIMEOUT
+ * when it lands on the run's own deadline, otherwise an explicit cancellation.
+ *
+ * H14: the registry now SAYS 'TIMEOUT'. Inferring it from elapsed time was wrong: the
+ * registry's timer starts before the runner's `startedAt` (spawn happens after it), so a
+ * registry timeout always landed slightly BEFORE the runner's own deadline and was
+ * recorded as CANCELLED (and with an injected clock that does not advance, always).
  */
 const cancellationReasonOf = (entry: RunningProcess): ProcessTermination => {
   const deadlineMs = entry.deadlineMs;

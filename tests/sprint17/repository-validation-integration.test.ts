@@ -69,7 +69,7 @@ const ids = {
 const nowIso = (): string => new Date(Date.parse('2026-09-27T00:00:00.000Z') + ++seq * 1_000).toISOString();
 const clock = { now: (): number => Date.parse('2026-09-27T00:00:00.000Z') + seq * 1_000, nowIso };
 
-const QA_SCRIPT = `process.stdout.write('qa run' + String.fromCharCode(10));process.exit(0);`;
+const QA_SCRIPT = `process.stdout.write('qa run' + String.fromCharCode(10));process.exitCode = 0;`;
 
 interface Graph {
   readonly db: DurableDatabase;

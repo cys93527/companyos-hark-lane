@@ -25,6 +25,7 @@ import {
   type ArtifactContentStore,
   type DomainError,
   type Result,
+  type ToolCancelReason,
   type ToolDescriptor,
   type ToolPort,
   type ToolRecord,
@@ -559,8 +560,8 @@ export const createRepositoryProcessToolPort = (
     // the registry answers a timeout with its own verdict and discards the adapter's error,
     // so the bounded evidence is published and linked HERE, against the invocation id the
     // registry supplied (T17-04 corrective).
-    async cancel(invocationId: string): Promise<Result<true, DomainError>> {
-      const settled = await deps.runner.cancelAndAwait(invocationId);
+    async cancel(invocationId: string, reason?: ToolCancelReason): Promise<Result<true, DomainError>> {
+      const settled = await deps.runner.cancelAndAwait(invocationId, reason);
       if (!settled.ok) return err(settled.error);
       const outcome = settled.value;
       if (outcome === null || !isFailedRun(outcome)) return ok(true);

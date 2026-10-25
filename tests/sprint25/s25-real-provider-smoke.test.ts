@@ -12,7 +12,7 @@
  * the safety pipeline at freeze time. That historical proof remains valid.
  * Current live compatibility status is tested separately.
  */
-import { join } from 'node:path';
+import { win32 } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -22,12 +22,12 @@ import {
 } from '../../apps/desktop/src/executor/dsh-executor-provider.js';
 
 const DEFAULT_ROOT = 'E:\\DeepSeek.Harness\\DeepSeek Harness';
-const nodeExecutable = process.env['DSH_NODE'] ?? join(DEFAULT_ROOT, 'resources', 'node', 'node.exe');
-const runtimeDir = process.env['DSH_RUNTIME'] ?? join(DEFAULT_ROOT, 'resources', 'runtime');
+const nodeExecutable = process.env['DSH_NODE'] ?? win32.join(DEFAULT_ROOT, 'resources', 'node', 'node.exe');
+const runtimeDir = process.env['DSH_RUNTIME'] ?? win32.join(DEFAULT_ROOT, 'resources', 'runtime');
 
 describe('S25 dsh provider safety preconditions (deterministic)', () => {
   it('the typed configuration validates every field and records its source (never a silent empty path)', () => {
-    const config = resolveDshProviderConfig({ composition: { nodeExecutable, runtimeDir } });
+    const config = resolveDshProviderConfig({ composition: { nodeExecutable, runtimeDir }, platform: 'win32' });
     expect(config.ok).toBe(true);
     if (!config.ok) return;
     expect(config.value.providerKey).toBe(DSH_PROVIDER_KEY);
@@ -35,7 +35,7 @@ describe('S25 dsh provider safety preconditions (deterministic)', () => {
     expect(executable?.value).toBe(nodeExecutable);
     expect(executable?.source).toBe('composition');
     // A required field with no value at all fails the load instead of defaulting to ''.
-    const incomplete = resolveDshProviderConfig({ composition: { nodeExecutable } });
+    const incomplete = resolveDshProviderConfig({ composition: { nodeExecutable }, platform: 'win32' });
     expect(incomplete.ok).toBe(false);
     if (incomplete.ok) return;
     expect(String(incomplete.error.details['reason'])).toBe('EXECUTOR_CONFIG_REQUIRED_MISSING');

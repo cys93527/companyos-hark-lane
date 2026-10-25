@@ -48,7 +48,9 @@ export default defineConfig({
     // as their own named gate (pnpm test:kernel) instead of contending in the parallel suite.
     // Native Windows association/WSH cases keep their assertions in a separate
     // gate. They are NOT RUN, never counted as offline passes.
-    exclude: ['**/node_modules/**', '**/dist/**', 'tests/sprint18/child/**', 'tests/kernel/**', 'tests/windows-shell/**', 'tests/sandbox-lab/**', 'tests/security-process-boundary.test.ts'],
+    // H14: live external-provider suites run only under vitest.provider-live.config.ts
+    // (S26 taxonomy: never part of the deterministic suite).
+    exclude: ['**/node_modules/**', '**/dist/**', 'tests/sprint18/child/**', 'tests/kernel/**', 'tests/windows-shell/**', 'tests/sandbox-lab/**', 'tests/security-process-boundary.test.ts', 'tests/provider/**/*-live.test.ts'],
     environment: 'node',
     reporters: ['default'],
     coverage: {

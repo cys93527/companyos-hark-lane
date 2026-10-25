@@ -20,7 +20,7 @@
     "test:coverage": "vitest run --coverage",
     "test:scripts": "node --test \"scripts/tests/**/*.test.mjs\"",
     "test:architecture": "node scripts/check-architecture.mjs",
-    "test:provider:dsh:live": "vitest run tests/provider/dsh-live.test.ts",
+    "test:provider:dsh:live": "vitest run --config vitest.provider-live.config.ts",
     "test:kernel": "vitest run --config vitest.kernel.config.ts",
     "build": "pnpm run build:libs && pnpm run build:renderer && pnpm run build:desktop",
     "build:libs": "tsc -b tsconfig.build.json",

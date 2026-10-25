@@ -346,7 +346,7 @@ export function createToolRegistry(deps: ToolRegistryDeps): ToolRegistry {
         // A timeout is a verdict, not an abort: tell the adapter to stop if it can
         // (Closeout MEDIUM-3), and document that side-effecting tools must be idempotent.
         try {
-          await adapter.cancel?.(invocation.id);
+          await adapter.cancel?.(invocation.id, 'TIMEOUT');
         } catch {
           // best effort only: the failure of a cancel must not mask the timeout
         }

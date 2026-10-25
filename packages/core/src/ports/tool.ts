@@ -43,8 +43,16 @@ export interface ToolPort {
   describe(): ToolDescriptor & { readonly id?: string; readonly enabled?: boolean };
   invoke(request: ToolRequest): Promise<Result<ToolResult, DomainError>>;
   health?(): Promise<Result<ToolHealth, DomainError>>;
-  cancel?(invocationId: string): Promise<Result<true, DomainError>>;
+  /**
+   * `reason` (H14) is the CALLER's classification: the registry passes 'TIMEOUT' when it
+   * aborts a call that exceeded its timeout; an explicit abort passes 'CANCELLED' or
+   * nothing. Adapters record it as given and never re-derive it from elapsed time.
+   */
+  cancel?(invocationId: string, reason?: ToolCancelReason): Promise<Result<true, DomainError>>;
 }
+
+/** Why an in-flight tool call is being aborted (H14). */
+export type ToolCancelReason = 'TIMEOUT' | 'CANCELLED';
 
 export interface ToolRegistration {
   readonly toolId: string;

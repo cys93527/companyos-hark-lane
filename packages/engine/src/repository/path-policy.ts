@@ -17,7 +17,7 @@
  */
 import { domainError, err, ok, type DomainError, type Result } from '@companyos/core';
 import { lstatSync, realpathSync } from 'node:fs';
-import { isAbsolute, resolve, sep, win32 } from 'node:path';
+import { isAbsolute, posix, resolve, sep, win32 } from 'node:path';
 
 import type { RepositoryOperation, WorkspaceContext } from './workspace.js';
 
@@ -165,7 +165,9 @@ export const assertPathWithinCanonicalRoot = (input: {
   const root = fold(input.canonicalRoot);
   const candidate = fold(input.candidate);
   if (candidate === root) return ok(true);
-  const withSep = root.endsWith(sep) ? root : `${root}${sep}`;
+  // H14: the separator of the platform the decision is FOR (the injected one), not the host's.
+  const platformSep = platform === 'win32' ? win32.sep : posix.sep;
+  const withSep = root.endsWith(platformSep) ? root : `${root}${platformSep}`;
   if (candidate.startsWith(withSep)) return ok(true);
   return err(
     domainError('INVALID_ARGUMENT', 'The path is outside the trusted workspace root.', {
@@ -206,7 +208,7 @@ export const assertNoReparseEscape = (input: {
       );
     }
     if (fold(current) === fold(input.canonicalRoot)) return ok(true);
-    const parent = resolve(current, '..');
+    const parent = (platform === 'win32' ? win32 : posix).resolve(current, '..');
     if (parent === current) return ok(true);
     current = parent;
   }

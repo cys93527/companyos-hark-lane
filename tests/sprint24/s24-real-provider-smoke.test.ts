@@ -12,7 +12,7 @@
  * time. That historical proof remains valid. Current live compatibility status
  * is tested separately and does not affect deterministic product correctness.
  */
-import { join } from 'node:path';
+import { win32 } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -26,10 +26,11 @@ import {
 } from '../../apps/desktop/src/executor/dsh-executor-provider.js';
 
 const DEFAULT_ROOT = 'E:\\DeepSeek.Harness\\DeepSeek Harness';
-const nodeExecutable = process.env['DSH_NODE'] ?? join(DEFAULT_ROOT, 'resources', 'node', 'node.exe');
-const runtimeDir = process.env['DSH_RUNTIME'] ?? join(DEFAULT_ROOT, 'resources', 'runtime');
+const nodeExecutable = process.env['DSH_NODE'] ?? win32.join(DEFAULT_ROOT, 'resources', 'node', 'node.exe');
+const runtimeDir = process.env['DSH_RUNTIME'] ?? win32.join(DEFAULT_ROOT, 'resources', 'runtime');
 
-const typedConfig = resolveDshProviderConfig({ composition: { nodeExecutable, runtimeDir } });
+// H14: the DSH runtime's paths are Windows paths; their grammar is explicit, not the host's.
+const typedConfig = resolveDshProviderConfig({ composition: { nodeExecutable, runtimeDir }, platform: 'win32' });
 if (!typedConfig.ok) throw new Error(`the dsh configuration could not be resolved: ${typedConfig.error.message}`);
 const builtProvider = createDshProviderFromConfig(typedConfig.value);
 if (!builtProvider.ok) throw new Error(`the dsh provider could not be built: ${builtProvider.error.message}`);

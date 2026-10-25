@@ -106,6 +106,8 @@ export interface DshProviderConfigInput {
   readonly composition?: Readonly<Record<string, string | number | undefined>>;
   /** Environment to read named variables from; defaults to the host environment. */
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  /** Path grammar of the configured paths (H14); defaults to the host platform. */
+  readonly platform?: NodeJS.Platform;
 }
 
 /**
@@ -120,6 +122,7 @@ export const resolveDshProviderConfig = (input: DshProviderConfigInput = {}): Re
     envNames: DSH_CONFIG_ENV_NAMES,
     ...(input.composition === undefined ? {} : { composition: input.composition }),
     environment: input.environment ?? process.env,
+    ...(input.platform === undefined ? {} : { platform: input.platform }),
   });
 
 /** Read one effective value out of a resolved dsh configuration. */

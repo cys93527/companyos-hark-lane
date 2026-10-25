@@ -25,7 +25,7 @@
  */
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -45,13 +45,13 @@ import {
 import { scriptedAuthorization } from '../support/provider-safety-fixture.js';
 
 const DEFAULT_ROOT = 'E:\\DeepSeek.Harness\\DeepSeek Harness';
-const nodeExecutable = process.env['DSH_NODE'] ?? join(DEFAULT_ROOT, 'resources', 'node', 'node.exe');
-const runtimeDir = process.env['DSH_RUNTIME'] ?? join(DEFAULT_ROOT, 'resources', 'runtime');
+const nodeExecutable = process.env['DSH_NODE'] ?? win32.join(DEFAULT_ROOT, 'resources', 'node', 'node.exe');
+const runtimeDir = process.env['DSH_RUNTIME'] ?? win32.join(DEFAULT_ROOT, 'resources', 'runtime');
 const profileName = process.env['DSH_PROFILE'] ?? 'companyos-headless';
 const available = existsSync(nodeExecutable) && existsSync(join(runtimeDir, 'lib', 'bin.js'));
 const profileReady = available && existsSync(join(process.env['USERPROFILE'] ?? process.env['HOME'] ?? '.', '.dsh', 'profiles', profileName, 'package.json'));
 
-const typedConfig = resolveDshProviderConfig({ composition: { nodeExecutable, runtimeDir, profileName } });
+const typedConfig = resolveDshProviderConfig({ composition: { nodeExecutable, runtimeDir, profileName }, platform: 'win32' });
 if (!typedConfig.ok) throw new Error(`the dsh configuration could not be resolved: ${typedConfig.error.message}`);
 const builtProvider = createDshProviderFromConfig(typedConfig.value);
 if (!builtProvider.ok) throw new Error(`the dsh provider could not be built: ${builtProvider.error.message}`);

@@ -187,8 +187,10 @@ describe('S25 workspace — cwd containment by component boundary (§24-§25)', 
       stat: () => ({ isDirectory: () => true }),
       lstat: () => ({ isSymbolicLink: () => false }),
     };
-    // A case-sensitive filesystem must NOT accept a differently-cased root.
-    const posixMatch = assertExecutionCwdAllowed({ cwd: 'C:\\repo\\ws\\app', canonicalRoot: 'C:\\Repo\\Ws', ...posix });
+    // A case-sensitive filesystem must NOT accept a differently-cased root. (H14: POSIX
+    // paths for the POSIX seam — `C:\\…` is not an absolute path in POSIX grammar, which
+    // the cwd authority now evaluates for the injected platform instead of the host.)
+    const posixMatch = assertExecutionCwdAllowed({ cwd: '/repo/ws/app', canonicalRoot: '/Repo/Ws', ...posix });
     expect(posixMatch.ok).toBe(false);
     if (posixMatch.ok) return;
     expect(String(posixMatch.error.details['reason'])).toBe('REPOSITORY_PATH_OUTSIDE_ROOT');
@@ -217,5 +219,31 @@ describe('S25 workspace — the write boundary (§26)', () => {
     expect(outside.ok).toBe(false);
     if (outside.ok) return;
     expect(String(outside.error.details['reason'])).toBe('REPOSITORY_PATH_OUTSIDE_ROOT');
+  });
+});
+
+describe('H14 — path grammar follows the injected platform, not the host', () => {
+  const seams = (platform: NodeJS.Platform): WorkspaceFsSeams => ({
+    platform,
+    realpath: (p) => p,
+    stat: () => ({ isDirectory: () => true }),
+    lstat: () => ({ isSymbolicLink: () => false }),
+  });
+  it('a Windows root/cwd is absolute for win32 and refused as not-absolute for POSIX', () => {
+    expect(resolveTrustedWorkspaceRoot({ root: 'C:\\work\\project', ...seams('win32') }).ok).toBe(true);
+    const posixRoot = resolveTrustedWorkspaceRoot({ root: 'C:\\work\\project', ...seams('linux') });
+    expect(posixRoot.ok).toBe(false);
+    if (!posixRoot.ok) expect(String(posixRoot.error.details['reason'])).toBe('EXECUTION_WORKSPACE_ROOT_NOT_ABSOLUTE');
+  });
+  it('a POSIX root/cwd is absolute for POSIX and refused for win32 (no drive, no UNC)', () => {
+    expect(assertExecutionCwdAllowed({ cwd: '/srv/ws/app', canonicalRoot: '/srv/ws', ...seams('linux') }).ok).toBe(true);
+    const win = assertExecutionCwdAllowed({ cwd: 'srv/ws/app', canonicalRoot: 'C:\\srv\\ws', ...seams('win32') });
+    expect(win.ok).toBe(false);
+    if (!win.ok) expect(String(win.error.details['reason'])).toBe('EXECUTION_CWD_NOT_ABSOLUTE');
+  });
+  it('the component boundary uses the platform separator (C:\\work\\foo never accepts C:\\work\\foobar on any host)', () => {
+    expect(assertExecutionCwdAllowed({ cwd: 'C:\\work\\foo\\bar', canonicalRoot: 'C:\\work\\foo', ...seams('win32') }).ok).toBe(true);
+    expect(assertExecutionCwdAllowed({ cwd: 'C:\\work\\foobar', canonicalRoot: 'C:\\work\\foo', ...seams('win32') }).ok).toBe(false);
+    expect(assertExecutionCwdAllowed({ cwd: '/work/foobar', canonicalRoot: '/work/foo', ...seams('linux') }).ok).toBe(false);
   });
 });

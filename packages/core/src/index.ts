@@ -522,6 +522,7 @@ export type {
   ToolInvokeInput,
   ToolPage,
   ToolPort,
+  ToolCancelReason,
   ToolRecoveryReport,
   ToolRegistration,
   ToolRegistryPort,

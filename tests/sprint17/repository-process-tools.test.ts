@@ -67,8 +67,8 @@ const MIB = 1024 * 1024;
 
 /** Controlled helper scripts: `process.execPath` runs them, so no shell is involved. */
 const SCRIPTS: Readonly<Record<string, string>> = {
-  'ok.js': `process.stdout.write('hello stdout' + String.fromCharCode(10));process.stderr.write('hello stderr' + String.fromCharCode(10));process.exit(0);`,
-  'fail.js': `process.stdout.write('partial out' + String.fromCharCode(10));process.stderr.write('failure detail' + String.fromCharCode(10));process.exit(7);`,
+  'ok.js': `process.stdout.write('hello stdout' + String.fromCharCode(10));process.stderr.write('hello stderr' + String.fromCharCode(10));process.exitCode = 0;`,
+  'fail.js': `process.stdout.write('partial out' + String.fromCharCode(10));process.stderr.write('failure detail' + String.fromCharCode(10));process.exitCode = 7;`,
   'sleep.js': `setTimeout(() => {}, 120000);`,
   'child.js': `const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -76,14 +76,14 @@ const child = spawn(process.execPath, [__dirname + '/sleep.js'], { detached: tru
 child.unref();
 fs.writeFileSync(__dirname + '/grandchild.pid', String(child.pid));
 setTimeout(() => {}, 120000);`,
-  'noisy.js': `const chunk = Buffer.alloc(1024, 0x78);for (let i = 0; i < 200; i += 1) process.stdout.write(chunk);process.exit(0);`,
-  'stderr-noisy.js': `const chunk = Buffer.alloc(1024, 0x79);for (let i = 0; i < 200; i += 1) process.stderr.write(chunk);process.exit(0);`,
-  'flood.js': `const chunk = Buffer.alloc(${String(MIB)}, 0x7a);for (let i = 0; i < 40; i += 1) process.stdout.write(chunk);process.exit(0);`,
-  'flood-err.js': `const chunk = Buffer.alloc(${String(MIB)}, 0x7b);for (let i = 0; i < 40; i += 1) process.stderr.write(chunk);process.exit(0);`,
-  'binary.js': `process.stdout.write(Buffer.from([0xff, 0xfe, 0x00, 0x80, 0x81, 0x82]));process.exit(0);`,
-  'dump-env.js': `process.stdout.write(JSON.stringify(process.env));process.exit(0);`,
-  'dump-cwd.js': `process.stdout.write(process.cwd());process.exit(0);`,
-  'marker.js': `require('node:fs').writeFileSync(__dirname + '/spawned.marker', 'ran');process.exit(0);`,
+  'noisy.js': `const chunk = Buffer.alloc(1024, 0x78);for (let i = 0; i < 200; i += 1) process.stdout.write(chunk);process.exitCode = 0;`,
+  'stderr-noisy.js': `const chunk = Buffer.alloc(1024, 0x79);for (let i = 0; i < 200; i += 1) process.stderr.write(chunk);process.exitCode = 0;`,
+  'flood.js': `const chunk = Buffer.alloc(${String(MIB)}, 0x7a);for (let i = 0; i < 40; i += 1) process.stdout.write(chunk);process.exitCode = 0;`,
+  'flood-err.js': `const chunk = Buffer.alloc(${String(MIB)}, 0x7b);for (let i = 0; i < 40; i += 1) process.stderr.write(chunk);process.exitCode = 0;`,
+  'binary.js': `process.stdout.write(Buffer.from([0xff, 0xfe, 0x00, 0x80, 0x81, 0x82]));process.exitCode = 0;`,
+  'dump-env.js': `process.stdout.write(JSON.stringify(process.env));process.exitCode = 0;`,
+  'dump-cwd.js': `process.stdout.write(process.cwd());process.exitCode = 0;`,
+  'marker.js': `require('node:fs').writeFileSync(__dirname + '/spawned.marker', 'ran');process.exitCode = 0;`,
   'tagged-sleep.js': `require('node:fs').writeFileSync(__dirname + '/self.pid', String(process.pid));setTimeout(() => {}, 120000);`,
 };
 

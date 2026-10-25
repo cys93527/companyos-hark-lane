@@ -14,7 +14,7 @@ import {registerOfflineCommonJsFixture} from '../support/offline-fixtures.js';
  * caller memory, no CAS scan, no log or filename inference.
  */
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -70,14 +70,16 @@ const EVIDENCE_SCHEMA = 'companyos/repository-process-evidence/1';
 
 /** Controlled fixture scripts: `process.execPath` + a fixed script, never a shell. */
 const SCRIPTS: Readonly<Record<string, string>> = {
-  'ok.js': `process.stdout.write('clean run' + String.fromCharCode(10));process.exit(0);`,
-  'fail-a.js': `process.stdout.write('alpha stdout' + String.fromCharCode(10));process.stderr.write('alpha failing detail' + String.fromCharCode(10));process.exit(7);`,
-  'fail-b.js': `process.stdout.write('beta stdout' + String.fromCharCode(10));process.stderr.write('beta failing detail' + String.fromCharCode(10));process.exit(3);`,
+  'ok.js': `process.stdout.write('clean run' + String.fromCharCode(10));process.exitCode = 0;`,
+  'fail-a.js': `process.stdout.write('alpha stdout' + String.fromCharCode(10));process.stderr.write('alpha failing detail' + String.fromCharCode(10));process.exitCode = 7;`,
+  'fail-b.js': `process.stdout.write('beta stdout' + String.fromCharCode(10));process.stderr.write('beta failing detail' + String.fromCharCode(10));process.exitCode = 3;`,
   // 64 KiB on BOTH streams, then a non-zero exit: the full bytes exceed the inline preview.
-  'noisy-fail.js': `const a = Buffer.alloc(1024, 0x61);for (let i = 0; i < 64; i += 1) process.stdout.write(a);const b = Buffer.alloc(1024, 0x62);for (let i = 0; i < 64; i += 1) process.stderr.write(b);process.exit(5);`,
-  'noisy-sleep.js': `const a = Buffer.alloc(1024, 0x63);for (let i = 0; i < 32; i += 1) process.stdout.write(a);setTimeout(() => {}, 120000);`,
+  'noisy-fail.js': `const a = Buffer.alloc(1024, 0x61);for (let i = 0; i < 64; i += 1) process.stdout.write(a);const b = Buffer.alloc(1024, 0x62);for (let i = 0; i < 64; i += 1) process.stderr.write(b);process.exitCode = 5;`,
+  // H14: publishes a ready marker once its 32 KiB are written, so the test cancels AFTER the
+  // output exists instead of after a guessed 400 ms (child start-up time varies by host).
+  'noisy-sleep.js': `const a = Buffer.alloc(1024, 0x63);for (let i = 0; i < 32; i += 1) process.stdout.write(a);process.stdout.write('', () => require('node:fs').writeFileSync(__dirname + '/noisy.ready', 'ready'));setTimeout(() => {}, 120000);`,
   'sleep.js': `setTimeout(() => {}, 120000);`,
-  'flood.js': `const chunk = Buffer.alloc(${String(MIB)}, 0x7a);for (let i = 0; i < 40; i += 1) process.stdout.write(chunk);process.exit(0);`,
+  'flood.js': `const chunk = Buffer.alloc(${String(MIB)}, 0x7a);for (let i = 0; i < 40; i += 1) process.stdout.write(chunk);process.exitCode = 0;`,
 };
 
 interface Fixture {
@@ -462,7 +464,8 @@ describe('durable process failure evidence (T17-04 corrective)', () => {
     const f = await make();
     await f.openProfile({ tests: 'noisy-sleep.js' });
     const pending = f.invokeRaw('repo.test-runner', {});
-    await sleep(400);
+    for (let attempt = 0; attempt < 200 && !existsSync(join(f.scriptDir, 'noisy.ready')); attempt += 1) await sleep(50);
+    expect(existsSync(join(f.scriptDir, 'noisy.ready'))).toBe(true);
     // The adapter's cancel seam is what the registry's timeout path uses; here it is driven
     // directly so an explicit cancellation is observed.
     const invocation = (await f.db.toolInvocations.list({ limit: 10 })).items.find(

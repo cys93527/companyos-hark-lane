@@ -68,7 +68,7 @@ const clock = { now: (): number => Date.parse('2026-09-27T00:00:00.000Z') + seq 
 const QA_SCRIPT = `const chunk = Buffer.alloc(1024, 0x71);
 for (let i = 0; i < 64; i += 1) process.stdout.write(chunk);
 process.stderr.write('qa ok' + String.fromCharCode(10));
-process.exit(0);`;
+process.exitCode = 0;`;
 
 const record = (value: unknown): Record<string, unknown> => (value ?? {}) as Record<string, unknown>;
 const STAGE_ID = 'stg_e2e';
@@ -710,7 +710,7 @@ describe('production restart and negative chains (T17-08)', () => {
     // The same slot now fails (the trusted profile is reopened with a failing command).
     const scriptDir = tempDir();
     const { writeFileSync } = await import('node:fs');
-    writeFileSync(join(scriptDir, 'fail.js'), "process.stderr.write('nope');process.exit(7);", 'utf8');
+    writeFileSync(join(scriptDir, 'fail.js'), "process.stderr.write('nope');process.exitCode = 7;", 'utf8');
   registerOfflineCommonJsFixture(join(scriptDir, 'fail.js'));
     await e.runtime.closeWorkspace();
     const reopened = await e.runtime.openWorkspace({

@@ -120,7 +120,9 @@ describe('S24 recovery — the profile-based DSH invocation contract (determinis
 
   it('§16.2 profileName defaults to the CompanyOS-owned template-restored profile', () => {
     const typedConfig = resolveDshProviderConfig({
-      composition: { nodeExecutable: process.execPath, runtimeDir: 'E:\\fixture' },
+      // H14: both paths in the HOST grammar (process.execPath is a host path); a Windows-only
+      // literal here made this profile-default check pass on Windows hosts only.
+      composition: { nodeExecutable: process.execPath, runtimeDir: join(tmpdir(), 'dsh-profile-default') },
     });
     expect(typedConfig.ok).toBe(true);
     if (!typedConfig.ok) return;

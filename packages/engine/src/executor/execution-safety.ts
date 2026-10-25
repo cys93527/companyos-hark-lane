@@ -40,7 +40,7 @@ import {
   sha256Hex,
 } from '@companyos/core';
 import { lstatSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { posix, win32 } from 'node:path';
 
 import { assertPathWithinCanonicalRoot, assertNoReparseEscape } from '../repository/path-policy.js';
 
@@ -339,11 +339,18 @@ export interface ExecutorConfigInput {
   readonly defaults?: Readonly<Record<string, string | number | boolean | undefined>>;
   /** The environment variable name for each field (when the field may come from the environment). */
   readonly envNames?: Readonly<Record<string, string>>;
+  /**
+   * The platform the configured paths are FOR (H14). Defaults to the host. A provider
+   * that only runs on Windows (DSH) validates its `absolute-path` fields with the
+   * Windows grammar wherever the configuration is checked.
+   */
+  readonly platform?: NodeJS.Platform;
 }
 
 const validateFieldValue = (
   spec: ExecutorConfigFieldSpec<unknown>,
   value: string | number | boolean,
+  platform: NodeJS.Platform,
 ): Result<string | number | boolean, DomainError> => {
   switch (spec.kind) {
     case 'string':
@@ -352,7 +359,7 @@ const validateFieldValue = (
       }
       return ok(value);
     case 'absolute-path':
-      if (typeof value !== 'string' || !isAbsolutePath(value)) {
+      if (typeof value !== 'string' || !isAbsolutePath(value, platform)) {
         return err(domainError('VALIDATION_FAILED', `The configuration field "${spec.name}" must be an absolute path.`, { reason: 'EXECUTOR_CONFIG_PATH_NOT_ABSOLUTE', field: spec.name }));
       }
       return ok(value);
@@ -377,8 +384,16 @@ const validateFieldValue = (
   }
 };
 
-/** Local absolute-path test (Node's own `path.isAbsolute`, re-exported for clarity). */
-const isAbsolutePath = (value: string): boolean => isAbsolute(value);
+/**
+ * H14 — the path grammar of the platform the value is FOR, never silently the host's.
+ * Every seam here already takes a `platform` (default: the host); before H14 the
+ * absolute-path test and `resolve()` ignored it and used the host's grammar, so a
+ * `win32` decision evaluated on a POSIX host refused `C:\work` as "not absolute"
+ * (and a POSIX decision on Windows would accept `\\server` forms it must not).
+ */
+const pathApiFor = (platform: NodeJS.Platform): typeof win32 => (platform === 'win32' ? win32 : posix);
+const isAbsolutePath = (value: string, platform: NodeJS.Platform = process.platform): boolean =>
+  pathApiFor(platform).isAbsolute(value);
 
 /**
  * Resolve a typed, validated provider configuration with EXPLICIT precedence:
@@ -429,7 +444,7 @@ export const resolveExecutorConfig = (input: ExecutorConfigInput): Result<TypedE
       }
       continue;
     }
-    const validated = validateFieldValue(spec, value);
+    const validated = validateFieldValue(spec, value, input.platform ?? process.platform);
     if (!validated.ok) return validated;
     fields.push({ name: spec.name, value: validated.value, source });
   }
@@ -520,11 +535,12 @@ export const resolveTrustedWorkspaceRoot = (
 ): Result<{ readonly canonicalRoot: string }, DomainError> => {
   const realpath = input.realpath ?? defaultRealpath;
   const stat = input.stat ?? defaultStat;
+  const platform = input.platform ?? process.platform;
   const root = input.root;
   if (typeof root !== 'string' || root.trim() === '') {
     return err(domainError('INVALID_ARGUMENT', 'The workspace root must be a non-empty absolute path.', { reason: 'EXECUTION_WORKSPACE_ROOT_EMPTY' }));
   }
-  if (!isAbsolutePath(root)) {
+  if (!isAbsolutePath(root, platform)) {
     return err(domainError('INVALID_ARGUMENT', 'The workspace root must be an absolute path.', { reason: 'EXECUTION_WORKSPACE_ROOT_NOT_ABSOLUTE', suppliedLength: root.length }));
   }
   let canonicalRoot: string;
@@ -564,11 +580,11 @@ export const assertExecutionCwdAllowed = (
   if (typeof cwd !== 'string' || cwd.trim() === '') {
     return err(domainError('INVALID_ARGUMENT', 'No execution cwd was supplied; refusing to spawn in an arbitrary directory.', { reason: 'EXECUTION_CWD_MISSING' }));
   }
-  if (!isAbsolutePath(cwd)) {
+  if (!isAbsolutePath(cwd, platform)) {
     return err(domainError('INVALID_ARGUMENT', 'The execution cwd must be an absolute path.', { reason: 'EXECUTION_CWD_NOT_ABSOLUTE' }));
   }
 
-  const normalized = resolve(cwd);
+  const normalized = pathApiFor(platform).resolve(cwd);
   const containment = assertPathWithinCanonicalRoot({
     candidate: normalized,
     canonicalRoot: input.canonicalRoot,
@@ -619,7 +635,7 @@ export const assertWritePathWithinRoot = (
   const realpath = input.realpath ?? defaultRealpath;
   const lstat = input.lstat ?? defaultLstat;
   const platform = input.platform ?? process.platform;
-  const normalized = resolve(input.targetPath);
+  const normalized = pathApiFor(platform).resolve(input.targetPath);
   const containment = assertPathWithinCanonicalRoot({
     candidate: normalized,
     canonicalRoot: input.canonicalRoot,

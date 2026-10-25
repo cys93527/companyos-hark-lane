@@ -31,6 +31,9 @@ const BASE = {
   providerKey: 'dsh-headless',
   schema: SCHEMA,
   envNames: { executable: 'DSH_NODE', runtimeDir: 'DSH_RUNTIME', timeoutMs: 'DSH_TIMEOUT_MS' },
+  // H14: these are Windows paths; the platform they are FOR is explicit, so the law holds
+  // on any CI host (it used to pass only on Windows because the host grammar was implied).
+  platform: 'win32' as NodeJS.Platform,
 };
 
 const ENV = {
