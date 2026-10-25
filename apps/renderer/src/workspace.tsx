@@ -19,6 +19,7 @@
  * canonical reads directly.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isRunEnded, runStateLabel, runStateModifier, terminalOutcomeOf, type RunEndInput } from './run-outcome.js';
 
 /* ------------------------------------------------------------- the bridge --- */
 
@@ -88,6 +89,8 @@ export const GOAL_POLL_INTERVAL_MS = 4_000;
 export interface GoalSummary {
   readonly runId: string;
   readonly state: string;
+  /** H12b: typed terminal outcome from home.summary (absent on older payloads). */
+  readonly terminalOutcome?: string | null;
   readonly objective: string | null;
   readonly createdAt?: string;
 }
@@ -95,7 +98,9 @@ export interface GoalSummary {
 export interface WorkspaceView {
   readonly runId: string;
   readonly goal: { readonly objective: string } | null;
-  readonly planningRun: { readonly state: string; readonly revision: number };
+  readonly planningRun: { readonly state: string; readonly revision: number; readonly terminalOutcome?: string | null };
+  /** H12b: a durable Goal cancellation intent exists (visible before the runs settle). */
+  readonly cancellationRequested?: boolean;
   readonly overview: unknown;
   readonly blockers: readonly unknown[];
   readonly executionRuns: readonly { readonly runId: string; readonly state: string }[];
@@ -119,6 +124,7 @@ export interface RunOverviewView {
   readonly runId?: string;
   readonly state?: string;
   readonly failureReason?: string | null;
+  readonly terminalOutcome?: string | null;
   readonly taskSummary?: { readonly total?: number; readonly done?: number };
   readonly currentPhase?: string;
   readonly provider?: unknown;
@@ -295,8 +301,14 @@ const usePolling = (enabled: boolean, refresh: () => void): void => {
   }, [enabled]);
 };
 
-const isTerminalGoalState = (state: string): boolean =>
-  state === 'COMPLETED' || state === 'FAILED' || state === 'CANCELLED';
+/** H12b: the canonical end of a run record (state + failureReason + typed outcome). */
+const runEndOf = (record: Record<string, unknown> | null, fallbackState: string): RunEndInput => ({
+  state: typeof record?.['state'] === 'string' ? record['state'] : fallbackState,
+  failureReason: typeof record?.['failureReason'] === 'string' ? record['failureReason'] : null,
+  ...(record !== null && 'terminalOutcome' in record
+    ? { terminalOutcome: typeof record['terminalOutcome'] === 'string' ? record['terminalOutcome'] : null }
+    : {}),
+});
 
 /** Deterministic newest-first ordering over the canonical projection. */
 export const sortGoalsNewestFirst = (goals: readonly GoalSummary[]): readonly GoalSummary[] =>
@@ -331,7 +343,7 @@ export function GoalListView({
             <li key={goal.runId}>
               <button className="goal-list__open" onClick={() => onOpen(goal.runId)}>
                 <span className="goal-list__objective">{goal.objective ?? '(未命名目标)'}</span>
-                <span className={`goal-list__state goal-list__state--${goal.state.toLowerCase()}`}>{goal.state}</span>
+                <span className={`goal-list__state goal-list__state--${runStateModifier(goal)}`} title={goal.state}>{runStateLabel(goal)}</span>
                 <span className="goal-list__meta">
                   <span className="goal-list__runid">{goal.runId.slice(0, 14)}</span>
                   {goal.createdAt !== undefined ? new Date(goal.createdAt).toLocaleString() : ''}
@@ -380,7 +392,7 @@ export function GoalList({
   }, [bridge, refreshKey, localKey, setFailure]);
 
   // bounded poll only while a goal may still be moving (non-terminal present)
-  const hasLive = goals !== null && goals.some((goal) => !isTerminalGoalState(goal.state));
+  const hasLive = goals !== null && goals.some((goal) => !isRunEnded(goal));
   usePolling(hasLive, () => {
     setLocalKey((key) => key + 1);
     onRefreshTick?.();
@@ -406,6 +418,7 @@ export function GoalWorkspaceView({
   onAdvance,
   advancing,
   onBack,
+  cancellationRequested,
 }: {
   readonly goalObjective: string | null;
   readonly planningRunState: string;
@@ -417,15 +430,18 @@ export function GoalWorkspaceView({
   readonly onAdvance?: () => void;
   readonly advancing?: boolean;
   readonly onBack?: () => void;
+  readonly cancellationRequested?: boolean;
 }) {
   const overviewRecord = asRecord(overview);
   const runState = String(overviewRecord?.['state'] ?? planningRunState ?? '');
-  const terminal = isTerminalGoalState(runState);
+  const runEnd = runEndOf(overviewRecord, runState);
+  const outcome = terminalOutcomeOf(runEnd);
+  const terminal = outcome !== null;
   const overviewView = (overview ?? null) as RunOverviewView | null;
   const progress = overviewView?.progress;
   const attempts = overviewView?.attempts;
   const validation = overviewView?.validation;
-  const failed = runState === 'FAILED' || validation?.failed === true;
+  const failed = outcome === 'FAILED' || outcome === 'TIMED_OUT' || validation?.failed === true;
 
   return (
     <section className="card" aria-label="goal-workspace">
@@ -434,13 +450,19 @@ export function GoalWorkspaceView({
       <dl className="kv">
         <dt>状态</dt>
         <dd>
-          <span className={`goal-list__state goal-list__state--${runState.toLowerCase()}`}>{runState}</span>
+          <span className={`goal-list__state goal-list__state--${runStateModifier(runEnd)}`} title={`${runEnd.state ?? ''}${runEnd.failureReason ? ` · ${runEnd.failureReason}` : ''}`}>{runStateLabel(runEnd)}</span>
         </dd>
+        {cancellationRequested === true && !terminal ? (
+          <>
+            <dt>取消</dt>
+            <dd>已请求取消，不再启动新的工作；正在收尾。</dd>
+          </>
+        ) : null}
         <dt>规划 Run</dt>
         <dd>
           {planningRunId} · {planningRunState}
         </dd>
-        {overviewView?.failureReason !== undefined && overviewView.failureReason !== null ? (
+        {outcome !== 'CANCELLED' && overviewView?.failureReason !== undefined && overviewView.failureReason !== null ? (
           <>
             <dt>失败原因</dt>
             <dd className="typed-error__message">{overviewView.failureReason}</dd>
@@ -463,7 +485,7 @@ export function GoalWorkspaceView({
 
       {failed ? (
         <div className="goal-failure" role="alert">
-          <p>该目标已失败。失败原因如上，历史不会自动重跑。</p>
+          <p>{outcome === 'TIMED_OUT' ? '该目标已超时。' : '该目标已失败。'}失败原因如上，历史不会自动重跑。</p>
         </div>
       ) : null}
 
@@ -550,7 +572,7 @@ export function GoalWorkspace({ bridge, runId, onBack }: { readonly bridge: Cont
 
   const overviewRecord = asRecord(workspace?.overview);
   const runState = String(overviewRecord?.['state'] ?? workspace?.planningRun.state ?? '');
-  const terminal = isTerminalGoalState(runState);
+  const terminal = isRunEnded(runEndOf(overviewRecord, runState));
 
   // Outcome/artifact references: canonical refs only (run.artifacts), read when terminal.
   useEffect(() => {
@@ -612,6 +634,7 @@ export function GoalWorkspace({ bridge, runId, onBack }: { readonly bridge: Cont
       onAdvance={advance}
       advancing={advancing}
       onBack={onBack}
+      cancellationRequested={workspace.cancellationRequested === true}
     />
   );
 }

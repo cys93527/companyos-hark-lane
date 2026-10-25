@@ -50,6 +50,7 @@ describe('K. migration checksum protection', () => {
       '0006_provider_dispatch_routing_decision',
       '0007_execution_attempt_failure',
       '0008_goal_execution_budget',
+      '0009_run_failure_reason_typed',
     ]);
     expect(migrations[0]?.checksum).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -68,9 +69,10 @@ describe('K. migration checksum protection', () => {
         '0006_provider_dispatch_routing_decision',
         '0007_execution_attempt_failure',
         '0008_goal_execution_budget',
+        '0009_run_failure_reason_typed',
       ]);
       expect(first.migrations.core.currentVersion).toBe(1);
-      expect(first.migrations.engine.currentVersion).toBe(8);
+      expect(first.migrations.engine.currentVersion).toBe(9);
 
       // Every durable object exists.
       for (const table of ['runs', 'tasks', 'approvals', 'events', 'command_ledger', 'schema_migrations']) {
@@ -98,6 +100,7 @@ describe('K. migration checksum protection', () => {
         '0006_provider_dispatch_routing_decision',
         '0007_execution_attempt_failure',
         '0008_goal_execution_budget',
+        '0009_run_failure_reason_typed',
       ]);
     } finally {
       second.close();
@@ -156,6 +159,7 @@ describe('K. migration checksum protection', () => {
         '0006_provider_dispatch_routing_decision',
         '0007_execution_attempt_failure',
         '0008_goal_execution_budget',
+        '0009_run_failure_reason_typed',
       ]);
     } finally {
       database.close();

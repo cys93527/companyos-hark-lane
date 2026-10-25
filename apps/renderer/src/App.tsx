@@ -87,11 +87,11 @@ import { loadGoalBudget } from './budget.js';
 import type { ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
+import { isRunEnded } from './run-outcome.js';
 
 /** Bounded, read-only, lifecycle-bound polling — never workflow authority. */
 const GOAL_POLL_INTERVAL_MS = 4_000;
 const COMPANY_ID = 'company_default';
-const TERMINAL_RUN_STATES = ['COMPLETED', 'FAILED', 'CANCELLED'] as const;
 
 interface BridgeEnvelope<T> {
   readonly ok: boolean;
@@ -376,7 +376,7 @@ export function App() {
     const response = (await controlPlane.controlPlaneRequest({
       operation: 'home.summary',
       payload: { companyId: COMPANY_ID },
-    })) as BridgeEnvelope<{ readonly goals: readonly { runId: string; state: string; objective: string | null }[] }>;
+    })) as BridgeEnvelope<{ readonly goals: readonly { runId: string; state: string; terminalOutcome?: string | null; objective: string | null }[] }>;
     if (response.ok && response.value !== undefined) setRecent(response.value.goals);
   }, [controlPlane]);
 
@@ -433,7 +433,7 @@ export function App() {
     const goalRunId = openGoalRunId;
     const observed = currentWorkspace.current;
     if (observed?.runId === goalRunId && observed.overview !== null &&
-        TERMINAL_RUN_STATES.includes(observed.overview.state as never)) return;
+        isRunEnded(observed.overview)) return;
     // Bounded: one read in flight per Goal; repeated ticks are coalesced.
     if (runtimeReadInFlight.current !== null && runtimeReadInFlight.current.goalRunId === goalRunId) return;
     const epoch = (runtimeReadEpoch.current += 1);
@@ -494,7 +494,7 @@ export function App() {
 
   const hasLiveRun =
     openGoalRunId !== null &&
-    (runtimeWorkspace?.overview == null || !TERMINAL_RUN_STATES.includes(runtimeWorkspace.overview.state as never));
+    (runtimeWorkspace?.overview == null || !isRunEnded(runtimeWorkspace.overview));
   useEffect(() => {
     if (!hasLiveRun) return;
     const timer = window.setInterval(() => setRefreshKey((key) => key + 1), GOAL_POLL_INTERVAL_MS);

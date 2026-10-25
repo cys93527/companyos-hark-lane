@@ -84,7 +84,10 @@ try {
     chains: ['core', 'engine', 'lifecycle', 'provider', 'registry', 'selection', 'agent', 'tools', 'artifact', 'pack', 'memory', 'session', 'handoff'] });
   const q = (sql, ...a) => db.db.prepare(sql).all(...a);
   // Core run-state: CANCEL -> FAILED (reason cancelled; no separate CANCELLED run state).
-  const runTerm = (runId) => { const r = q('SELECT state, history_json AS h FROM runs WHERE id = ?', runId)[0]; const h = JSON.parse(r?.h ?? '[]'); return { runState: r?.state ?? null, lastEvent: h.at(-1)?.event ?? null, history: r?.h ?? null }; };
+  // H12b: the cancel terminal is TYPED — failure_reason 'cancelled' (storage-enforced, migration 0009).
+  const runTerm = (runId) => { const r = q('SELECT state, failure_reason AS fr, history_json AS h FROM runs WHERE id = ?', runId)[0]; const h = JSON.parse(r?.h ?? '[]'); return { runState: r?.state ?? null, failureReason: r?.fr ?? null, lastEvent: h.at(-1)?.event ?? null, history: r?.h ?? null }; };
+  // H12b: the boss-facing typed outcome, read through the (fenced) control plane.
+  const outcomeOf = async (runId) => { const w = await core.controlPlane.handle({ operation: 'goal.workspace', payload: { companyId: COMPANY, runId } }); return w.ok ? w.value.overview?.terminalOutcome ?? null : `ERROR:${w.error.code}`; };
   const budgetRow = (runId) => { const r = q('SELECT execution_budget_json AS b FROM runs WHERE id = ?', runId)[0]; return r?.b == null ? null : JSON.parse(r.b); };
 
   // Snapshot BEFORE composition (composition runs recovery) — proves what recovery changed.
@@ -138,6 +141,8 @@ try {
     const goalB = { runId: runB, ...runTerm(runB), cancellation: budgetRow(runB)?.cancellation ?? null };
     out.goalB = { ...goalB, cancel: cancelB.ok ? cancelB.value : { error: cancelB.error } };
     check('P1-goalB-cancelled-terminal', cancelB.ok && goalB.runState === 'FAILED' && goalB.lastEvent === 'CANCEL' && goalB.cancellation !== null, out.goalB);
+    out.goalB.terminalOutcome = await outcomeOf(runB);
+    check('P1-goalB-typed-CANCELLED', goalB.failureReason === 'cancelled' && out.goalB.terminalOutcome === 'CANCELLED', { failureReason: goalB.failureReason, terminalOutcome: out.goalB.terminalOutcome });
     // Start the driver and do NOT await it: the planning turn's call never returns.
     let driverSettled = null;
     core.autonomyDriver.run({ companyId: COMPANY, runId }).then((r) => { driverSettled = r.ok ? { terminal: r.value.terminal, terminalReason: r.value.terminalReason } : { error: reasonOf(r.error) }; }, (e) => { driverSettled = { threw: String(e?.message ?? e) }; });
@@ -204,6 +209,8 @@ try {
       driver: drvB === 'WATCHDOG' ? 'WATCHDOG' : drvB.ok ? { terminal: drvB.value.terminal, terminalReason: drvB.value.terminalReason } : { error: reasonOf(drvB.error) } };
     check(`${phase.toUpperCase()}-goalB-cancelled-terminal-not-overwritten`, b.runState === 'FAILED' && b.lastEvent === 'CANCEL' && before?.history === b.history && nowB.history === b.history && nowB.runState === 'FAILED' && JSON.stringify(nowB.cancellation) === JSON.stringify(b.cancellation), out.goalB);
     check(`${phase.toUpperCase()}-goalB-advance-refused`, !advB.ok, out.goalB.advance);
+    out.goalB.terminalOutcome = await outcomeOf(b.runId);
+    check(`${phase.toUpperCase()}-goalB-typed-CANCELLED-after-restart`, nowB.failureReason === 'cancelled' && out.goalB.terminalOutcome === 'CANCELLED', { failureReason: nowB.failureReason, terminalOutcome: out.goalB.terminalOutcome });
     check(`${phase.toUpperCase()}-goalB-provider-calls-0`, calls === 0, { calls });
   }
 

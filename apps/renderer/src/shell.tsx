@@ -9,6 +9,7 @@
  * subscription-usage card anywhere in this shell.
  */
 import { createElement as h, type JSX } from 'react';
+import { runStateLabel } from './run-outcome.js';
 
 export type ShellView = 'home' | 'chat' | 'knowledge' | 'tools' | 'agents' | 'settings';
 
@@ -30,6 +31,8 @@ export interface RecentGoalRow {
   readonly runId: string;
   readonly objective: string | null;
   readonly state: string;
+  /** H12b: typed terminal outcome (absent on older payloads). */
+  readonly terminalOutcome?: string | null;
 }
 
 export interface SidebarViewProps {
@@ -97,7 +100,7 @@ export function SidebarView(props: SidebarViewProps): JSX.Element {
                     onClick: () => props.onOpenGoal(goal.runId),
                   },
                   h('span', { className: 'sidebar__goal-text' }, goal.objective ?? '(未命名目标)'),
-                  h('span', { className: 'sidebar__goal-state' }, goal.state),
+                  h('span', { className: 'sidebar__goal-state' }, runStateLabel(goal)),
                 ),
               ),
             ),

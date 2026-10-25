@@ -262,4 +262,14 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
 - Hark 独立开发线（离线候选，待独立审查，不是验收结论）：[hark-lane/TAKEOVER_REPORT.md](./hark-lane/TAKEOVER_REPORT.md) ·
   [hark-lane/3B3E_OFFLINE_RESULT.md](./hark-lane/3B3E_OFFLINE_RESULT.md) ·
   [hark-lane/H2_DEPS_REGRESSION.md](./hark-lane/H2_DEPS_REGRESSION.md) ·
-  [hark-lane/H3_WINDOWS_CI_NATIVE.md](./hark-lane/H3_WINDOWS_CI_NATIVE.md)
+  [hark-lane/H3_WINDOWS_CI_NATIVE.md](./hark-lane/H3_WINDOWS_CI_NATIVE.md) ·
+  [hark-lane/H4_NATIVE_LIFETIME.md](./hark-lane/H4_NATIVE_LIFETIME.md) ·
+  [hark-lane/H5_HANDLE_PINNED_LAUNCH.md](./hark-lane/H5_HANDLE_PINNED_LAUNCH.md) ·
+  [hark-lane/H6_SUPERVISOR_CONTRACT.md](./hark-lane/H6_SUPERVISOR_CONTRACT.md) ·
+  [hark-lane/H7_OUTPUT_CAPTURE.md](./hark-lane/H7_OUTPUT_CAPTURE.md) ·
+  [hark-lane/H8_WINDOWS_INSTALLER.md](./hark-lane/H8_WINDOWS_INSTALLER.md) ·
+  [hark-lane/H10_TRUSTED_BUDGET.md](./hark-lane/H10_TRUSTED_BUDGET.md) ·
+  [hark-lane/H11_BUDGET_UI.md](./hark-lane/H11_BUDGET_UI.md) ·
+  [hark-lane/H12_RESTART_UNKNOWN.md](./hark-lane/H12_RESTART_UNKNOWN.md) ·
+  [hark-lane/H12B_TYPED_CANCEL_TERMINAL.md](./hark-lane/H12B_TYPED_CANCEL_TERMINAL.md) ·
+  [hark-lane/ROADMAP.md](./hark-lane/ROADMAP.md)

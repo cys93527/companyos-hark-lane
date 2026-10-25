@@ -13,6 +13,7 @@ import { createElement as h, type JSX } from 'react';
 
 import { projectRuntimePhase, type RuntimePhase, type CanonicalTimelineEntry, type CanonicalGoalWorkspace } from './runtime-panel.js';
 import { PHASE_LABELS } from './runtime-panel.js';
+import { terminalOutcomeOf } from './run-outcome.js';
 
 export type ChatEntry =
   | { readonly kind: 'user'; readonly text: string }
@@ -22,7 +23,8 @@ export type ChatEntry =
   | { readonly kind: 'validation'; readonly completed: number; readonly failed: boolean; readonly missing: number }
   | { readonly kind: 'artifacts'; readonly artifacts: readonly { readonly artifactId: string; readonly kind: string }[] }
   | { readonly kind: 'outcome'; readonly delivered: boolean }
-  | { readonly kind: 'failed'; readonly reason: string | null; readonly blockerCodes: readonly string[] };
+  | { readonly kind: 'failed'; readonly reason: string | null; readonly blockerCodes: readonly string[] }
+  | { readonly kind: 'cancelled' };
 
 /**
  * Project the canonical state of ONE goal run into the conversation surface.
@@ -38,10 +40,15 @@ export const projectConversation = (
   const phase = projectRuntimePhase({
     runState: workspace.overview?.state ?? null,
     blockers: workspace.blockers,
+    failureReason: workspace.overview?.failureReason ?? null,
+    ...(workspace.overview?.terminalOutcome === undefined ? {} : { terminalOutcome: workspace.overview.terminalOutcome }),
   });
   entries.push({ kind: 'phase', phase, runState: workspace.overview?.state ?? 'UNKNOWN' });
 
-  const failed = workspace.overview !== null && ['FAILED', 'CANCELLED'].includes(workspace.overview.state);
+  // H12b: a cancelled Goal is its own typed ending, never "目标失败".
+  const outcome = terminalOutcomeOf(workspace.overview);
+  if (outcome === 'CANCELLED') entries.push({ kind: 'cancelled' });
+  const failed = outcome === 'FAILED' || outcome === 'TIMED_OUT';
   if (failed) {
     entries.push({
       kind: 'failed',
@@ -131,6 +138,8 @@ export function ChatView(props: ChatViewProps): JSX.Element {
             { key: `o${index}`, className: entry.delivered ? 'chat__row chat__row--outcome' : 'chat__row' },
             entry.delivered ? '结果 · 已交付' : '结果 · 未交付',
           );
+        case 'cancelled':
+          return h('div', { key: `c${index}`, className: 'chat__row chat__row--cancelled' }, '目标已取消 · 不再启动新的工作或模型调用');
         case 'failed':
           return h(
             'div',

@@ -73,6 +73,13 @@ const compose = async (first: boolean) => {
   return { core, budget, run, view };
 };
 
+const db0 = (core: { database: { db: { prepare(sql: string): { get(...p: unknown[]): unknown } } } }) => core.database.db;
+const outcomeOf = async (core: { controlPlane: unknown }, runId: string): Promise<string | null> => {
+  const read = await (core.controlPlane as { handle(r: unknown): Promise<{ ok: boolean; value?: unknown }> }).handle({ operation: 'goal.workspace', payload: { companyId: COMPANY, runId } });
+  if (!read.ok) throw new Error('goal.workspace failed');
+  return (read.value as { overview: { terminalOutcome: string | null } }).overview.terminalOutcome;
+};
+
 describe('H12 restart: admitted-but-unsettled call is UNKNOWN, never replayed; cancel terminals survive', () => {
   let goalA = '';
   let goalB = '';
@@ -93,6 +100,9 @@ describe('H12 restart: admitted-but-unsettled call is UNKNOWN, never replayed; c
     expect(run(goalB).state).toBe('FAILED');
     expect((JSON.parse(run(goalB).h) as { event: string }[]).at(-1)?.event).toBe('CANCEL');
     bHistory = run(goalB).h;
+    // H12b: the cancelled terminal is TYPED (failureReason cancelled → terminalOutcome CANCELLED).
+    expect((db0(core).prepare('SELECT failure_reason AS r FROM runs WHERE id = ?').get(goalB) as { r: string }).r).toBe('cancelled');
+    expect(await outcomeOf(core, goalB)).toBe('CANCELLED');
   });
 
   it('R2 reopen: recovery => UNKNOWN at bound; advance refused GOAL_USAGE_UNKNOWN; 0 provider calls', async () => {
@@ -131,5 +141,7 @@ describe('H12 restart: admitted-but-unsettled call is UNKNOWN, never replayed; c
     const v = await view(goalA);
     expect(v.state).toBe('CANCELLED');
     expect(v.unknown.calls).toBe(1);
+    // H12b: after two restarts B is still the typed CANCELLED terminal.
+    expect(await outcomeOf(core as never, goalB)).toBe('CANCELLED');
   });
 });

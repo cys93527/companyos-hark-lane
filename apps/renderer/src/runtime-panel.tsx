@@ -11,6 +11,7 @@
  */
 import { createElement as h, type JSX } from 'react';
 import { budgetRows, type GoalBudgetRead } from './budget.js';
+import { terminalOutcomeOf } from './run-outcome.js';
 
 /* ------------------------------------------------- canonical input shapes --- */
 
@@ -49,6 +50,8 @@ export interface CanonicalOverview {
   readonly reworkCount: number;
   readonly maxRework: number;
   readonly failureReason: string | null;
+  /** H12b: typed terminal outcome from the main process (absent on older payloads). */
+  readonly terminalOutcome?: string | null;
   readonly resumePoint: string | null;
   readonly pinnedVersion: { readonly templateId: string; readonly versionId: string } | null;
   readonly stages: readonly CanonicalStageObservation[];
@@ -122,17 +125,29 @@ export interface CanonicalTimelineEntry {
 
 /* ------------------------------------------------------------- projections --- */
 
-export type RuntimePhase = 'planning' | 'executing' | 'validating' | 'correcting' | 'awaiting-user' | 'completed' | 'blocked' | 'failed' | 'idle';
+export type RuntimePhase = 'planning' | 'executing' | 'validating' | 'correcting' | 'awaiting-user' | 'completed' | 'cancelled' | 'timed-out' | 'blocked' | 'failed' | 'idle';
 
 /** The lifecycle phase is a projection of canonical run state + blockers, never a UI timer. */
 export const projectRuntimePhase = (input: {
   readonly runState: string | null;
   readonly blockers: readonly CanonicalBlocker[];
+  /** H12b: the canonical failureReason / typed terminal outcome of the same run. */
+  readonly failureReason?: string | null;
+  readonly terminalOutcome?: string | null;
 }): RuntimePhase => {
   if (input.runState === null) return 'idle';
+  // A terminal run is decided by its typed outcome first: a stale APPROVAL_REQUIRED
+  // blocker can never make a cancelled/failed run look like it awaits the user.
+  const outcome = terminalOutcomeOf({
+    state: input.runState,
+    ...(input.failureReason === undefined ? {} : { failureReason: input.failureReason }),
+    ...(input.terminalOutcome === undefined ? {} : { terminalOutcome: input.terminalOutcome }),
+  });
+  if (outcome === 'COMPLETED') return 'completed';
+  if (outcome === 'CANCELLED') return 'cancelled';
+  if (outcome === 'TIMED_OUT') return 'timed-out';
+  if (outcome === 'FAILED') return 'failed';
   if (input.blockers.some((blocker) => blocker.code === 'APPROVAL_REQUIRED')) return 'awaiting-user';
-  if (input.runState === 'COMPLETED') return 'completed';
-  if (input.runState === 'FAILED' || input.runState === 'CANCELLED') return 'failed';
   if (input.blockers.length > 0) return 'blocked';
   if (input.runState === 'WAITING_APPROVAL') return 'awaiting-user';
   if (['RUNNING', 'EXECUTING'].includes(input.runState)) return 'executing';
@@ -147,6 +162,8 @@ export const PHASE_LABELS: Readonly<Record<RuntimePhase, string>> = {
   correcting: '纠正中',
   'awaiting-user': '等待用户决策',
   completed: '已完成',
+  cancelled: '已取消',
+  'timed-out': '已超时',
   blocked: '受阻',
   failed: '失败',
   idle: '空闲',
@@ -211,7 +228,12 @@ export const projectRuntimeLifecycle = (
   }
   return {
     runId: workspace.runId,
-    phase: projectRuntimePhase({ runState: overview?.state ?? null, blockers: workspace.blockers }),
+    phase: projectRuntimePhase({
+      runState: overview?.state ?? null,
+      blockers: workspace.blockers,
+      failureReason: overview?.failureReason ?? null,
+      ...(overview?.terminalOutcome === undefined ? {} : { terminalOutcome: overview.terminalOutcome }),
+    }),
     runState: overview?.state ?? 'UNKNOWN',
     objective: workspace.goal?.objective ?? null,
     planningState: workspace.planningRun?.state ?? null,

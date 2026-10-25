@@ -69,7 +69,7 @@ lineage + reassessment marker; stage output envelope; per-task blockers
 ### RunBlocker (derived, never durable truth)
 
 `{code, scope, subjectId?, sourceType, sourceId?, evidenceRefs[], explanation}`
-— codes: RUN_PAUSED, RUN_FAILED, APPROVAL_REQUIRED, UNRESOLVED_FINDING,
+— codes: RUN_PAUSED, RUN_FAILED, RUN_CANCELLED, RUN_TIMED_OUT (H12b), APPROVAL_REQUIRED, UNRESOLVED_FINDING,
 VALIDATION_FAILED, VALIDATION_REQUIREMENTS_MISSING, ROUND_LIMIT_EXHAUSTED,
 EXECUTION_FAILURE, CAUSAL_CORRECTIVE_WAIT, UNRECONCILED_CARRIER. Every entry
 cites its canonical source (run row, report artifact, validation row, task row,

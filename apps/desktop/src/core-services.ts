@@ -2219,6 +2219,45 @@ export async function composeCoreServices(
     await database.executionAttempts.interruptActiveOfRuntime(null, clock.nowIso());
     sprint13ArtifactServiceHolder = sprint13.artifactService;
 
+    /*
+     * H12b — Goal cancellation terminal convergence. `goal.cancel` commits the durable
+     * intent first and settles every owned run to the typed terminal FAILED/cancelled
+     * afterwards (never holding the caller on an in-flight turn). If the process ends
+     * between the two — or a settlement attempt failed — the intent stays durable while a
+     * run stays non-terminal, and the boss would see a cancelled Goal still "PLANNING".
+     * Every composition therefore re-settles: a Goal with a durable cancellation intent
+     * gets each owned non-terminal run cancelled through the engine's own RUN.CANCEL
+     * (idempotent: a terminal run is left untouched, so a cancelled terminal is never
+     * rewritten and a COMPLETED/FAILED run is never turned into cancelled).
+     */
+    const settleGoalCancellation = async (goalRunId: string): Promise<readonly string[]> => {
+      const engine = sprint13.engine;
+      if (engine === null) return [];
+      const owned = await database.db.writeFence.serialize(async () => database.db.prepare(
+        "SELECT id FROM runs WHERE (execution_goal_run_id = ? OR id = ?) AND state NOT IN ('COMPLETED', 'FAILED') ORDER BY id",
+      ).all(goalRunId, goalRunId) as { id: string }[]);
+      const unsettled: string[] = [];
+      for (const { id } of owned) {
+        try {
+          await engine.cancel(id as never);
+        } catch (error: unknown) {
+          unsettled.push(id);
+          activeLogger.error('Goal cancellation terminal settlement remains blocked', { runId: id, code: error instanceof DomainError ? error.code : 'INTERNAL' });
+        }
+      }
+      return unsettled;
+    };
+    if (executionSafety !== null && sprint13.engine !== null) {
+      const budgetedGoals = await database.db.writeFence.serialize(async () => database.db.prepare(
+        'SELECT id FROM runs WHERE execution_goal_run_id = id AND execution_budget_json IS NOT NULL ORDER BY id',
+      ).all() as { id: string }[]);
+      for (const { id } of budgetedGoals) {
+        if (!(await executionSafety.budget.isCancelled(id))) continue;
+        const unsettled = await settleGoalCancellation(id);
+        if (unsettled.length > 0) activeLogger.error('Goal cancellation convergence incomplete at startup', { goalRunId: id, unsettled: unsettled.length });
+      }
+    }
+
     // ---- workflow lifecycle (Sprint 4) + the T18-02 execution context -------------------
     // Composed HERE, not in the electron entry, so the desktop bootstrap and the tests share
     // ONE production wiring. The three Sprint 18 dependencies are the trusted application
@@ -3892,6 +3931,8 @@ export async function composeCoreServices(
     const controlPlane =
       database.artifactStore !== null && runGoalWriter !== null && sprint13.engine !== null
         ? createControlPlaneService({
+            // H12b: read-only operations wait for an open transaction instead of failing.
+            readFence: (operation, work) => database.db.writeFence.immediate(operation, work),
             ...(executionSafety === null ? {} : { initializeGoalBudget: executionSafety.initialize }),
             ...(executionSafety === null ? {} : { isGoalCancelled: executionSafety.budget.isCancelled }),
             ...(options.planPreviewWithoutExecutor === true ? { executionAvailable: () => {
@@ -3901,8 +3942,9 @@ export async function composeCoreServices(
             ...(executionSafety === null ? {} : { cancelGoal: async (goalRunId: string) => {
               goalRunId = await database.executionBudget.goalOf(goalRunId) ?? goalRunId;
               await executionSafety.requestCancel(goalRunId);
-              const owned = await database.db.writeFence.serialize(async () => database.db.prepare('SELECT id FROM runs WHERE execution_goal_run_id = ?').all(goalRunId) as { id: string }[]);
-              for (const { id } of owned) void sprint13.engine.cancel(id as never).catch((error: unknown) => activeLogger.error('Goal cancellation terminal settlement remains blocked', { runId: id, code: error instanceof DomainError ? error.code : 'INTERNAL' }));
+              // Settlement is not awaited by the caller (an in-flight turn may hold the run's
+              // queue); a failure is logged and the next composition re-settles (above).
+              void settleGoalCancellation(goalRunId);
               return { accepted: true as const, stopped: false as const, stopEvidence: 'NOT_CONFIRMED' as const };
             } }),
             companyId: 'company_default',
@@ -4037,7 +4079,12 @@ export async function composeCoreServices(
           payload: {companyId, runId},
         })) as Result<unknown, DomainError>;
       },
-      loadGoalState: async ({companyId, runId}) => {
+      // H12b: the whole snapshot is read in the connection's read fence — it waits for an
+      // open transaction (e.g. another Goal's cancellation settling) instead of being
+      // refused CROSS_CONTEXT_TRANSACTION_READ_REFUSED mid-run, and it is one consistent
+      // committed view.
+      loadGoalState: async (input) => database.db.writeFence.immediate('autonomy:loadGoalState', async () => {
+        const {companyId, runId} = input;
         const goalRun = (await database.runs.get(runId as never)) as {id: string; state: string; companyId: string} | null;
         if (goalRun === null || String(goalRun.companyId) !== companyId) {
           return err(new DomainError('NOT_FOUND', `Goal run "${runId}" does not exist for this company.`, {details: {reason: 'CONTROL_PLANE_RUN_NOT_FOUND'}}));
@@ -4127,7 +4174,7 @@ export async function composeCoreServices(
           eventCount: Number((database.db.prepare('SELECT COUNT(*) AS n FROM events').get() as {n: number}).n),
         };
         return ok({...snapshot, fingerprint: autonomyFingerprintOf(snapshot)});
-      },
+      }),
       preflightChecks: async ({companyId}) => {
         const checks: DoctorCheck[] = [];
         // 1. Company model selection (the planner/supervisor binding source).

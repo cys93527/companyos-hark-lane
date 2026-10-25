@@ -18,7 +18,9 @@
 import {
   domainError,
   runGoalCommandId,
+  runTerminalOutcome,
   type DomainError,
+  type RunTerminalOutcome,
   type Result,
   type Task,
   type WorkflowRun,
@@ -39,6 +41,8 @@ export interface RunBlocker {
   readonly code:
     | 'RUN_PAUSED'
     | 'RUN_FAILED'
+    | 'RUN_CANCELLED'
+    | 'RUN_TIMED_OUT'
     | 'APPROVAL_REQUIRED'
     | 'UNRESOLVED_FINDING'
     | 'VALIDATION_FAILED'
@@ -186,6 +190,12 @@ export interface RunOverview {
   readonly reworkCount: number;
   readonly maxRework: number;
   readonly failureReason: string | null;
+  /**
+   * H12b — typed terminal outcome (`runTerminalOutcome`): COMPLETED / CANCELLED /
+   * TIMED_OUT / FAILED, or null while the run is not terminal. A cancelled run is
+   * `FAILED` + `cancelled` in the frozen L1 machine and is projected as CANCELLED here.
+   */
+  readonly terminalOutcome: RunTerminalOutcome | null;
   readonly resumePoint: string | null;
   readonly pinnedVersion: {
     readonly templateId: string;
@@ -516,10 +526,18 @@ export const createRunObservationService = (deps: RunObservationDeps) => {
       }
     }
     if (run.state === 'FAILED') {
+      // H12b: the typed terminal outcome decides the code — a cancelled or timed-out run
+      // is never reported to the boss as a failure.
+      const outcome = runTerminalOutcome(run);
       blockers.push({
-        code: 'RUN_FAILED', scope: 'RUN', sourceType: 'WorkflowRun', sourceId: String(run.id),
+        code: outcome === 'CANCELLED' ? 'RUN_CANCELLED' : outcome === 'TIMED_OUT' ? 'RUN_TIMED_OUT' : 'RUN_FAILED',
+        scope: 'RUN', sourceType: 'WorkflowRun', sourceId: String(run.id),
         evidenceRefs: [`run:${String(run.id)}`],
-        explanation: `Run is FAILED${run.failureReason === null ? '' : ` (${run.failureReason})`}.`,
+        explanation: outcome === 'CANCELLED'
+          ? 'Run was cancelled (FAILED/cancelled); no further work starts.'
+          : outcome === 'TIMED_OUT'
+            ? 'Run timed out (FAILED/timed_out).'
+            : `Run is FAILED${run.failureReason === null ? '' : ` (${run.failureReason})`}.`,
       });
     }
     if (run.state === 'WAITING_APPROVAL') {
@@ -697,6 +715,7 @@ export const createRunObservationService = (deps: RunObservationDeps) => {
       reworkCount: Number(run.value.reworkCount),
       maxRework: Number(run.value.maxRework),
       failureReason: run.value.failureReason === null ? null : String(run.value.failureReason),
+      terminalOutcome: runTerminalOutcome(run.value),
       resumePoint: run.value.resumePoint === null ? null : String(run.value.resumePoint),
       pinnedVersion: {
         templateId: String(run.value.templateId),

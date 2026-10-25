@@ -245,6 +245,39 @@ export function applyRunEvent(
 
 export const isRunFinished = (run: WorkflowRun): boolean => isRunTerminal(run.state);
 
+/**
+ * H12b — the TYPED terminal outcome of a run (STATE_MACHINE.md SM-L1-07, ADR-0003 / ADR-0032).
+ *
+ * The 17-state L1 machine is frozen (规划书 §三十三): cancel and timeout land on `FAILED`
+ * and carry the typed `failureReason` (`cancelled` / `timed_out`). Every consumer that
+ * shows or decides on "how did this run end" must read THIS projection, never compare
+ * `state` against a `CANCELLED` string (no such run state exists) and never treat a
+ * cancelled run as a failure.
+ *
+ * - non-terminal state → `null` (the run has not ended);
+ * - `COMPLETED` → `COMPLETED`;
+ * - `FAILED` + `cancelled` → `CANCELLED`; `FAILED` + `timed_out` → `TIMED_OUT`;
+ * - `FAILED` + any other reason → `FAILED`.
+ * - `FAILED` with no reason is impossible through `applyRunEvent` (every edge into
+ *   FAILED implies a reason); it is reported as `FAILED`, never guessed as cancelled.
+ */
+export const RUN_TERMINAL_OUTCOMES = ['COMPLETED', 'CANCELLED', 'TIMED_OUT', 'FAILED'] as const;
+export type RunTerminalOutcome = (typeof RUN_TERMINAL_OUTCOMES)[number];
+
+export const runTerminalOutcome = (run: {
+  readonly state: RunState;
+  readonly failureReason: RunFailureReason | null;
+}): RunTerminalOutcome | null => {
+  if (!isRunTerminal(run.state)) return null;
+  if (run.state === 'COMPLETED') return 'COMPLETED';
+  if (run.failureReason === 'cancelled') return 'CANCELLED';
+  if (run.failureReason === 'timed_out') return 'TIMED_OUT';
+  return 'FAILED';
+};
+
+export const isRunFailureReason = (value: unknown): value is RunFailureReason =>
+  typeof value === 'string' && (RUN_FAILURE_REASONS as readonly string[]).includes(value);
+
 /** Convenience: play a sequence of events, stopping at the first failure. */
 export function replayRunEvents(
   run: WorkflowRun,

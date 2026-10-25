@@ -67,6 +67,7 @@ describe('the lifecycle layer keeps the architecture boundaries', () => {
       '0006_provider_dispatch_routing_decision',
       '0007_execution_attempt_failure',
       '0008_goal_execution_budget',
+      '0009_run_failure_reason_typed',
     ]);
     // …and the lifecycle tables live in their own chain.
     const lifecycle = loadMigrations(lifecycleMigrationsDir());

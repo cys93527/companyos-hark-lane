@@ -23,10 +23,28 @@
  * turn); reads project the Sprint23 observation. ADR-B adds durable cancellation
  * acceptance; it does not claim remote work has stopped or introduce a pause UI.
  */
-import { DomainError, domainError, err, ok, type GoalExecutionBudget, type Result } from '@companyos/core';
+import { DomainError, domainError, err, isRunFailureReason, isRunState, ok, runTerminalOutcome, type GoalExecutionBudget, type Result, type RunTerminalOutcome } from '@companyos/core';
 import { projectGoalBudget, type BudgetCurrency } from './efficiency/goal-budget-projection.js';
 import { executionRunIdOf } from '@companyos/engine';
 import { fileDeliveriesOf } from './verified-file-delivery.js';
+
+/**
+ * H12b — the typed terminal outcome of a durable run row as the boss sees it.
+ * The frozen L1 machine records cancel/timeout as FAILED + typed failureReason; this is
+ * the ONE projection every read handler uses (never a `state === 'CANCELLED'` compare).
+ * Corrupt rows are refused by the durable store's typed decode (sqlite-run-store);
+ * here a value outside the frozen enums can only come from a non-durable test double,
+ * and is never promoted: a non-L1 state is "not terminal", an unknown reason is FAILED.
+ */
+export const terminalOutcomeOfRun = (run: {
+  readonly state: string;
+  readonly failureReason?: string | null;
+}): RunTerminalOutcome | null => {
+  if (!isRunState(run.state)) return null;
+  const reason = run.failureReason ?? null;
+  return runTerminalOutcome({ state: run.state, failureReason: reason !== null && isRunFailureReason(reason) ? reason : null });
+};
+
 
 /* ------------------------------------------------------------ vocabulary --- */
 
@@ -107,6 +125,11 @@ export interface ControlPlaneEnvelope<T> {
 /* ------------------------------------------------------------------- deps --- */
 
 export interface ControlPlaneDeps {
+  /**
+   * H12b — the connection's read fence (`writeFence.immediate`): waits for any open
+   * transaction, then runs the read-only operation without one. Absent ⇒ unfenced (tests).
+   */
+  readonly readFence?: <T>(operation: string, work: () => Promise<T>) => Promise<T>;
   readonly cancelGoal?: (goalRunId: string) => Promise<{ readonly accepted: true; readonly stopped: false; readonly stopEvidence: 'NOT_CONFIRMED' }>;
   readonly initializeGoalBudget?: (goalRunId: string) => Promise<void>;
   readonly isGoalCancelled?: (runId: string) => Promise<boolean>;
@@ -146,6 +169,7 @@ export interface ControlPlaneDeps {
       readonly companyId: string;
       readonly workflowId: string;
       readonly state: string;
+      readonly failureReason?: string | null;
       readonly revision: number;
       readonly snapshotId: string;
       readonly versionId: string;
@@ -157,6 +181,7 @@ export interface ControlPlaneDeps {
         readonly companyId: string;
         readonly workflowId: string;
         readonly state: string;
+        readonly failureReason?: string | null;
         readonly createdAt?: string;
       }[];
       readonly total: number;
@@ -643,7 +668,7 @@ const settleGoalRunFailed = async (
 ): Promise<Result<true, DomainError>> => {
   const goalRun = await deps.runs.get(goalRunId);
   if (goalRun === null) return ok(true);
-  if (goalRun.state === 'FAILED' || goalRun.state === 'COMPLETED' || goalRun.state === 'CANCELLED') return ok(true);
+  if (terminalOutcomeOfRun(goalRun) !== null) return ok(true);
   const settledRun = await deps.engine.dispatch({
     commandId,
     runId: goalRunId,
@@ -721,7 +746,7 @@ const settleGoalRunSucceededIfExecutionCompleted = async (
   if (executionRunId === '') return null;
   const goalRun = await deps.runs.get(goalRunId);
   if (goalRun === null) return null;
-  if (goalRun.state === 'COMPLETED' || goalRun.state === 'FAILED' || goalRun.state === 'CANCELLED') return null;
+  if (terminalOutcomeOfRun(goalRun) !== null) return null;
   const executionRun = await deps.runs.get(executionRunId);
   if (executionRun === null || executionRun.state !== 'COMPLETED') return null;
   const workTasks = await deps.tasks.listByRun(executionRunId);
@@ -1240,6 +1265,8 @@ const approvalRespond = async (
 
 /* ------------------------------------------------------------ read handlers --- */
 
+const HOME_SUMMARY_PAGE = 200;
+
 const homeSummary = async (
   deps: ControlPlaneDeps,
   payload: Readonly<Record<string, unknown>>,
@@ -1248,9 +1275,19 @@ const homeSummary = async (
   if (!companyId.ok) return companyId;
   const scoped = proveCompany(deps, companyId.value);
   if (!scoped.ok) return scoped;
-  const page = await deps.runs.list({ limit: 100, offset: 0 });
+  /*
+   * H12b sweep: page through EVERY run. The earlier single `limit: 100` page counted
+   * execution child runs too, so older Goals silently vanished from the home list once a
+   * company had more than 100 runs.
+   */
+  const items: Awaited<ReturnType<ControlPlaneDeps['runs']['list']>>['items'][number][] = [];
+  for (let offset = 0; ; offset += HOME_SUMMARY_PAGE) {
+    const page = await deps.runs.list({ limit: HOME_SUMMARY_PAGE, offset });
+    items.push(...page.items);
+    if (page.items.length === 0 || offset + page.items.length >= page.total) break;
+  }
   const goals = [];
-  for (const run of page.items) {
+  for (const run of items) {
     if (run.companyId !== deps.companyId || run.workflowId !== GOAL_PLANNING_WORKFLOW_ID) continue;
     const goal =
       deps.runGoal === null
@@ -1259,6 +1296,7 @@ const homeSummary = async (
     goals.push({
       runId: run.id,
       state: run.state,
+      terminalOutcome: terminalOutcomeOfRun(run),
       objective: goal !== null && goal.ok && goal.value !== null ? goal.value.objective : null,
       ...(run.createdAt === undefined ? {} : { createdAt: run.createdAt }),
     });
@@ -1297,7 +1335,7 @@ const goalWorkspace = async (
    * the frozen deterministic derivation from (company, planningRun, plan, compile
    * command), confirmed against the durable run row. No second truth exists.
    */
-  const executionRuns: { runId: string; state: string }[] = [];
+  const executionRuns: { runId: string; state: string; terminalOutcome: RunTerminalOutcome | null }[] = [];
   const anchors = (await deps.artifacts.listByRun(runId.value)).filter(
     (artifact) => artifact.kind === 'companyos:plan-compilation',
   );
@@ -1310,7 +1348,7 @@ const goalWorkspace = async (
     const executionRunId = executionRunIdOf(deps.companyId, runId.value, planId, `goal-compile:${planId}`);
     const executionRun = await deps.runs.get(executionRunId);
     if (executionRun === null || executionRun.companyId !== deps.companyId) continue;
-    executionRuns.push({ runId: executionRunId, state: executionRun.state });
+    executionRuns.push({ runId: executionRunId, state: executionRun.state, terminalOutcome: terminalOutcomeOfRun(executionRun) });
   }
   const goalValue = goal !== null && goal.ok ? goal.value : null;
   const goalStructured = goalValue?.structured ?? null;
@@ -1323,7 +1361,10 @@ const goalWorkspace = async (
     runId: runId.value,
     accessPolicy,
     goal: goalValue,
-    planningRun: { state: owned.value.state, revision: owned.value.revision },
+    planningRun: { state: owned.value.state, revision: owned.value.revision, terminalOutcome: terminalOutcomeOfRun(owned.value) },
+    // H12b: a durable cancellation intent is visible before (and independent of) the
+    // terminal settlement of the runs it owns.
+    cancellationRequested: deps.isGoalCancelled === undefined ? false : await deps.isGoalCancelled(runId.value),
     overview: overview.value,
     blockers: blockers.value,
     executionRuns,
@@ -1432,7 +1473,7 @@ const decisionsPending = async (
   const pending: unknown[] = [];
   for (const run of page.items) {
     if (run.companyId !== deps.companyId) continue;
-    if (run.state === 'COMPLETED' || run.state === 'FAILED' || run.state === 'CANCELLED') continue;
+    if (terminalOutcomeOfRun(run) !== null) continue;
     const blockers = await deps.observation.getRunBlockers({ companyId: deps.companyId, runId: run.id });
     if (!blockers.ok) continue; // a run whose blockers cannot be read is not a decision
     // STAGE 3: the canonical approval rows behind an APPROVAL_REQUIRED blocker, so the
@@ -1551,6 +1592,32 @@ export function createControlPlaneService(deps: ControlPlaneDeps): {
         return { ok: false, error: { code: payloadResult.error.code, message: payloadResult.error.message } };
       }
       const operation = record.operation as ControlPlaneOperation;
+      /*
+       * H12b — read operations are linearized against open transactions. Every store read
+       * on the shared connection is refused typed (CROSS_CONTEXT_TRANSACTION_READ_REFUSED)
+       * while another async context's transaction is open, so a boss poll that landed
+       * while e.g. a Goal cancellation settled failed spuriously. A read-only operation
+       * now runs in the connection's read fence: it waits for the open transaction and
+       * then reads committed rows only. Mutating operations are unchanged.
+       */
+      const outcome: Result<unknown, DomainError> =
+        READ_ONLY_OPERATIONS.has(operation) && deps.readFence !== undefined
+          ? await deps.readFence(`control-plane:${operation}`, () => execute(operation, payloadResult.value))
+          : await execute(operation, payloadResult.value);
+      if (outcome.ok) return { ok: true, value: outcome.value };
+      return {
+        ok: false,
+        error: {
+          code: outcome.error.code,
+          message: outcome.error.message,
+          ...(outcome.error.details === undefined ? {} : { details: outcome.error.details }),
+        },
+      };
+    },
+  };
+
+  async function execute(operation: ControlPlaneOperation, payload: Readonly<Record<string, unknown>>): Promise<Result<unknown, DomainError>> {
+      const payloadResult = { value: payload };
       let outcome: Result<unknown, DomainError>;
       switch (operation) {
         case 'goal.create':
@@ -1604,17 +1671,14 @@ export function createControlPlaneService(deps: ControlPlaneDeps): {
           outcome = await runBudget(deps, payloadResult.value);
           break;
       }
-      if (outcome.ok) return { ok: true, value: outcome.value };
-      return {
-        ok: false,
-        error: {
-          code: outcome.error.code,
-          message: outcome.error.message,
-          ...(outcome.error.details === undefined ? {} : { details: outcome.error.details }),
-        },
-      };
-    },
-  };
+      return outcome;
+  }
 }
+
+/** H12b: operations that never write (they run in the connection's read fence). */
+const READ_ONLY_OPERATIONS: ReadonlySet<ControlPlaneOperation> = new Set<ControlPlaneOperation>([
+  'home.summary', 'goal.workspace', 'run.overview', 'run.blockers', 'run.timeline', 'run.task',
+  'run.artifacts', 'decisions.pending', 'run.usage', 'run.budget',
+]);
 
 export type ControlPlaneService = ReturnType<typeof createControlPlaneService>;

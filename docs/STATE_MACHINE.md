@@ -312,7 +312,7 @@ RECOVERING ──RECOVERED──► EXECUTING ；RECOVERING ──RECOVERY_FAILE
 | SM-L1-04 | `REWORK` 的累计次数达到上限（默认 3）时**只能**转 `PAUSED`，不得直接转 `FAILED` 或 `COMPLETED`。 |
 | SM-L1-05 | `PAUSED` 不自动恢复：恢复必须由显式 `RESUME` 驱动（规划书 §四十五）。 |
 | SM-L1-06 | `RECOVERING` 的出口只有 `RECOVERED` / `RECOVERY_FAILED`；恢复过程不产生新的业务副作用。 |
-| SM-L1-07 | 取消与超时都落到 `FAILED`，但必须携带 `reason`（`cancelled` / `timed_out`）与对应事件，以便审计区分。 |
+| SM-L1-07 | 取消与超时都落到 `FAILED`，但必须携带 `reason`（`cancelled` / `timed_out`）与对应事件，以便审计区分。H12b：`failure_reason` 由迁移 `engine/0009` 的触发器在存储层限定为冻结枚举，读取时类型化解码（非法值 fail closed）；所有面向老板的投影读取 `runTerminalOutcome`（COMPLETED / CANCELLED / TIMED_OUT / FAILED），阻塞码为 `RUN_CANCELLED` / `RUN_TIMED_OUT` / `RUN_FAILED`；取消意图持久化后、终态结算前进程退出，下次组合启动时会收敛为 `FAILED/cancelled`（已终态的 Run 不被改写）。 |
 
 Execution Safety Sprint 2（ADR-0032，F 候选待独立审查）：Goal 取消意图先持久化于既有 Run
 预算 envelope，受理不等于进程或远端已停止。派发、恢复与终态提交重新读取该意图；未提交的迟到
