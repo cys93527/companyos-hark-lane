@@ -59,8 +59,12 @@ jobs:
         shell: pwsh
         run: |
           $env:ELECTRON_RUN_AS_NODE = '1'
-          & "$env:APPDIR\CompanyOS.exe" scripts/hark/live-goal-planning.mjs "$env:APPDIR\resources\app" "$env:GITHUB_WORKSPACE\hark-evidence" "$env:BUDGETDIR"
-          $code = $LASTEXITCODE
+          # CompanyOS.exe is a GUI-subsystem binary: '&' does NOT wait for it, so wait explicitly.
+          $argv = @('scripts/hark/live-goal-planning.mjs', "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"")
+          $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
+          $code = $p.ExitCode
+          Get-Content hark-evidence\harness-stdout.txt -ErrorAction SilentlyContinue | Select-Object -Last 80
+          Write-Host "harness exit=$code"
           if (Select-String -Path hark-evidence\* -SimpleMatch $env:COMPANYOS_MODEL_API_KEY -Quiet) { Write-Host 'KEY LEAKED'; Remove-Item hark-evidence\* -Force; exit 9 }
           exit $code
       - name: Uninstall

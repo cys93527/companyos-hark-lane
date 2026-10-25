@@ -20,20 +20,27 @@ const WATCHDOG_MS = Number(process.env.H10_WATCHDOG_MS ?? 240_000);
 const out = { startedAt: new Date().toISOString(), runtime: { node: process.versions.node, electron: process.versions.electron ?? null } };
 let db = null;
 let dataDir = null;
+let finishing = false;
 const finish = (code) => {
+  if (finishing) return;
+  finishing = true;
   out.finishedAt = new Date().toISOString();
-  try { db?.close(); } catch { /* ignore */ }
+  out.finishErrors = [];
+  const step = (name, fn) => { try { fn(); } catch (e) { out.finishErrors.push(`${name}: ${String(e?.message ?? e).slice(0, 400)}`); } };
+  step('write-json-early', () => writeFileSync(join(evidence, 'live-goal.json'), JSON.stringify(out, null, 2)));
+  step('db-close', () => db?.close());
   if (dataDir !== null) for (const s of ['', '-wal', '-shm']) {
     const f = join(dataDir, `companyos.sqlite${s}`);
-    if (existsSync(f)) copyFileSync(f, join(evidence, `companyos.sqlite${s}`));
+    step(`copy${s}`, () => { if (existsSync(f)) copyFileSync(f, join(evidence, `companyos.sqlite${s}`)); });
   }
-  if (dataDir !== null && existsSync(`${dataDir}-cas`)) cpSync(`${dataDir}-cas`, join(evidence, 'cas'), { recursive: true });
-  writeFileSync(join(evidence, 'live-goal.json'), JSON.stringify(out, null, 2));
+  step('copy-cas', () => { if (dataDir !== null && existsSync(`${dataDir}-cas`)) cpSync(`${dataDir}-cas`, join(evidence, 'cas'), { recursive: true }); });
+  step('write-json', () => writeFileSync(join(evidence, 'live-goal.json'), JSON.stringify(out, null, 2)));
   console.log(JSON.stringify(out, null, 2));
   process.exit(code);
 };
 process.on('uncaughtException', (e) => { out.result = 'HARNESS_CRASH'; out.error = String(e?.stack ?? e).slice(0, 2000); finish(10); });
 
+process.on('unhandledRejection', (e) => { out.unhandled = String(e?.stack ?? e).slice(0, 2000); finishing = false; finish(13); });
 try {
   const { nullLogger } = await imp('node_modules/@companyos/observability/dist/index.js');
   const { openDurableDatabase } = await imp('node_modules/@companyos/persistence/dist/index.js');
@@ -107,7 +114,7 @@ try {
     try { const p = JSON.parse(r.payload); usage.calls += 1; usage.inputTokens += p.usage?.inputTokens ?? 0; usage.outputTokens += p.usage?.outputTokens ?? 0; } catch { /* ignore */ }
   }
   out.usageFromEvents = usage;
-  out.artifacts = q('SELECT * FROM artifacts ORDER BY rowid').map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 300) : v])));
+  try { out.artifacts = q('SELECT * FROM artifacts ORDER BY rowid').map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 300) : v]))); } catch (e) { out.artifactsError = String(e?.message ?? e); }
   const planningDone = out.tasks.some((t) => String(t.kind).includes('plan') && t.state === 'DONE');
   const previewStop = out.driver?.terminalReason === 'EXECUTOR_PROVIDER_UNKNOWN';
   out.result = planningDone && previewStop ? 'PLAN_READY_EXECUTION_BLOCKED' : planningDone ? 'PLANNED' : 'NOT_PLANNED';
