@@ -1,0 +1,30 @@
+{
+  "approvedBy": "user_owner",
+  "currency": "CNY",
+  "billingScope": { "providerId": "h12.counting-fake", "account": "h12:counting-fake:no-network", "organization": null },
+  "cap": { "maxCalls": 6, "maxTokens": 200000, "maxCostMicros": 1000000, "durationMs": 900000 },
+  "proof": {
+    "identity": {
+      "providerId": "h12.counting-fake",
+      "modelId": "fake-1",
+      "upstreamModelIdentity": "h12-counting-fake (in-process, no network)",
+      "endpoint": "http://127.0.0.1:9/h12-no-network",
+      "routingIdentity": "h12:fake-1",
+      "credentialRef": "none:h12-fake",
+      "billingAccount": "h12:counting-fake:no-network",
+      "billingOrganization": null,
+      "attestationRef": "hark-lane:H12:fake-provider-restart-proof:no-real-spend"
+    },
+    "pricing": {
+      "source": "H12 test fixture: nominal rates so the UNKNOWN bound is a non-zero number (no real billing exists)",
+      "version": "h12-fixture-1",
+      "currency": "CNY",
+      "units": "MICROS_PER_MILLION_TOKENS",
+      "rounding": "CEIL_TOTAL_PER_REQUEST_MICROS",
+      "inputRate": 2000000,
+      "outputRate": 8000000
+    },
+    "tokens": { "inputUpperBound": 24000, "outputUpperBound": 8000, "evidenceRef": "H12 fixture bound" },
+    "validForMs": 86400000
+  }
+}

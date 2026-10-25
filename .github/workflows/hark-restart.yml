@@ -1,0 +1,90 @@
+name: hark-restart
+
+# Hark lane H12: cross-process restart proof on the INSTALLED app (no rebuild).
+# Installs the installer built by the push-triggered hark-installer run for THIS commit
+# (or the run given on dispatch), then runs scripts/hark/restart-unknown.mjs three times,
+# each a separate CompanyOS.exe process (ELECTRON_RUN_AS_NODE=1) on the SAME dataDir:
+#   p1 leaves one admitted, unsettled reservation and stops hard (no settle, no close);
+#   p2 reopens: recovery => UNKNOWN at bound, 0 provider calls, GOAL_USAGE_UNKNOWN, cancel;
+#   p3 reopens: cancelled terminals unchanged, 0 provider calls, UNKNOWN still counted.
+# The model provider is an in-process COUNTING FAKE (no network, no secret, CNY 0).
+# No DSH, no native.job production dispatch, no real Provider, no release/tag.
+on:
+  workflow_dispatch:
+    inputs:
+      installer_run_id:
+        description: hark-installer run whose installer artifact to use
+        required: true
+  workflow_run:
+    workflows: [hark-installer]
+    types: [completed]
+    branches: [hark-lane]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  restart:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: '1'
+      INSTALLER_RUN_ID: ${{ inputs.installer_run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer
+          path: hark-installer
+          run-id: ${{ env.INSTALLER_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Install (per-user, silent)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          [ordered]@{ commit = (git rev-parse HEAD); installerRunId = $env:INSTALLER_RUN_ID; os = [Environment]::OSVersion.VersionString } | ConvertTo-Json | Tee-Object hark-evidence/host.json
+          $setup = (Get-ChildItem hark-installer\*.exe | Select-Object -First 1).FullName
+          "$((Get-FileHash $setup -Algorithm SHA256).Hash)  $(Split-Path $setup -Leaf)" | Tee-Object hark-evidence/installer-sha256.txt
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\CompanyOS-H12'
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$dir`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          "APPDIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Operator budget approval (fake provider fixture, nominal bound)
+        shell: pwsh
+        run: |
+          $budget = Join-Path $env:RUNNER_TEMP 'h12-budget'
+          node scripts/hark/make-budget-approval.mjs $budget scripts/hark/fixtures/h12-counting-fake.approval-template.json | Out-File -Encoding utf8 hark-evidence/budget-approval.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "BUDGETDIR=$budget" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "DATADIR=$(Join-Path $env:RUNNER_TEMP 'h12-data')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Three processes on one dataDir (p1 hard stop, p2 recover, p3 reopen)
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          $codes = [ordered]@{}
+          foreach ($ph in 'p1','p2','p3') {
+            # CompanyOS.exe is a GUI-subsystem binary: wait for it explicitly.
+            $argv = @('scripts/hark/restart-unknown.mjs', $ph, "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"", "`"$env:DATADIR`"")
+            $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput "hark-evidence\$ph-stdout.txt" -RedirectStandardError "hark-evidence\$ph-stderr.txt"
+            $codes[$ph] = $p.ExitCode
+            Write-Host "$ph pid=$($p.Id) exit=$($p.ExitCode)"
+            Get-Content "hark-evidence\$ph-stdout.txt" -ErrorAction SilentlyContinue | Select-Object -Last 40
+            if ($p.ExitCode -ne 0) { break }
+          }
+          $codes | ConvertTo-Json | Tee-Object hark-evidence/exit-codes.json
+          if ($codes.Count -ne 3 -or ($codes.Values | Where-Object { $_ -ne 0 })) { exit 1 }
+      - name: Uninstall
+        if: always()
+        shell: pwsh
+        run: |
+          $u = Join-Path $env:APPDIR 'unins000.exe'
+          if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hark-restart-evidence
+          path: hark-evidence
