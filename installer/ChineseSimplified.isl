@@ -146,9 +146,9 @@ UninstalledAndNeedsRestart=要完成 %1 的卸载，必须重新启动计算机�
 UninstallDataCorrupted=文件“%1”已损坏。无法卸载
 WizardUninstalling=卸载状态
 StatusUninstalling=正在卸载 %1...
-NameAndVersion=%1 版本 %2
 
 [CustomMessages]
+NameAndVersion=%1 版本 %2
 AdditionalIcons=附加快捷方式：
 CreateDesktopIcon=创建桌面快捷方式(&D)
 LaunchProgram=运行 %1
