@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { createDeploymentBudgetProofSource } from '../../src/deployment-budget-proof.ts';
-import { readTrustedBudgetProof, trustedBudgetBound, trustedBudgetPolicyId } from '../../src/trusted-budget-proof.ts';
+import { createDeploymentBudgetProofSource } from '../../src/deployment-budget-proof.js';
+import { readTrustedBudgetProof, trustedBudgetBound, trustedBudgetPolicyId } from '../../src/trusted-budget-proof.js';
 
 const NOW = Date.UTC(2026, 9, 25, 4, 0, 0);
 const identity = {
