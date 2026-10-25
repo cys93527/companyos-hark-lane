@@ -107,6 +107,14 @@ export interface ControlPlaneDeps {
   readonly cancelGoal?: (goalRunId: string) => Promise<{ readonly accepted: true; readonly stopped: false; readonly stopEvidence: 'NOT_CONFIRMED' }>;
   readonly initializeGoalBudget?: (goalRunId: string) => Promise<void>;
   readonly isGoalCancelled?: (runId: string) => Promise<boolean>;
+  /**
+   * H10b PLAN-PREVIEW GATE: whether the deployment can EXECUTE work items (the work-kind
+   * executor is registered). When it returns false the planning turn still runs (bounded by
+   * the trusted budget admission) and the plan artifact is kept for the boss to read, but
+   * compilation/dispatch is refused with the typed EXECUTOR_PROVIDER_UNKNOWN precondition.
+   * Absent => unchanged behaviour.
+   */
+  readonly executionAvailable?: () => boolean;
   /** The single active company (V1): every request is scoped and PROVEN against it. */
   readonly companyId: string;
   /** The trusted session actor stamped on every canonical command. */
@@ -812,6 +820,11 @@ const goalAdvance = async (
     return planned;
   }
   steps.push(planned.value.replayed ? 'planned(replay)' : 'planned');
+  if (deps.executionAvailable !== undefined && !deps.executionAvailable()) {
+    return err(domainError('POLICY_DENIED', 'The plan is ready; no executor is available for its work, so nothing is compiled or dispatched.', {
+      reason: 'EXECUTOR_PROVIDER_UNKNOWN', planId: planned.value.planId, planReady: true, retryable: false,
+    }));
+  }
 
   /* ---- step 2: derive the COMPLETE explicit per-item spec (trusted, deterministic) --- */
   const planArtifact = await deps.artifacts.getByCreationCommand(`plan:${planned.value.planId}`);

@@ -465,6 +465,12 @@ export interface RepositoryRuntimeOptions {
 
 export interface ComposeCoreServicesOptions {
   readonly executionSafety?: GoalSafetyConfiguration;
+  /**
+   * H10b — deployment opt-in: a Goal may PLAN while the work-kind executor is missing; the
+   * control plane then stops after the plan (typed EXECUTOR_PROVIDER_UNKNOWN) and never
+   * compiles or dispatches. Absent/false => the executor preflight blocks before planning.
+   */
+  readonly planPreviewWithoutExecutor?: boolean;
   readonly artifactFoundation: Extract<ArtifactFoundation, { readonly ok: true }> | null;
   readonly repositoryRuntime?: RepositoryRuntimeOptions;
   /**
@@ -3888,6 +3894,10 @@ export async function composeCoreServices(
         ? createControlPlaneService({
             ...(executionSafety === null ? {} : { initializeGoalBudget: executionSafety.initialize }),
             ...(executionSafety === null ? {} : { isGoalCancelled: executionSafety.budget.isCancelled }),
+            ...(options.planPreviewWithoutExecutor === true ? { executionAvailable: () => {
+              const key = options.providerRoutes?.[GOAL_WORK_KIND] ?? '';
+              return key !== '' && executorProvidersHolder !== null && executorProvidersHolder.resolve(key) !== null;
+            } } : {}),
             ...(executionSafety === null ? {} : { cancelGoal: async (goalRunId: string) => {
               goalRunId = await database.executionBudget.goalOf(goalRunId) ?? goalRunId;
               await executionSafety.requestCancel(goalRunId);
@@ -4132,7 +4142,8 @@ export async function composeCoreServices(
         checks.push({
           checkId: 'executor-provider',
           status: workProviderKey === '' || providerResolved === null ? 'fail' : 'pass',
-          requiredForGoal: true,
+          // H10b: with plan preview the gate moves to goal.advance (after the plan, before compile).
+          requiredForGoal: options.planPreviewWithoutExecutor !== true,
           failureCode: workProviderKey === '' || providerResolved === null ? 'EXECUTOR_PROVIDER_UNKNOWN' : null,
           remediationKind: workProviderKey === '' || providerResolved === null ? 'register-provider' : 'none',
           detailsSafeForUser: 'The executor provider for the work kind must be registered.',

@@ -6,7 +6,7 @@
 // Work items route to dsh-headless; the DSH runtime is NOT packaged/approved, so work
 // dispatch must fail closed (typed) — that is an expected, recorded outcome, not a pass.
 // The API key is resolved in-process from env and never printed or written.
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,6 +27,7 @@ const finish = (code) => {
     const f = join(dataDir, `companyos.sqlite${s}`);
     if (existsSync(f)) copyFileSync(f, join(evidence, `companyos.sqlite${s}`));
   }
+  if (dataDir !== null && existsSync(`${dataDir}-cas`)) cpSync(`${dataDir}-cas`, join(evidence, 'cas'), { recursive: true });
   writeFileSync(join(evidence, 'live-goal.json'), JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out, null, 2));
   process.exit(code);
@@ -106,8 +107,10 @@ try {
     try { const p = JSON.parse(r.payload); usage.calls += 1; usage.inputTokens += p.usage?.inputTokens ?? 0; usage.outputTokens += p.usage?.outputTokens ?? 0; } catch { /* ignore */ }
   }
   out.usageFromEvents = usage;
-  const planned = out.tasks.some((t) => t.kind !== 'companyos:planning');
-  out.result = planned ? 'PLANNED' : 'NOT_PLANNED';
+  out.artifacts = q('SELECT * FROM artifacts ORDER BY rowid').map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 300) : v])));
+  const planningDone = out.tasks.some((t) => String(t.kind).includes('plan') && t.state === 'DONE');
+  const previewStop = out.driver?.terminalReason === 'EXECUTOR_PROVIDER_UNKNOWN';
+  out.result = planningDone && previewStop ? 'PLAN_READY_EXECUTION_BLOCKED' : planningDone ? 'PLANNED' : 'NOT_PLANNED';
   finish(0);
 } catch (e) {
   out.result = 'HARNESS_ERROR';

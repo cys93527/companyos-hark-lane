@@ -248,6 +248,7 @@ export const productionCompositionOptions = (
   | 'embeddedDshModelRoute'
   | 'goalWorkProfile'
   | 'executionSafety'
+  | 'planPreviewWithoutExecutor'
 > => {
   if (options.trustedBudgetProofs !== undefined && options.trustedBudgetProofs.scope !== 'PRODUCTION_VERIFIED') throw new Error('TEST_ONLY budget proofs cannot enable production admission.');
   // H10: an operator budget cap only ever rides WITH a production trusted proof source;
@@ -265,6 +266,8 @@ export const productionCompositionOptions = (
     executionSafety: { policyId: 'v1-bounded-execution-1', maxCalls: cap.maxCalls, maxTokens: cap.maxTokens, maxCostMicros: cap.maxCostMicros, durationMs: cap.durationMs,
       ...(options.trustedBudgetProofs === undefined ? {} : { trustedProofs: options.trustedBudgetProofs }) },
     providerKinds: [GOAL_WORK_KIND, SOFTWARE_WORK_KIND],
+    // H10b: plan without an executor; compile/dispatch stays refused (typed precondition).
+    planPreviewWithoutExecutor: true,
     /*
      * DRA-04 — the embedded runtime root rides EVERY production composition: the
      * absolute, launch-independent managed root above (never inferred downstream
