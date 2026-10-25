@@ -46,6 +46,13 @@ export interface OpenAiCompatibleConfig {
   readonly timeoutMs: number;
   readonly apiKeyEnv: string;
   /**
+   * H10b — the endpoint's EXPLICIT structured-output contract (deployment value, never
+   * guessed from the URL). 'json_schema' (default) sends OpenAI json_schema; 'json_object'
+   * is for endpoints that only accept {type:'json_object'} (e.g. DeepSeek): the schema then
+   * rides as a system instruction and the caller still validates the parsed output.
+   */
+  readonly structuredOutput?: 'json_schema' | 'json_object';
+  /**
    * SMART-ROUTER-PROD-01 — the deployment's EXPLICIT product routing configuration.
    * `routingMode`/`routingPolicy` are optional (absent = the product default
    * DETERMINISTIC_V1 / BALANCED). `routingTraits` is all-or-nothing: the operator
@@ -91,6 +98,7 @@ export const MODEL_PROVIDER_ENV = {
   costTier: 'COS_MODEL_COST_TIER',
   latencyTier: 'COS_MODEL_LATENCY_TIER',
   reliabilityClass: 'COS_MODEL_RELIABILITY_CLASS',
+  structuredOutput: 'COS_MODEL_STRUCTURED_OUTPUT',
 } as const;
 
 const ROUTING_MODES = ['DETERMINISTIC_V1', 'SMART_ROUTER_V1'] as const;
@@ -140,6 +148,11 @@ export const resolveOpenAiCompatibleConfig = (
       );
     }
     timeoutMs = parsed;
+  }
+  const structuredRaw = env[MODEL_PROVIDER_ENV.structuredOutput]?.trim() ?? '';
+  const structuredOutput = structuredRaw === '' ? undefined : oneOf(['json_schema', 'json_object'] as const)(structuredRaw);
+  if (structuredRaw !== '' && structuredOutput === undefined) {
+    return err(domainError('VALIDATION_FAILED', 'COS_MODEL_STRUCTURED_OUTPUT must be json_schema or json_object.', { reason: 'MODEL_CONFIG_INVALID' }));
   }
   // SMART-ROUTER-PROD-01: the explicit routing configuration. Every value is
   // validated loudly — an invalid or PARTIAL configuration is a config error,
@@ -225,6 +238,7 @@ export const resolveOpenAiCompatibleConfig = (
     timeoutMs,
     apiKeyEnv: DEFAULT_API_KEY_ENV,
     ...(routingMode === undefined ? {} : {routingMode}),
+    ...(structuredOutput === undefined ? {} : {structuredOutput}),
     ...(authentication === undefined ? {} : {authentication}),
     ...(routingPolicy === undefined ? {} : {routingPolicy}),
     ...(routingTraits === undefined ? {} : {routingTraits}),
@@ -402,7 +416,13 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
       if (request_.temperature !== undefined) wireBody['temperature'] = request_.temperature;
       if (request_.maxOutputTokens !== undefined) wireBody['max_tokens'] = request_.maxOutputTokens;
       if (request_.responseFormat !== undefined) {
-        if (request_.responseFormat.mode === 'json_schema' && request_.responseFormat.schema !== undefined) {
+        if (request_.responseFormat.mode === 'json_schema' && request_.responseFormat.schema !== undefined && config.structuredOutput === 'json_object') {
+          wireBody['response_format'] = { type: 'json_object' };
+          wireBody['messages'] = [
+            { role: 'system', content: `Respond with ONE json object only, valid against this JSON Schema (named ${request_.responseFormat.schemaName ?? 'companyos_output'}):\n${JSON.stringify(request_.responseFormat.schema)}` },
+            ...(wireBody['messages'] as unknown[]),
+          ];
+        } else if (request_.responseFormat.mode === 'json_schema' && request_.responseFormat.schema !== undefined) {
           wireBody['response_format'] = {
             type: 'json_schema',
             json_schema: {
