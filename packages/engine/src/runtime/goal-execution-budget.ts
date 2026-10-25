@@ -1,4 +1,4 @@
-import { domainError, type CostAdmissionBound, type ExecutionBudgetStore, type GoalBudgetPolicy, type GoalExecutionBudget } from '@companyos/core';
+import { domainError, type CostAdmissionBound, type ExecutionBudgetStore, type GoalBudgetPolicy, type GoalExecutionBudget, type UsageReconciliation } from '@companyos/core';
 
 const refuse = (reason: string): never => { throw domainError('POLICY_DENIED', 'External dispatch admission was refused.', { reason, retryable: false }); };
 const integer = (n: number): boolean => Number.isSafeInteger(n) && n >= 0;
@@ -64,6 +64,33 @@ export function createGoalExecutionBudget(store: ExecutionBudgetStore, now: () =
           return { next: state, value: undefined };
         }
         return { next: { ...state, reservations: state.reservations.map((r) => r === reservation ? { ...r, status: known ? 'KNOWN' : 'UNKNOWN', usage: resolved } : r) }, value: undefined };
+      });
+    },
+    /**
+     * H12c: operator reconciliation of an UNKNOWN reservation (main process only). Only a
+     * reservation recovery already made UNKNOWN can be reconciled (a RESERVED one may still
+     * be in flight); the attested usage must fit the trusted bound the call was admitted
+     * under. Re-applying the identical attestation is a no-op; anything else conflicts.
+     * Never admits, retries or replays a call.
+     */
+    async reconcile(goalRunId: string, callId: string, usage: { readonly tokens: number; readonly costMicros: number }, reconciliation: UsageReconciliation): Promise<'APPLIED' | 'ALREADY_APPLIED'> {
+      if (!reconciliation.reconciliationId || !reconciliation.attestedBy || !reconciliation.attestedAt || !/^sha256:[0-9a-f]{64}$/u.test(reconciliation.evidenceRef)) refuse('GOAL_RECONCILIATION_INVALID');
+      if (!integer(usage.tokens) || !integer(usage.costMicros)) refuse('GOAL_RECONCILIATION_INVALID');
+      return store.update(goalRunId, (state) => {
+        if (state === null) return refuse('GOAL_BUDGET_NOT_CONFIGURED');
+        const reservation = state.reservations.find((r) => r.callId === callId);
+        if (reservation === undefined) return refuse('GOAL_RESERVATION_NOT_FOUND');
+        const value = { tokens: usage.tokens, costMicros: usage.costMicros };
+        if (reservation.status === 'KNOWN') {
+          if (reservation.reconciliation !== undefined && same(reservation.reconciliation, reconciliation) && same(reservation.usage, value)) return { next: state, value: 'ALREADY_APPLIED' as const };
+          return refuse('GOAL_RECONCILIATION_CONFLICT');
+        }
+        if (reservation.status !== 'UNKNOWN') return refuse('GOAL_RECONCILIATION_NOT_UNKNOWN');
+        if (usage.tokens > reservation.bound.inputTokens + reservation.bound.outputTokens || usage.costMicros > reservation.bound.costMicros) return refuse('GOAL_RECONCILIATION_EXCEEDS_BOUND');
+        return {
+          next: { ...state, reservations: state.reservations.map((r) => r === reservation ? { ...r, status: 'KNOWN' as const, usage: value, reconciliation: { ...reconciliation } } : r) },
+          value: 'APPLIED' as const,
+        };
       });
     },
     async recover(goalRunId: string): Promise<void> {

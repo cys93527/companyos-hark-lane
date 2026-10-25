@@ -3,7 +3,7 @@
  * resolve. A dangling link is how a doc system silently rots.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -55,14 +55,17 @@ describe('markdown links', () => {
   it('resolves every relative link', () => {
     const broken = links
       .filter((link) => !existsSync(resolve(dirname(link.file), link.target)))
-      .map((link) => `${link.file.replace(REPO_ROOT, '')} -> ${link.target}`);
+      .map((link) => `${relative(REPO_ROOT, link.file).split(sep).join('/')} -> ${link.target}`);
     expect(broken).toEqual([]);
   });
 
   it('keeps every document reachable from the index', () => {
     const index = readFileSync(join(REPO_ROOT, 'docs', 'INDEX.md'), 'utf8');
-    const docFiles = markdownFiles(join(REPO_ROOT, 'docs'))
-      .map((file) => file.replace(join(REPO_ROOT, 'docs') + '\\', '').replace(/\\/g, '/'))
+    // H12c: platform-independent relative names (the old Windows-only '\\' strip made
+    // every doc look unreachable on Linux/macOS, hiding the real gaps).
+    const docsDir = join(REPO_ROOT, 'docs');
+    const docFiles = markdownFiles(docsDir)
+      .map((file) => relative(docsDir, file).split(sep).join('/'))
       .filter((name) => name !== 'INDEX.md');
     const missing = docFiles.filter((name) => !index.includes(name));
     expect(missing).toEqual([]);

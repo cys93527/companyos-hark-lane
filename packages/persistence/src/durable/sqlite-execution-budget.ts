@@ -22,6 +22,11 @@ function validState(value: unknown, goalRunId: string): value is GoalExecutionBu
     const bound = reservation['bound'];
     if (!identity(bound['modelKey']) || !identity(bound['evidenceRef']) || !count(bound['inputTokens']) || !count(bound['outputTokens']) || !count(bound['costMicros']) || !count(bound['validUntilMs']) || !count(bound['inputTokens'] + bound['outputTokens'])) return false;
     const usage = reservation['usage'];
+    const reconciliation = reservation['reconciliation'];
+    if (reconciliation !== undefined) {
+      // H12c: only a KNOWN reservation can carry an operator reconciliation, fully formed.
+      if (reservation['status'] !== 'KNOWN' || !record(reconciliation) || !identity(reconciliation['reconciliationId']) || !identity(reconciliation['attestedBy']) || !identity(reconciliation['attestedAt']) || typeof reconciliation['evidenceRef'] !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(reconciliation['evidenceRef'])) return false;
+    }
     if (reservation['status'] === 'KNOWN') {
       if (!record(usage) || !count(usage['tokens']) || !count(usage['costMicros']) || usage['tokens'] > bound['inputTokens'] + bound['outputTokens'] || usage['costMicros'] > bound['costMicros']) return false;
       tokens += usage['tokens']; cost += usage['costMicros'];

@@ -17,6 +17,19 @@ export interface CostAdmissionBound {
   readonly validUntilMs: number;
 }
 
+/**
+ * H12c: operator attestation that turned an UNKNOWN reservation into KNOWN usage. Only the
+ * main process writes it, from the operator's deployment file with content-addressed
+ * evidence (e.g. the provider's invoice line); never the renderer, the model or an adapter.
+ */
+export interface UsageReconciliation {
+  readonly reconciliationId: string;
+  readonly attestedBy: string;
+  readonly attestedAt: string;
+  /** `sha256:<hex>` of the evidence bytes the operator supplied. */
+  readonly evidenceRef: string;
+}
+
 export interface BudgetReservation {
   readonly callId: string;
   readonly runId: string;
@@ -24,6 +37,8 @@ export interface BudgetReservation {
   readonly bound: CostAdmissionBound;
   readonly status: 'RESERVED' | 'KNOWN' | 'UNKNOWN';
   readonly usage: { readonly tokens: number; readonly costMicros: number } | null;
+  /** Present only on a KNOWN reservation that was reconciled from UNKNOWN by the operator. */
+  readonly reconciliation?: UsageReconciliation;
 }
 
 export interface GoalExecutionBudget {

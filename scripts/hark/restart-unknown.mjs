@@ -3,6 +3,8 @@
 // No real Provider, no network, ¥0: the model provider is an in-process COUNTING FAKE.
 // Run on the app's bundled runtime, once per phase, each a separate OS process:
 //   CompanyOS.exe (ELECTRON_RUN_AS_NODE=1) restart-unknown.mjs <phase> <resources/app> <evidenceDir> <budgetDir> <dataDir>
+// (p1 never exits by itself: after its checks it writes p1-ready.json and blocks until the
+//  workflow kills the OS process with Stop-Process -Force — H12c hard kill.)
 // phase p1: compose, create a Goal (budget initialized), start the planning turn; the fake
 //           provider never answers, so ONE admitted reservation is RESERVED. Exit WITHOUT
 //           settling and WITHOUT closing the database (a hard stop mid-call).
@@ -18,7 +20,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const [phase, appDir, evidence, budgetDir, dataDir] = process.argv.slice(2);
-if (!['p1', 'p2', 'p3'].includes(phase ?? '') || !appDir || !evidence || !budgetDir || !dataDir) { console.error('usage: <p1|p2|p3> <appDir> <evidence> <budgetDir> <dataDir>'); process.exit(64); }
+if (!['p1', 'p2', 'p3', 'p4'].includes(phase ?? '') || !appDir || !evidence || !budgetDir || !dataDir) { console.error('usage: <p1|p2|p3|p4> <appDir> <evidence> <budgetDir> <dataDir>'); process.exit(64); }
 mkdirSync(evidence, { recursive: true });
 mkdirSync(dataDir, { recursive: true });
 const imp = (rel) => import(pathToFileURL(join(appDir, rel)).href);
@@ -41,10 +43,23 @@ const finish = (code, { close = true } = {}) => {
   try { write(); } catch { /* stdout still has it */ }
   if (close) {
     try { db?.close(); } catch (e) { out.closeError = String(e?.message ?? e); }
-    if (phase === 'p3') for (const s of ['', '-wal', '-shm']) { const f = join(dataDir, `companyos.sqlite${s}`); try { if (existsSync(f)) copyFileSync(f, join(evidence, `companyos.sqlite${s}`)); } catch { /* best effort */ } }
+    if (phase === 'p4') for (const s of ['', '-wal', '-shm']) { const f = join(dataDir, `companyos.sqlite${s}`); try { if (existsSync(f)) copyFileSync(f, join(evidence, `companyos.sqlite${s}`)); } catch { /* best effort */ } }
   }
   console.log(JSON.stringify(out, null, 2));
   process.exit(out.result === 'PASS' ? 0 : (code === 0 ? 1 : code));
+};
+const awaitHardKill = () => {
+  out.finishedAt = new Date().toISOString();
+  out.providerCallsThisProcess = calls;
+  out.failed = out.checks.filter((c) => !c.pass).map((c) => c.id);
+  out.result = out.failed.length === 0 ? 'PASS' : 'FAIL';
+  out.stop = 'awaiting external hard kill (Stop-Process -Force)';
+  write();
+  console.log(JSON.stringify(out, null, 2));
+  if (out.result !== 'PASS') process.exit(1); // nothing to kill: fail the phase directly
+  writeFileSync(join(evidence, 'p1-ready.json'), JSON.stringify({ pid: process.pid, result: out.result, at: out.finishedAt }));
+  setInterval(() => {}, 1 << 30); // keep the event loop alive until the OS kills us
+  return new Promise(() => {});
 };
 process.on('uncaughtException', (e) => { out.result = 'HARNESS_CRASH'; out.error = String(e?.stack ?? e).slice(0, 2000); finish(10); });
 process.on('unhandledRejection', (e) => { out.result = 'HARNESS_CRASH'; out.error = String(e?.stack ?? e).slice(0, 2000); finish(13); });
@@ -103,6 +118,9 @@ try {
   const core = await composeCoreServices(db, nullLogger, {
     artifactFoundation: foundation,
     ...productionCompositionOptions(process.env, { trustedBudgetProofs: deployment.source, budgetCap: deployment.cap }),
+    // H12c: the same operator directory the product passes (userData/budget). p1-p3 have no
+    // reconciliations.json (ABSENT, no effect); before p4 the operator tool writes one.
+    usageReconciliationDir: budgetDir,
   });
   if (core === null) { out.result = 'COMPOSITION_FAILED'; finish(7); }
 
@@ -162,8 +180,42 @@ try {
     check('P1-driver-still-blocked-in-call', driverSettled === null, driverSettled);
     check('P1-run.budget-held-1', out.budgetViewAtExit?.held?.calls === 1 && out.budgetViewAtExit?.unknown?.calls === 0, out.budgetViewAtExit);
     writeFileSync(STATE, JSON.stringify({ runId, reservation: state?.reservations?.[0] ?? null, goalB }, null, 2));
-    // Hard stop: no settle, no db.close(), no graceful shutdown.
-    finish(0, { close: false });
+    // H12c hard kill: p1 does NOT exit by itself. It records its checks, publishes a
+    // ready marker and then blocks with the call still in flight; the workflow terminates
+    // the OS process from outside (Stop-Process -Force = TerminateProcess). No settle, no
+    // db.close(), no exit handlers, no graceful shutdown of any kind.
+    await awaitHardKill(); // never resolves
+  }
+
+  if (phase === 'p4') {
+    // H12c: the operator attested the UNKNOWN call with evidence (make-usage-reconciliation.mjs
+    // ran between p3 and p4). Composition start applied it: UNKNOWN -> KNOWN with the attested
+    // usage, nothing replayed, the cancelled terminal untouched.
+    const runId = prior.runId;
+    out.goalRunId = runId;
+    const entry = JSON.parse(readFileSync(join(evidence, 'reconciliation-entry.json'), 'utf8'));
+    out.entry = entry;
+    const lines = existsSync(CALL_LOG) ? readFileSync(CALL_LOG, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    const before = out.beforeRecovery.budget?.reservations?.[0];
+    const nowBudget = budgetRow(runId);
+    const r = nowBudget?.reservations?.[0];
+    out.afterReconciliation = nowBudget;
+    check('P4-before-start-UNKNOWN', before?.status === 'UNKNOWN' && before?.usage === null, before);
+    check('P4-reservation-KNOWN-from-attestation', nowBudget?.reservations?.length === 1 && r?.callId === entry.callId && r?.status === 'KNOWN'
+      && r?.usage?.tokens === entry.tokens && r?.usage?.costMicros === entry.costMicros
+      && r?.reconciliation?.reconciliationId === entry.reconciliationId && r?.reconciliation?.evidenceRef === entry.evidence && r?.reconciliation?.attestedBy === entry.attestedBy, r);
+    check('P4-bound-unchanged', JSON.stringify(r?.bound) === JSON.stringify(prior.reservation?.bound), r?.bound);
+    const view = await budgetView(runId);
+    out.budgetView = view;
+    check('P4-run.budget-unknown-0-reconciled-1', view?.unknown?.calls === 0 && view?.reconciled?.calls === 1 && view?.reconciled?.costMicros === entry.costMicros
+      && view?.settled?.calls === 1 && view?.settled?.costMicros === entry.costMicros && view?.state === 'CANCELLED', view);
+    const adv = await core.controlPlane.handle({ operation: 'goal.advance', payload: { companyId: COMPANY, runId } });
+    out.advance = adv.ok ? { ok: true } : { ok: false, code: adv.error.code, reason: reasonOf(adv.error) };
+    await sleep(500);
+    check('P4-advance-still-refused-CANCELLED', !adv.ok && JSON.stringify(out.advance).includes('CANCELLED'), out.advance);
+    check('P4-cancellation-and-terminal-intact', JSON.stringify(budgetRow(runId)?.cancellation) === JSON.stringify(prior.cancellation) && runTerm(runId).history === prior.runHistoryAfterCancel, { cancellation: budgetRow(runId)?.cancellation, runState: runTerm(runId).runState });
+    check('P4-provider-calls-0', calls === 0 && lines.length === 1 && lines.every((l) => l.phase === 'p1'), { thisProcess: calls, log: lines });
+    finish(0);
   }
 
   const runId = prior.runId;

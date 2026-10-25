@@ -54,6 +54,33 @@ export class MigrationFormatError extends DomainError {
   }
 }
 
+/**
+ * H12c: the database holds an applied migration that NO chain shipped with this build
+ * knows. That only happens when a newer CompanyOS version already upgraded this data
+ * directory and an older build is now opening it (a downgrade). The older build cannot
+ * know what the newer schema means, so it refuses BEFORE applying anything instead of
+ * running on a schema it does not understand. Code stays inside the frozen taxonomy
+ * (`CONFLICT`); `details.kind` carries the typed reason.
+ */
+export class MigrationFromNewerVersionError extends DomainError {
+  public readonly unknownMigrations: readonly string[];
+  public constructor(unknownMigrations: readonly string[]) {
+    super(
+      'CONFLICT',
+      `The database was upgraded by a newer CompanyOS version (unknown applied migrations: ${unknownMigrations.join(', ')}); this version refuses to open it.`,
+      { details: { kind: 'SCHEMA_FROM_NEWER_VERSION', unknownMigrations } },
+    );
+    this.name = 'MigrationFromNewerVersionError';
+    this.unknownMigrations = unknownMigrations;
+  }
+}
+
+export const isMigrationFromNewerVersionError = (error: unknown): error is MigrationFromNewerVersionError =>
+  error instanceof MigrationFromNewerVersionError ||
+  (error instanceof DomainError &&
+    error.code === 'CONFLICT' &&
+    (error.details as { kind?: unknown } | undefined)?.kind === 'SCHEMA_FROM_NEWER_VERSION');
+
 const FILE_PATTERN = /^(\d{4})_([a-z0-9_]+)\.sql$/;
 
 /** Line endings are normalised so the checksum is identical on Windows and CI. */
@@ -109,6 +136,14 @@ export interface ApplyMigrationsOptions {
   readonly migrations: readonly MigrationFile[];
   readonly appliedAt: string;
   readonly logger?: { info(message: string, fields?: Record<string, unknown>): void };
+  /**
+   * H12c: every migration name this build ships across ALL chains (schema_migrations is
+   * shared by every chain). When given, an applied row outside this set and outside
+   * `migrations` is a downgrade and is refused before anything is applied; rows that
+   * belong to another known chain are expected and silent. When omitted (isolated unit
+   * use of one chain), unknown rows are only logged.
+   */
+  readonly knownNames?: ReadonlySet<string>;
 }
 
 export function readAppliedMigrations(db: Database): ReadonlyMap<string, MigrationRecord> {
@@ -129,6 +164,13 @@ export function readAppliedMigrations(db: Database): ReadonlyMap<string, Migrati
 export function applyMigrations(options: ApplyMigrationsOptions): MigrationReport {
   const { db, migrations, appliedAt } = options;
   const alreadyApplied = readAppliedMigrations(db);
+  const inThisChain = new Set(migrations.map((migration) => migration.name));
+  const unknown = [...alreadyApplied.keys()].filter(
+    (name) => !inThisChain.has(name) && !(options.knownNames?.has(name) ?? false),
+  );
+  if (options.knownNames !== undefined && unknown.length > 0) {
+    throw new MigrationFromNewerVersionError(unknown);
+  }
   const applied: MigrationRecord[] = [];
   const skipped: MigrationRecord[] = [];
 
@@ -154,11 +196,8 @@ export function applyMigrations(options: ApplyMigrationsOptions): MigrationRepor
     applied.push(record);
   }
 
-  const known = new Set(migrations.map((migration) => migration.name));
-  for (const name of alreadyApplied.keys()) {
-    if (!known.has(name)) {
-      options.logger?.info('applied migration file is no longer present', { name });
-    }
+  for (const name of unknown) {
+    options.logger?.info('applied migration file is no longer present', { name });
   }
 
   const currentVersion = [...alreadyApplied.keys(), ...applied.map((record) => record.name)].reduce(

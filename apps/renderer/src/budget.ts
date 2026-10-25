@@ -21,6 +21,8 @@ export interface GoalBudgetView {
   readonly settled: Bucket;
   readonly unknown: Bucket;
   readonly held: Bucket;
+  /** H12c: part of `settled` the operator reconciled from UNKNOWN (absent in older payloads = 0). */
+  readonly reconciled: Bucket;
   readonly remaining: Bucket | null;
   readonly worstCaseCostMicros: number;
 }
@@ -56,12 +58,13 @@ export const parseGoalBudgetRead = (value: unknown): GoalBudgetRead | null => {
   const state = STATES.find((s) => s === b['state']);
   const currency = b['currency'] === null ? null : CURRENCIES.find((c) => c === b['currency']);
   const settled = bucket(b['settled']); const unknown = bucket(b['unknown']); const held = bucket(b['held']);
+  const reconciled = b['reconciled'] === undefined ? { calls: 0, tokens: 0, costMicros: 0 } : bucket(b['reconciled']);
   const remaining = b['remaining'] === null ? null : bucket(b['remaining']);
   const capRaw = rec(b['cap']);
   const capBucket = capRaw === null ? null : bucket(capRaw);
   const deadlineMs = capRaw === null ? null : n(capRaw['deadlineMs']);
   const worst = n(b['worstCaseCostMicros']);
-  if (state === undefined || currency === undefined || settled === null || unknown === null || held === null
+  if (state === undefined || currency === undefined || settled === null || unknown === null || held === null || reconciled === null
     || (b['remaining'] !== null && remaining === null) || (capRaw !== null && (capBucket === null || deadlineMs === null)) || worst === null) return null;
   const p = rec(root['plan']);
   let plan: PreviewPlanView | null = null;
@@ -73,7 +76,7 @@ export const parseGoalBudgetRead = (value: unknown): GoalBudgetRead | null => {
     };
   }
   return {
-    budget: { state, currency, cap: capBucket === null || deadlineMs === null ? null : { ...capBucket, deadlineMs }, settled, unknown, held, remaining, worstCaseCostMicros: worst },
+    budget: { state, currency, cap: capBucket === null || deadlineMs === null ? null : { ...capBucket, deadlineMs }, settled, unknown, held, reconciled, remaining, worstCaseCostMicros: worst },
     plan,
   };
 };
@@ -105,6 +108,7 @@ export const budgetRows = (view: GoalBudgetView): readonly string[] => {
   const rows = [`费用 · ${STATE_LABEL[view.state]}`];
   if (view.cap !== null) rows.push(`上限 · ${m(view.cap.costMicros)} · ${String(view.cap.calls)} 次调用 · ${String(view.cap.tokens)} tokens`);
   rows.push(`已结算 · ${m(view.settled.costMicros)} · ${String(view.settled.calls)} 次 · ${String(view.settled.tokens)} tokens`);
+  if (view.reconciled.calls > 0) rows.push(`其中运营者凭证对账 · ${String(view.reconciled.calls)} 次 · ${m(view.reconciled.costMicros)}`);
   if (view.unknown.calls > 0) rows.push(`未确认 · ${String(view.unknown.calls)} 次 · 最多 ${m(view.unknown.costMicros)}（不会自动重试）`);
   if (view.held.calls > 0) rows.push(`进行中预留 · ${String(view.held.calls)} 次 · 最多 ${m(view.held.costMicros)}`);
   if (view.remaining !== null) rows.push(`最坏情况下剩余 · ${m(view.remaining.costMicros)} · ${String(view.remaining.calls)} 次`);

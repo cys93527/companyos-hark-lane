@@ -4,9 +4,12 @@ name: hark-restart
 # Installs the installer built by the push-triggered hark-installer run for THIS commit
 # (or the run given on dispatch), then runs scripts/hark/restart-unknown.mjs three times,
 # each a separate CompanyOS.exe process (ELECTRON_RUN_AS_NODE=1) on the SAME dataDir:
-#   p1 leaves one admitted, unsettled reservation and stops hard (no settle, no close);
+#   p1 leaves one admitted, unsettled reservation and is KILLED from outside
+#      (Stop-Process -Force after its ready marker; no settle, no close, no exit handlers);
 #   p2 reopens: recovery => UNKNOWN at bound, 0 provider calls, GOAL_USAGE_UNKNOWN, cancel;
 #   p3 reopens: cancelled terminals unchanged, 0 provider calls, UNKNOWN still counted.
+#   operator: make-usage-reconciliation.mjs attests the call's usage with evidence (H12c);
+#   p4 reopens: UNKNOWN -> KNOWN from the attestation, 0 provider calls, terminal intact.
 # The model provider is an in-process COUNTING FAKE (no network, no secret, CNY 0).
 # No DSH, no native.job production dispatch, no real Provider, no release/tag.
 on:
@@ -61,22 +64,62 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "BUDGETDIR=$budget" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "DATADIR=$(Join-Path $env:RUNNER_TEMP 'h12-data')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - name: Three processes on one dataDir (p1 hard stop, p2 recover, p3 reopen)
+      - name: Four processes on one dataDir (p1 hard-killed, p2 recover, p3 reopen, operator reconciliation, p4 reopen)
         shell: pwsh
         run: |
           $env:ELECTRON_RUN_AS_NODE = '1'
           $codes = [ordered]@{}
-          foreach ($ph in 'p1','p2','p3') {
-            # CompanyOS.exe is a GUI-subsystem binary: wait for it explicitly.
-            $argv = @('scripts/hark/restart-unknown.mjs', $ph, "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"", "`"$env:DATADIR`"")
-            $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput "hark-evidence\$ph-stdout.txt" -RedirectStandardError "hark-evidence\$ph-stderr.txt"
-            $codes[$ph] = $p.ExitCode
-            Write-Host "$ph pid=$($p.Id) exit=$($p.ExitCode)"
-            Get-Content "hark-evidence\$ph-stdout.txt" -ErrorAction SilentlyContinue | Select-Object -Last 40
-            if ($p.ExitCode -ne 0) { break }
+          $argvOf = { param($ph) @('scripts/hark/restart-unknown.mjs', $ph, "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"", "`"$env:DATADIR`"") }
+          # p1: started WITHOUT -Wait. It never exits by itself; once p1-ready.json appears
+          # (its checks passed with the provider call in flight) it is terminated from outside
+          # with Stop-Process -Force (TerminateProcess: no exit handlers, no db.close()).
+          $ready = 'hark-evidence\p1-ready.json'
+          $p1 = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList (& $argvOf 'p1') -PassThru -NoNewWindow -RedirectStandardOutput 'hark-evidence\p1-stdout.txt' -RedirectStandardError 'hark-evidence\p1-stderr.txt'
+          $null = $p1.Handle  # cache the handle so ExitCode is readable after the kill
+          $deadline = (Get-Date).AddSeconds(120)
+          while (-not (Test-Path $ready) -and -not $p1.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+          $kill = [ordered]@{ pid = $p1.Id; readyMarker = (Test-Path $ready); exitedBeforeKill = $p1.HasExited }
+          if ((Test-Path $ready) -and -not $p1.HasExited) {
+            Stop-Process -Id $p1.Id -Force
+            $p1.WaitForExit(30000) | Out-Null
+            $kill.method = 'Stop-Process -Force'
+            $kill.killedAt = (Get-Date).ToString('o')
+            $kill.hasExited = $p1.HasExited
+            $kill.exitCode = $p1.ExitCode
+            $kill.stillRunning = [bool](Get-Process -Id $p1.Id -ErrorAction SilentlyContinue)
+            $p1json = Get-Content 'hark-evidence\p1.json' -Raw | ConvertFrom-Json
+            $codes['p1'] = if ($p1json.result -eq 'PASS' -and $kill.hasExited -and -not $kill.stillRunning) { 0 } else { 1 }
+          } else {
+            if (-not $p1.HasExited) { Stop-Process -Id $p1.Id -Force }
+            $p1.WaitForExit(30000) | Out-Null
+            $kill.method = 'none (p1 never became ready)'
+            $kill.exitCode = $p1.ExitCode
+            $codes['p1'] = 1
+          }
+          $kill | ConvertTo-Json | Tee-Object hark-evidence/p1-kill.json
+          Get-Content 'hark-evidence\p1-stdout.txt' -ErrorAction SilentlyContinue | Select-Object -Last 40
+          if ($codes['p1'] -eq 0) {
+            foreach ($ph in 'p2','p3','p4') {
+              if ($ph -eq 'p4') {
+                # H12c operator reconciliation: the operator records the UNKNOWN call's real
+                # usage with evidence (fake invoice line; usage within the trusted bound).
+                $st = Get-Content 'hark-evidence\h12-state.json' -Raw | ConvertFrom-Json
+                $b = $st.reservation.bound
+                $inv = Join-Path $env:RUNNER_TEMP 'h12c-invoice.txt'
+                "fake provider usage export (H12c CI): call=$($st.reservation.callId) tokens=$($b.inputTokens) costMicros=$([int][math]::Floor($b.costMicros / 2))" | Out-File -Encoding utf8 $inv
+                node scripts/hark/make-usage-reconciliation.mjs "$env:BUDGETDIR" $st.runId $st.reservation.callId $b.inputTokens ([int][math]::Floor($b.costMicros / 2)) 'operator@h12c-ci' $inv 'rec-h12c-ci-1' | Out-File -Encoding utf8 'hark-evidence\reconciliation-entry.json'
+                if ($LASTEXITCODE -ne 0) { $codes['p4'] = $LASTEXITCODE; break }
+              }
+              # CompanyOS.exe is a GUI-subsystem binary: wait for it explicitly.
+              $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList (& $argvOf $ph) -Wait -PassThru -NoNewWindow -RedirectStandardOutput "hark-evidence\$ph-stdout.txt" -RedirectStandardError "hark-evidence\$ph-stderr.txt"
+              $codes[$ph] = $p.ExitCode
+              Write-Host "$ph pid=$($p.Id) exit=$($p.ExitCode)"
+              Get-Content "hark-evidence\$ph-stdout.txt" -ErrorAction SilentlyContinue | Select-Object -Last 40
+              if ($p.ExitCode -ne 0) { break }
+            }
           }
           $codes | ConvertTo-Json | Tee-Object hark-evidence/exit-codes.json
-          if ($codes.Count -ne 3 -or ($codes.Values | Where-Object { $_ -ne 0 })) { exit 1 }
+          if ($codes.Count -ne 4 -or ($codes.Values | Where-Object { $_ -ne 0 })) { exit 1 }
       - name: Uninstall
         if: always()
         shell: pwsh

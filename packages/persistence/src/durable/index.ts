@@ -51,7 +51,7 @@ import type {
 import { openDatabase, type Database, type OpenDatabaseOptions } from '../db.js';
 import { DomainError, type Result } from '@companyos/core';
 
-import { applyMigrations, loadMigrations, type MigrationReport } from '../migrations.js';
+import { MigrationFormatError, applyMigrations, loadMigrations, type MigrationReport } from '../migrations.js';
 import { createSqliteApprovalStore } from './sqlite-approval-store.js';
 import { createSqliteCommandLedger } from './sqlite-command-ledger.js';
 import { createSqliteEventStore, type SqliteEventStore } from './sqlite-event-store.js';
@@ -265,6 +265,32 @@ const migrationsDirFor = (chain: MigrationChainName): string => {
   }
 };
 
+/**
+ * H12c: every migration name this build ships, across ALL chains. `schema_migrations` is
+ * one table shared by every chain, so each chain's runner must know the other chains'
+ * names: rows from a sibling chain are expected, a row no chain knows means a newer
+ * CompanyOS version wrote this database (downgrade → typed refusal before any apply).
+ * Names are globally unique across chains (asserted here, so a future collision fails loudly).
+ */
+export function shippedMigrationNames(extraDirs: readonly string[] = []): ReadonlySet<string> {
+  const names = new Set<string>();
+  const dirs = [...ALL_CHAINS.map(migrationsDirFor), ...extraDirs];
+  const seenDirs = new Set<string>();
+  for (const dir of dirs) {
+    if (seenDirs.has(dir)) continue;
+    seenDirs.add(dir);
+    for (const migration of loadMigrations(dir)) {
+      if (names.has(migration.name) && !extraDirs.includes(dir)) {
+        throw new MigrationFormatError(`Migration name "${migration.name}" is shipped by more than one chain`, {
+          name: migration.name,
+        });
+      }
+      names.add(migration.name);
+    }
+  }
+  return names;
+}
+
 export interface OpenDurableDatabaseOptions extends Omit<OpenDatabaseOptions, 'path'> {
   readonly dataDir: string;
   readonly fileName?: string;
@@ -423,11 +449,13 @@ export function openDurableDatabase(options: OpenDurableDatabaseOptions): Durabl
     ...(options.foreignKeys === undefined ? {} : { foreignKeys: options.foreignKeys }),
   });
 
+  const knownNames = shippedMigrationNames();
   const apply = (chain: MigrationChainName): MigrationReport =>
     applyMigrations({
       db,
       migrations: loadMigrations(migrationsDirFor(chain)),
       appliedAt: options.appliedAt,
+      knownNames,
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
 

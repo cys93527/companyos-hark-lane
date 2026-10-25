@@ -880,4 +880,4 @@ export type {
   WorkflowEnginePort,
 } from './ports/workflow-engine.js';
 export type { EventStorePort, StoredEvent } from './ports/event-store.js';
-export type { GoalBudgetPolicy, CostAdmissionBound, BudgetReservation, GoalExecutionBudget, ExecutionBudgetStore } from './ports/execution-budget.js';
+export type { GoalBudgetPolicy, CostAdmissionBound, BudgetReservation, GoalExecutionBudget, ExecutionBudgetStore, UsageReconciliation } from './ports/execution-budget.js';

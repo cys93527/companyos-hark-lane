@@ -81,7 +81,17 @@ export interface DatabaseStatus {
   readonly path: string | null;
   readonly journalMode: string | null;
   readonly schemaVersion: number;
+  /**
+   * H12c: why the durable database is not open, typed. `SCHEMA_FROM_NEWER_VERSION` means a
+   * newer CompanyOS already upgraded this data directory and this (older) build refused to
+   * open it rather than run on a schema it does not understand; the data is untouched.
+   */
+  readonly failure?: DatabaseFailure | null;
 }
+
+export type DatabaseFailure =
+  | { readonly code: 'SCHEMA_FROM_NEWER_VERSION'; readonly unknownMigrations: readonly string[] }
+  | { readonly code: 'OPEN_FAILED'; readonly message: string };
 
 /** Shape of `window.companyos` as seen by the renderer. */
 export interface CompanyOsBridge {

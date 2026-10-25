@@ -88,6 +88,7 @@ import type { ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
 import { isRunEnded } from './run-outcome.js';
+import { DatabaseFailureBanner, readDatabaseFailure } from './database-failure.js';
 
 /** Bounded, read-only, lifecycle-bound polling — never workflow authority. */
 const GOAL_POLL_INTERVAL_MS = 4_000;
@@ -881,6 +882,7 @@ export function App() {
             : h(
                 'div',
                 { className: 'chat-column' },
+                h(DatabaseFailureBanner, { failure: readDatabaseFailure(database?.failure) }),
                 onboarding,
                 pendingApprovalDecision === null
                   ? null

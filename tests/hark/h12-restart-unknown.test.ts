@@ -56,6 +56,7 @@ const compose = async (first: boolean) => {
   const core = await composeCoreServices(db, nullLogger as never, {
     artifactFoundation: foundation as never,
     ...productionCompositionOptions({ COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: '1' }, { trustedBudgetProofs: deployment.source, budgetCap: deployment.cap }),
+    usageReconciliationDir: budgetDir, // H12c: same operator dir the product passes
   } as never);
   if (core === null) throw new Error('composition failed');
   const opened = await core.repositoryRuntime.openWorkspace({ root: mkdtempSync(join(root, 'ws-')), commandProfile: {} });
@@ -143,5 +144,50 @@ describe('H12 restart: admitted-but-unsettled call is UNKNOWN, never replayed; c
     expect(v.unknown.calls).toBe(1);
     // H12b: after two restarts B is still the typed CANCELLED terminal.
     expect(await outcomeOf(core as never, goalB)).toBe('CANCELLED');
+  });
+  // H12c: the operator attests the UNKNOWN call's usage with evidence (same bytes as
+  // scripts/hark/make-usage-reconciliation.mjs; the offline guard forbids spawning it).
+  const writeReconciliations = (entries: readonly Record<string, unknown>[], evidence: Record<string, Buffer>): void => {
+    mkdirSync(join(budgetDir, 'evidence'), { recursive: true });
+    for (const [hex, bytes] of Object.entries(evidence)) writeFileSync(join(budgetDir, 'evidence', hex), bytes);
+    writeFileSync(join(budgetDir, 'reconciliations.json'), JSON.stringify({ schema: 'companyos:usage-reconciliation:1', entries }));
+  };
+  const sha = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
+
+  it('R4 operator reconciliation: bad entries refused, the valid one turns UNKNOWN into KNOWN; nothing replayed', async () => {
+    calls = 0;
+    const invoice = Buffer.from('fake invoice line: 20000 tokens, 56000 micros');
+    const callId = String((JSON.parse((db0((await compose(false)).core as never).prepare('SELECT execution_budget_json AS b FROM runs WHERE id = ?').get(goalA) as { b: string }).b) as { reservations: { callId: string }[] }).reservations[0]!.callId);
+    const base = { goalRunId: goalA, callId, attestedBy: 'operator@test', attestedAt: new Date().toISOString(), evidence: `sha256:${sha(invoice)}` };
+    writeReconciliations([
+      { ...base, reconciliationId: 'over-bound', tokens: 20000, costMicros: 112001 },
+      { ...base, reconciliationId: 'bad-evidence', tokens: 20000, costMicros: 56000, evidence: `sha256:${'0'.repeat(64)}` },
+    ], { [sha(invoice)]: invoice });
+    {
+      const { budget, view } = await compose(false);
+      expect(budget(goalA).reservations.map((x) => x.status)).toEqual(['UNKNOWN']);
+      expect((await view(goalA)).unknown.calls).toBe(1);
+    }
+    writeReconciliations([{ ...base, reconciliationId: 'rec-1', tokens: 20000, costMicros: 56000 }], { [sha(invoice)]: invoice });
+    const historyA = (await compose(false)).run(goalA).h;
+    const { core, budget, run, view } = await compose(false); // re-apply: idempotent
+    const r = budget(goalA).reservations as unknown as { status: string; usage: unknown; bound: { costMicros: number }; reconciliation?: { reconciliationId: string; evidenceRef: string } }[];
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ status: 'KNOWN', usage: { tokens: 20000, costMicros: 56000 }, bound: { costMicros: 112000 }, reconciliation: { reconciliationId: 'rec-1', evidenceRef: `sha256:${sha(invoice)}` } });
+    const v = (await view(goalA)) as unknown as { unknown: { calls: number }; settled: { calls: number; costMicros: number }; reconciled: { calls: number; costMicros: number }; state: string };
+    expect(v.unknown.calls).toBe(0);
+    expect(v.settled).toMatchObject({ calls: 1, costMicros: 56000 });
+    expect(v.reconciled).toMatchObject({ calls: 1, costMicros: 56000 });
+    expect(v.state).toBe('CANCELLED');
+    const adv = await core.controlPlane!.handle({ operation: 'goal.advance', payload: { companyId: COMPANY, runId: goalA } });
+    expect(adv.ok).toBe(false);
+    expect(adv.error?.code).toBe('CANCELLED');
+    expect(calls).toBe(0);
+    expect(run(goalA).h).toBe(historyA);
+    // A conflicting attestation for an already-reconciled call is refused; the state stays.
+    writeReconciliations([{ ...base, reconciliationId: 'rec-2', tokens: 1, costMicros: 1 }], { [sha(invoice)]: invoice });
+    const again = await compose(false);
+    expect(again.budget(goalA).reservations[0]).toMatchObject({ status: 'KNOWN', usage: { tokens: 20000, costMicros: 56000 } });
+    rmSync(join(budgetDir, 'reconciliations.json'));
   });
 });

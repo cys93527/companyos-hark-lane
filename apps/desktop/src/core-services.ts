@@ -16,6 +16,7 @@ import {
 DomainError, SystemClock, UlidFactory, validatorIdsOf, domainError, type FaultCheckpointPort } from '@companyos/core';
 import type { Logger } from '@companyos/observability';
 import { createExecutionSafetyCoordinator, type GoalSafetyConfiguration } from './execution-safety-coordinator.js';
+import { applyOperatorUsageReconciliations } from './usage-reconciliation.js';
 import { createFileDeliveryPort, createVerifiedFileCarrier, fileDeliveriesOf, fileDeliveryToolRecord, FILE_DELIVERY_TOOL_ID, type FileDeliveryContext } from './verified-file-delivery.js';
 import type { DurableDatabase } from '@companyos/persistence';
 import {
@@ -466,6 +467,12 @@ export interface RepositoryRuntimeOptions {
 export interface ComposeCoreServicesOptions {
   readonly executionSafety?: GoalSafetyConfiguration;
   /**
+   * H12c — the operator deployment directory (userData/budget) holding
+   * reconciliations.json + evidence/. Applied once at composition start, after crash
+   * recovery, through the canonical budget transaction (see usage-reconciliation.ts).
+   */
+  readonly usageReconciliationDir?: string;
+  /**
    * H10b — deployment opt-in: a Goal may PLAN while the work-kind executor is missing; the
    * control plane then stops after the plan (typed EXECUTOR_PROVIDER_UNKNOWN) and never
    * compiles or dispatches. Absent/false => the executor preflight blocks before planning.
@@ -815,6 +822,10 @@ export async function composeCoreServices(
     const ids = new UlidFactory(clock);
     const executionSafety = options.executionSafety === undefined ? null : createExecutionSafetyCoordinator(database, options.executionSafety, () => clock.now());
     await executionSafety?.recover();
+    if (executionSafety !== null && options.usageReconciliationDir !== undefined) {
+      const report = await applyOperatorUsageReconciliations(options.usageReconciliationDir, executionSafety.budget.reconcile);
+      if (report.file !== 'ABSENT') activeLogger.info('operator usage reconciliation', { file: report.file, outcomes: report.outcomes });
+    }
 
     /**
      * Industry-pack live availability (T15-04 corrective; ADR-0025 Decision 4).

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openDatabase, type Database, type OpenDatabaseOptions } from './db.js';
+import { shippedMigrationNames } from './durable/index.js';
 import { applyMigrations, loadMigrations, type MigrationReport } from './migrations.js';
 
 export {
@@ -26,6 +27,8 @@ export {
 export {
   MigrationChecksumError,
   MigrationFormatError,
+  MigrationFromNewerVersionError,
+  isMigrationFromNewerVersionError,
   applyMigrations,
   checksumOf,
   loadMigrations,
@@ -71,6 +74,7 @@ export {
   routerMigrationsDir,
   handoffMigrationsDir,
   openDurableDatabase,
+  shippedMigrationNames,
   toPersistenceError,
   type DurableDatabase,
   type MigrationChainName,
@@ -148,11 +152,13 @@ export function openCompanyDatabase(options: OpenCompanyDatabaseOptions): Compan
     ...(options.foreignKeys === undefined ? {} : { foreignKeys: options.foreignKeys }),
   });
 
-  const migrations = loadMigrations(options.migrationsDir ?? defaultMigrationsDir());
+  const migrationsDir = options.migrationsDir ?? defaultMigrationsDir();
+  const migrations = loadMigrations(migrationsDir);
   const migrationReport = applyMigrations({
     db,
     migrations,
     appliedAt: options.appliedAt,
+    knownNames: shippedMigrationNames([migrationsDir]),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
   });
 

@@ -21,7 +21,7 @@ import {
   nullLogger,
   type Logger,
 } from '@companyos/observability';
-import { openDurableDatabase, type DurableDatabase } from '@companyos/persistence';
+import { isMigrationFromNewerVersionError, openDurableDatabase, type DurableDatabase } from '@companyos/persistence';
 import { DomainError, defineEvent } from '@companyos/core';
 import { switchWorkspace } from './workspace-switch.js';
 import {
@@ -47,7 +47,7 @@ import {
   resolveArtifactTarget,
 } from './artifacts.js';
 import { projectReadiness } from './readiness.js';
-import { BRIDGE_KEY, CHANNELS, type DatabaseStatus, type PlatformInfo } from './channels.js';
+import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
 import { productionCompositionOptions } from './production-composition.js';
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
 import { CSP, createWindowOptions } from './security.js';
@@ -67,6 +67,8 @@ let logger: Logger = nullLogger;
 /** The single durable handle for the whole app (Sprint 6 carry-over). */
 let shellDatabase: DurableDatabase | null = null;
 let databaseError: string | null = null;
+/** H12c: typed bootstrap failure surfaced through databaseStatus (never a raw stack). */
+let databaseFailure: DatabaseFailure | null = null;
 /**
  * Sprint 13 (Task-13-11): the reconciled artifact/CAS foundation. Built ONCE during
  * quiescent startup — BEFORE the window, the IPC handlers and the workflow API exist,
@@ -120,7 +122,10 @@ function bootstrapDatabase(activeLogger: Logger): DurableDatabase | null {
     return opened;
   } catch (error) {
     databaseError = error instanceof Error ? error.message : String(error);
-    activeLogger.error('database bootstrap failed', { error: databaseError });
+    databaseFailure = isMigrationFromNewerVersionError(error)
+      ? { code: 'SCHEMA_FROM_NEWER_VERSION', unknownMigrations: [...error.unknownMigrations] }
+      : { code: 'OPEN_FAILED', message: databaseError };
+    activeLogger.error('database bootstrap failed', { error: databaseError, failure: databaseFailure.code });
     return null;
   }
 }
@@ -221,6 +226,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
             // deployment value (COMPANYOS_EXECUTOR_PROVIDER); a missing or unknown
             // adapter fails loud at dispatch, never a silent mock.
             ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
+            usageReconciliationDir: join(app.getPath('userData'), 'budget'),
           });
     if (core === null) return null;
     coreServices = core;
@@ -612,6 +618,7 @@ function registerIpcHandlers(): void {
       path: shellDatabase?.path ?? null,
       journalMode: shellDatabase?.journalMode ?? null,
       schemaVersion: shellDatabase?.migrations.core.currentVersion ?? 0,
+      failure: databaseFailure,
     }),
   );
 
@@ -860,6 +867,7 @@ async function main(): Promise<void> {
       // product instance whenever the database was up at boot, so both sites must
       // carry the same wiring.
       ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
+      usageReconciliationDir: join(app.getPath('userData'), 'budget'),
     });
     if (core === null) {
       // Composition failure keeps the frozen Sprint 5/6 shell rule: the window may

@@ -31,6 +31,8 @@ export interface GoalBudgetProjection {
   readonly unknown: GoalBudgetBucket;
   /** In-flight reservations held at their bound. */
   readonly held: GoalBudgetBucket;
+  /** H12c: the part of `settled` that the operator reconciled from UNKNOWN with evidence. */
+  readonly reconciled: GoalBudgetBucket;
   readonly remaining: GoalBudgetBucket | null;
   /** Worst-case total that may have been or may be charged so far (settled + unknown + held). */
   readonly worstCaseCostMicros: number;
@@ -49,9 +51,10 @@ export const projectGoalBudget = (
   const settled = empty();
   const unknown = empty();
   const held = empty();
+  const reconciled = empty();
   if (budget === null) {
     return {
-      state: 'NO_BUDGET', goalRunId, currency, cap: null, settled, unknown, held, remaining: null, worstCaseCostMicros: 0,
+      state: 'NO_BUDGET', goalRunId, currency, cap: null, settled, unknown, held, reconciled, remaining: null, worstCaseCostMicros: 0,
       notes: ['No execution budget was initialised for this Goal; no model call can be admitted.'],
     };
   }
@@ -59,6 +62,9 @@ export const projectGoalBudget = (
     const boundTokens = reservation.bound.inputTokens + reservation.bound.outputTokens;
     if (reservation.status === 'KNOWN' && reservation.usage !== null) {
       settled.calls += 1; settled.tokens += reservation.usage.tokens; settled.costMicros += reservation.usage.costMicros;
+      if (reservation.reconciliation !== undefined) {
+        reconciled.calls += 1; reconciled.tokens += reservation.usage.tokens; reconciled.costMicros += reservation.usage.costMicros;
+      }
     } else if (reservation.status === 'UNKNOWN') {
       unknown.calls += 1; unknown.tokens += boundTokens; unknown.costMicros += reservation.bound.costMicros;
     } else {
@@ -81,9 +87,12 @@ export const projectGoalBudget = (
   if (unknown.calls > 0) {
     notes.push(`${String(unknown.calls)} call(s) have an unproven charge; they are counted at their approved upper bound and are never replayed automatically.`);
   }
+  if (reconciled.calls > 0) {
+    notes.push(`${String(reconciled.calls)} call(s) were reconciled by the operator from evidence after their charge was unknown.`);
+  }
   if (currency === null) notes.push('The deployment did not declare a currency; amounts are raw micro-units.');
   return {
-    state, goalRunId, currency, cap, settled, unknown, held, remaining,
+    state, goalRunId, currency, cap, settled, unknown, held, reconciled, remaining,
     worstCaseCostMicros: used('costMicros'),
     notes,
   };

@@ -19,6 +19,8 @@ export interface DatabaseStatus {
   readonly path: string | null;
   readonly journalMode: string | null;
   readonly schemaVersion: number;
+  /** H12c: typed bootstrap failure from the main process (see database-failure.tsx). */
+  readonly failure?: unknown;
 }
 
 export interface WorkflowBridgeRequest {
