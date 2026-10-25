@@ -29,3 +29,20 @@ User approval (chat 2026-10-25): planning-only tiny Goal, cost cap CNY 1.
   DSH runtime is not packaged/approved, so the Goal fails closed before planning. Correct per strategy ("any missing precondition => no dispatch").
 - Settlement of a real reservation under the proof: NOT RUN.
 - Independent review: not granted.
+
+## H10b — plan-only preview mode (2026-10-25, user approved option B)
+
+Changes (no new state machine):
+- `control-plane.ts`: optional `executionAvailable()` dep. After a successful planning turn, if no executor is available, `goal.advance` returns typed `EXECUTOR_PROVIDER_UNKNOWN` (`planReady:true`) and never compiles or dispatches. Planning replays are idempotent.
+- `core-services.ts`: `planPreviewWithoutExecutor` option; when set, the `executor-provider` doctor check stays `fail` but is no longer `requiredForGoal` (gate moved to dispatch time). Only `production-composition.ts` opts in.
+- `openai-compatible-provider.ts`: explicit `COS_MODEL_STRUCTURED_OUTPUT=json_schema|json_object`. DeepSeek accepts only `json_object` (official JSON Output guide); in that mode the schema is sent as a system instruction and output is still parsed and validated by the caller.
+- Harness/workflow: wait for the GUI-subsystem `CompanyOS.exe` with `Start-Process -Wait`; robust evidence finish.
+
+Runs (all kept):
+| run | result | note |
+|---|---|---|
+| 40162107073 | NON_RECOVERABLE_FAILURE, HTTP 400 invalid_request | preview gate worked; adapter sent `json_schema`, DeepSeek rejected. Reservation left `UNKNOWN` (conservative; bound ¥0.112). |
+| 40162636756 | no evidence (harness bug) | pwsh `&` did not wait for the GUI exe; uninstall/upload ran mid-goal. Spend unknown, bound ¥0.112. |
+| 40162770951 | **PLAN_READY_EXECUTION_BLOCKED** | 1 DeepSeek call, 1402 in / 367 out tokens, settled KNOWN 5,740 micro-CNY (¥0.00574), planning task DONE, `run.plan_ready`, plan artifact 1 item / 2 acceptance criteria, driver `EXTERNAL_PRECONDITION_BLOCKED: EXECUTOR_PROVIDER_UNKNOWN`, 0 compile/dispatch, no key in evidence. |
+
+Not proven: execution, validation, delivery, DSH runtime, `native.job` production wiring. Goal run is left `EXECUTING` at the plan gate (the boss-approval UI for previewed plans is H11 work). Hark self-review PASS for the preview layer only; not independent review.

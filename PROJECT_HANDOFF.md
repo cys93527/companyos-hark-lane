@@ -1,3 +1,5 @@
+## 2026-10-25 Hark lane H10b — plan-only preview: real DeepSeek planning turn (run 40162770951, ¥0.00574) produced a 1-item plan; execution refused with EXECUTOR_PROVIDER_UNKNOWN. See docs/hark-lane/H10_TRUSTED_BUDGET.md.
+
 ## Hark lane — 2026-10-25 H8 per-user Windows installer (CI)
 - Added stage-desktop.mjs, installer/companyos.iss (Inno Setup, per-user), installer-smoke.ps1, workflow hark-installer.yml. No new npm deps.
 - First run 40112120130 rejected (missing persistence migrations → DB bootstrap failed; smoke didn't read log levels). Fixed d5ee0dd.
