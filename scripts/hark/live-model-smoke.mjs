@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global AbortSignal */
 // Hark lane H9: ONE tiny live model call through the INSTALLED app's own OpenAI-compatible
 // adapter, run on the app's bundled runtime (CompanyOS.exe with ELECTRON_RUN_AS_NODE=1).
 // Tiny project: the model writes a one-function ES module; we save it into a scratch
