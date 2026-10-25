@@ -1,0 +1,75 @@
+name: hark-live-goal
+
+# Hark lane H10 (user approval 2026-10-25: tiny planning-only live Goal, cost cap CNY 1).
+# MANUAL DISPATCH ONLY. Installs the installer built by the push-triggered hark-installer
+# run (no rebuild), writes the operator budget approval (cap CNY 1, peak-rate worst-case
+# DeepSeek proof), and drives ONE tiny Goal through the installed app's production
+# composition. Work items route to dsh-headless, which is NOT packaged: dispatch must fail
+# closed. Key only from secret COMPANYOS_MODEL_API_KEY; never echoed. No DSH, no release.
+on:
+  workflow_dispatch:
+    inputs:
+      installer_run_id:
+        description: hark-installer run whose installer artifact to use
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  live-goal:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      COS_MODEL_PROVIDER_ID: model.deepseek
+      COS_MODEL_BASE_URL: https://api.deepseek.com
+      COS_MODEL_ID: deepseek-flash
+      COS_MODEL_TIMEOUT_MS: '90000'
+      COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
+      H10_WATCHDOG_MS: '300000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer
+          path: hark-installer
+          run-id: ${{ inputs.installer_run_id }}
+          github-token: ${{ github.token }}
+      - name: Install (per-user, silent)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          if ([string]::IsNullOrWhiteSpace($env:COMPANYOS_MODEL_API_KEY)) { Write-Host 'secret missing: no model call made'; exit 3 }
+          $setup = (Get-ChildItem hark-installer\*.exe | Select-Object -First 1).FullName
+          "$((Get-FileHash $setup -Algorithm SHA256).Hash)  $(Split-Path $setup -Leaf)" | Tee-Object hark-evidence/installer-sha256.txt
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\CompanyOS-H10'
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$dir`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          "APPDIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Operator budget approval (cap CNY 1)
+        shell: pwsh
+        run: |
+          $budget = Join-Path $env:RUNNER_TEMP 'h10-budget'
+          node scripts/hark/make-budget-approval.mjs $budget installer/budget/deepseek-flash.approval-template.json | Tee-Object hark-evidence/budget-approval.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "BUDGETDIR=$budget" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: One tiny Goal (planning) through the installed production composition
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          & "$env:APPDIR\CompanyOS.exe" scripts/hark/live-goal-planning.mjs "$env:APPDIR\resources\app" "$env:GITHUB_WORKSPACE\hark-evidence" "$env:BUDGETDIR"
+          $code = $LASTEXITCODE
+          if (Select-String -Path hark-evidence\* -SimpleMatch $env:COMPANYOS_MODEL_API_KEY -Quiet) { Write-Host 'KEY LEAKED'; Remove-Item hark-evidence\* -Force; exit 9 }
+          exit $code
+      - name: Uninstall
+        if: always()
+        shell: pwsh
+        run: |
+          $u = Join-Path $env:APPDIR 'unins000.exe'
+          if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hark-live-goal-evidence
+          path: hark-evidence

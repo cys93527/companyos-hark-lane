@@ -49,6 +49,7 @@ import {
 import { projectReadiness } from './readiness.js';
 import { BRIDGE_KEY, CHANNELS, type DatabaseStatus, type PlatformInfo } from './channels.js';
 import { productionCompositionOptions } from './production-composition.js';
+import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
 import { CSP, createWindowOptions } from './security.js';
 import { createWorkflowApi, type WorkflowApi } from './workflows.js';
 import { openArtifactFoundation, type ArtifactFoundation } from './artifact-stack.js';
@@ -219,7 +220,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
             // production-reachability tests exercise. The routed adapter id is a
             // deployment value (COMPANYOS_EXECUTOR_PROVIDER); a missing or unknown
             // adapter fails loud at dispatch, never a silent mock.
-            ...productionCompositionOptions(),
+            ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
           });
     if (core === null) return null;
     coreServices = core;
@@ -520,6 +521,23 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
     activeLogger.error('workflow governance bootstrap failed', { error: workflowError });
     return null;
   }
+}
+
+/**
+ * H10 — the operator-attested budget (userData/budget). Read once per composition; with
+ * no valid approval this returns {} and the fail-closed default admission stands.
+ */
+function deploymentBudgetOptions(): { trustedBudgetProofs?: NonNullable<ReturnType<typeof createDeploymentBudgetProofSource>>['source']; budgetCap?: NonNullable<ReturnType<typeof createDeploymentBudgetProofSource>>['cap'] } {
+  const deployment = createDeploymentBudgetProofSource(join(app.getPath('userData'), 'budget'));
+  if (deployment === undefined) return {};
+  logger.info('deployment budget approval loaded', {
+    currency: deployment.source.currency,
+    providerId: deployment.source.billingScope.providerId,
+    maxCalls: deployment.cap.maxCalls,
+    maxTokens: deployment.cap.maxTokens,
+    maxCostMicros: deployment.cap.maxCostMicros,
+  });
+  return { trustedBudgetProofs: deployment.source, budgetCap: deployment.cap };
 }
 
 function registerIpcHandlers(): void {
@@ -841,7 +859,7 @@ async function main(): Promise<void> {
       // workflow-API composition: this quiescent-startup instance is REUSED as the
       // product instance whenever the database was up at boot, so both sites must
       // carry the same wiring.
-      ...productionCompositionOptions(),
+      ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
     });
     if (core === null) {
       // Composition failure keeps the frozen Sprint 5/6 shell rule: the window may

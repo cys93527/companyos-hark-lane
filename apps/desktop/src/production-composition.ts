@@ -22,6 +22,7 @@
  */
 import { fileURLToPath } from 'node:url';
 import type { TrustedBudgetProofSource } from './trusted-budget-proof.js';
+import type { DeploymentBudgetCap } from './deployment-budget-proof.js';
 
 import type { ComposeCoreServicesOptions } from './core-services.js';
 import { GOAL_WORK_KIND, SOFTWARE_WORK_KIND } from './control-plane.js';
@@ -235,7 +236,7 @@ export const productionEmbeddedModelRoute = (
  */
 export const productionCompositionOptions = (
   env: Readonly<Record<string, string | undefined>> = process.env,
-  options: {readonly extraModelProfiles?: readonly Omit<ModelProfile, 'configurationVersion'>[]; readonly trustedBudgetProofs?: TrustedBudgetProofSource} = {},
+  options: {readonly extraModelProfiles?: readonly Omit<ModelProfile, 'configurationVersion'>[]; readonly trustedBudgetProofs?: TrustedBudgetProofSource; readonly budgetCap?: DeploymentBudgetCap} = {},
 ): Pick<
   ComposeCoreServicesOptions,
   | 'stageHandlers'
@@ -249,6 +250,10 @@ export const productionCompositionOptions = (
   | 'executionSafety'
 > => {
   if (options.trustedBudgetProofs !== undefined && options.trustedBudgetProofs.scope !== 'PRODUCTION_VERIFIED') throw new Error('TEST_ONLY budget proofs cannot enable production admission.');
+  // H10: an operator budget cap only ever rides WITH a production trusted proof source;
+  // without one the fail-closed default (maxCostMicros 0) stands.
+  if (options.budgetCap !== undefined && options.trustedBudgetProofs === undefined) throw new Error('A budget cap requires a PRODUCTION_VERIFIED trusted proof source.');
+  const cap = options.budgetCap ?? { maxCalls: 4, maxTokens: 32768, maxCostMicros: 0, durationMs: 180000 };
   const routing = productionModelRouting(env, options.extraModelProfiles ?? []);
   const embeddedRoute = productionEmbeddedModelRoute(env);
   const executorRoute = productionExecutorRoute(env);
@@ -257,7 +262,7 @@ export const productionCompositionOptions = (
     // ADR-A: every production entry enables durable admission. No verified tariff /
     // upstream token bound is currently configured: external execution FAILS CLOSED.
     // These limits are not a claim that an upstream accepts a monetary hard cap.
-    executionSafety: { policyId: 'v1-bounded-execution-1', maxCalls: 4, maxTokens: 32768, maxCostMicros: 0, durationMs: 180000,
+    executionSafety: { policyId: 'v1-bounded-execution-1', maxCalls: cap.maxCalls, maxTokens: cap.maxTokens, maxCostMicros: cap.maxCostMicros, durationMs: cap.durationMs,
       ...(options.trustedBudgetProofs === undefined ? {} : { trustedProofs: options.trustedBudgetProofs }) },
     providerKinds: [GOAL_WORK_KIND, SOFTWARE_WORK_KIND],
     /*

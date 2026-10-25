@@ -1,0 +1,30 @@
+{
+  "approvedBy": "user_owner",
+  "currency": "CNY",
+  "billingScope": { "providerId": "model.deepseek", "account": "deepseek:repo-secret:COMPANYOS_MODEL_API_KEY", "organization": null },
+  "cap": { "maxCalls": 6, "maxTokens": 200000, "maxCostMicros": 1000000, "durationMs": 600000 },
+  "proof": {
+    "identity": {
+      "providerId": "model.deepseek",
+      "modelId": "deepseek-flash",
+      "upstreamModelIdentity": "DeepSeek-V4.1-Flash-1017",
+      "endpoint": "https://api.deepseek.com",
+      "routingIdentity": "env:deepseek-flash",
+      "credentialRef": "vault://COMPANYOS_MODEL_API_KEY/live",
+      "billingAccount": "deepseek:repo-secret:COMPANYOS_MODEL_API_KEY",
+      "billingOrganization": null,
+      "attestationRef": "user-approval:2026-10-25:hark-chat:cap-CNY-1"
+    },
+    "pricing": {
+      "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+      "version": "2026-10-25 peak-hour cache-miss rates (worst case)",
+      "currency": "CNY",
+      "units": "MICROS_PER_MILLION_TOKENS",
+      "rounding": "CEIL_TOTAL_PER_REQUEST_MICROS",
+      "inputRate": 2000000,
+      "outputRate": 8000000
+    },
+    "tokens": { "inputUpperBound": 24000, "outputUpperBound": 8000, "evidenceRef": "max_tokens pinned by CompanyOS admission; input bound exceeded => settlement UNKNOWN" },
+    "validForMs": 604800000
+  }
+}
