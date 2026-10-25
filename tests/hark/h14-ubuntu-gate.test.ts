@@ -14,6 +14,11 @@ describe('H14 hark-ubuntu gate', () => {
     expect(workflow).toContain('version: 11.25.0');
     expect(workflow).toContain('pnpm install --frozen-lockfile --ignore-scripts');
     expect(workflow).toContain("ELECTRON_SKIP_BINARY_DOWNLOAD: '1'");
+    // tests/embedded-storage-lifecycle.test.ts spawns node against apps/desktop/dist (gitignored):
+    // the dist must be built from this checkout before the suite, never taken from elsewhere.
+    const buildAt = workflow.indexOf('pnpm run -s build:libs && pnpm run -s build:desktop');
+    expect(buildAt).toBeGreaterThan(0);
+    expect(buildAt).toBeLessThan(workflow.indexOf('npx vitest run'));
     expect(workflow).not.toMatch(/secrets\./u);
     for (const gate of ['pnpm -s typecheck', 'pnpm -s lint', 'test-hark-offline.mjs', 'check-boundaries.mjs', 'check-architecture.mjs', 'compare-vitest-baseline.mjs']) {
       expect(workflow).toContain(gate);

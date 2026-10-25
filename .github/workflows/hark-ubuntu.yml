@@ -65,6 +65,9 @@ jobs:
           node scripts/check-boundaries.mjs 2>&1 | tee hark-evidence/check-boundaries.log
           node scripts/check-architecture.mjs 2>&1 | tee hark-evidence/check-architecture.log
 
+      - name: Build libs + desktop dist (subprocess tests import apps/desktop/dist)
+        run: set -o pipefail; { pnpm run -s build:libs && pnpm run -s build:desktop; } 2>&1 | tee hark-evidence/build.log
+
       - name: Full vitest (deterministic suite)
         run: |
           set +e

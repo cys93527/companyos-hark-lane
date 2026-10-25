@@ -1,5 +1,5 @@
 import { registerOfflineInline } from '../support/offline-fixtures.js';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -102,15 +102,34 @@ describe('execution safety: local owned process only (no kernel or ACL)', () => 
     expect(outcome).toMatchObject({ kind: 'timeout', terminationProven: false });
   });
   it('bounds failed cleanup, records residual uncertainty, and rejects late success', async () => {
+    // Load-independent (H14): the fixture cannot exit until the test releases it, so the
+    // provider can only return through the bounded cleanup timer (5000ms scaled to 40ms),
+    // never by waiting for the unkillable process. No wall-clock bound is asserted.
     killMode.fail = true;
-    const { provider } = fixture('console.log(process.pid);setTimeout(()=>process.exit(0),450)', true);
-    const start = Date.now();
+    const code = "console.log(process.pid);setInterval(()=>{if(require('node:fs').existsSync('release'))process.exit(0)},20)";
+    registerOfflineInline(code);
+    const dir = mkdtempSync(join(tmpdir(), 'bounded-process-')); dirs.push(dir);
+    const pids: number[] = [];
+    let fireDeadline: (() => void) | undefined;
+    const provider = createProcessExecutorProvider({
+      providerKey: 'local-fixture', capabilities: ['timeout', 'cancellation'], executable: process.execPath,
+      baseArgv: ['-e', code], fallbackCwd: dir, buildArgs: () => [],
+      // The request deadline fires only once the fixture is observably running (its pid line).
+      tapStdoutLine: (line) => { pids.push(Number(line)); owned.push(Number(line)); fireDeadline?.(); },
+      timer: (ms, callback) => {
+        if (ms === 100) { fireDeadline = callback; return () => { fireDeadline = undefined; }; }
+        const handle = setTimeout(callback, ms === 5000 ? 40 : ms); return () => clearTimeout(handle);
+      },
+    });
     const outcome = await provider.start({ ...requestOf(), timeoutMs: 100 });
-    expect(Date.now() - start).toBeLessThan(350);
     expect(outcome).toMatchObject({ kind: 'timeout', terminationProven: false });
-    // The local fixture self-exits; wait for it without calling a second provider.
-    await new Promise<void>((resolve) => setTimeout(resolve, 500));
-    expect(outcome.kind).toBe('timeout');
+    expect(pids).toHaveLength(1);
+    // The provider returned while the owned process was still running: cleanup was bounded.
+    expect(alive(pids[0]!)).toBe(true);
+    // Late success: release the fixture, wait for its real exit, the outcome stays a timeout.
+    writeFileSync(join(dir, 'release'), '');
+    await expect.poll(() => alive(pids[0]!), { timeout: 30_000 }).toBe(false);
+    expect(outcome).toMatchObject({ kind: 'timeout', terminationProven: false });
   });
   it('keeps output overflow uncertain when tree termination failed', async () => {
     killMode.fail = true;
