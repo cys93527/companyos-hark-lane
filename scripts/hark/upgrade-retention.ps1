@@ -37,7 +37,10 @@ function Snapshot($tag) {
 }
 function Launch($tag, $seconds = 25) {
   $logDir = Join-Path $userData 'logs'
-  $mark = Get-Date
+  # The app APPENDS to its log files across launches, so a phase reads only the lines this
+  # launch added (per-file line count taken before start), never an earlier phase's lines.
+  $before = @{}
+  Get-ChildItem $logDir -File -ErrorAction SilentlyContinue | ForEach-Object { $before[$_.FullName] = @(Get-Content $_.FullName).Count }
   $app = Start-Process -FilePath (Join-Path $dir 'CompanyOS.exe') -PassThru
   Start-Sleep -Seconds $seconds
   Check "$tag-app-alive" (-not $app.HasExited) ("hasExited=" + $app.HasExited)
@@ -50,7 +53,11 @@ function Launch($tag, $seconds = 25) {
   } catch { }
   if (-not $app.HasExited) { & taskkill.exe /PID $app.Id /T /F | Out-File -Append "$Evidence\taskkill.log" }
   Start-Sleep -Seconds 3
-  $lines = @(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $mark.AddSeconds(-2) } | ForEach-Object { Get-Content $_.FullName })
+  $lines = @(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $all = @(Get-Content $_.FullName)
+    $skip = if ($before.ContainsKey($_.FullName)) { $before[$_.FullName] } else { 0 }
+    if ($all.Count -gt $skip) { $all[$skip..($all.Count - 1)] }
+  })
   $lines | Out-File -Encoding utf8 "$Evidence\$tag-app-log.txt"
   return ,$lines
 }
@@ -85,6 +92,9 @@ Check 'p3-no-stale-newer-payload' (-not (Test-Path (Join-Path $dir 'resources\ap
 $lines = Launch 'p3-downgrade'
 $refusal = @($lines | Where-Object { $_ -match 'database bootstrap failed' -and $_ -match 'SCHEMA_FROM_NEWER_VERSION' })
 Check 'p3-typed-refusal-logged' ($refusal.Count -gt 0) (($refusal | Select-Object -First 1))
+# The refusal is terminal: the app must not re-open (and re-log) the newer database on every
+# renderer call. One bootstrap attempt, one refusal line, for the whole launch.
+Check 'p3-refusal-not-retried' (@($lines | Where-Object { $_ -match 'database bootstrap failed' }).Count -eq 1) "bootstrap-failure-lines=$(@($lines | Where-Object { $_ -match 'database bootstrap failed' }).Count)"
 Check 'p3-names-unknown-migration' (@($lines | Where-Object { $_ -match '0010_h13_upgrade_probe' }).Count -gt 0) ''
 $s3 = Snapshot 'p3'
 Check 'p3-data-logically-unchanged' (($s3.migrations -join ',') -eq ($s2.migrations -join ',') -and (($s3.tables | ConvertTo-Json -Compress) -eq ($s2.tables | ConvertTo-Json -Compress)) -and ((@($s3.roleAssignments) -join ',') -eq (@($s2.roleAssignments) -join ','))) ''

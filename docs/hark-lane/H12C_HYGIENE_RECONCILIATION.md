@@ -9,7 +9,8 @@ Hark lane, self-review only (label: Hark self-review PASS when gates and CI are 
 - Tests: `packages/persistence/tests/h12c-migration-downgrade.test.ts`, `apps/renderer/tests/h12c-database-failure.test.ts`.
 
 ## (b) Installer Simplified Chinese wizard
-- `installer/companyos.iss`: `[Languages]` uses `ChineseSimplified.isl` when the runner's Inno Setup ships it (workflow passes `/DZhCnMessages`), `LanguageDetectionMethod=none`, no language dialog. Nothing is downloaded. Evidence: `iscc-languages.txt`, `iscc.json.wizardLanguage`. Result recorded below after CI.
+- `installer/companyos.iss`: `[Languages]` is always `chs`. It uses the runner's `ChineseSimplified.isl` when Inno ships it (workflow passes `/DZhCnMessages`); otherwise the in-repo `installer/ChineseSimplified.isl` (authored here, UTF-8 BOM, `LanguageID=$0804`) layered over `compiler:Default.isl`, so any untranslated message falls back to English instead of breaking the build. `LanguageDetectionMethod=none`, no language dialog. Nothing is downloaded.
+- First CI (hark-installer 40211843808 @4a9ba6a): the windows runner's Inno Setup 6.7.1 ships 29 languages and **no** ChineseSimplified.isl, so the wizard fell back to English (`iscc.json.wizardLanguage`). Fixed at the root with the in-repo file (H13b commit). Proof: smoke check `wizard-language-zh-cn` reads the uninstall key's `Inno Setup: Language` = `chs`; the workflow fails on any ISCC language/message warning.
 
 ## (c) Restart proof: real hard kill
 - p1 no longer exits cooperatively (`process.exit`). It records its checks, writes `p1-ready.json`, and blocks with the provider call in flight; the workflow terminates it with `Stop-Process -Force` (TerminateProcess: no exit handlers, no `db.close()`, no WAL checkpoint). `p1-kill.json` records pid, method, exit, still-running check.

@@ -75,7 +75,7 @@ jobs:
           $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { Write-Host 'ISCC not found on runner; NOT installing it (would be a new download needing approval).'; exit 3 }
           $ver = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
-          # H12c: Simplified Chinese wizard from the runner's own Inno languages (no download).
+          # H12c: Simplified Chinese wizard: the runner's own ChineseSimplified.isl when shipped, else the in-repo installer/ChineseSimplified.isl (no download).
           $langDir = Join-Path (Split-Path $iscc) 'Languages'
           Get-ChildItem $langDir -Recurse -Filter *.isl -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($langDir.Length + 1) } | Out-File -Encoding utf8 hark-evidence/iscc-languages.txt
           $zh = Get-ChildItem $langDir -Recurse -Filter 'ChineseSimplified.isl' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -83,8 +83,11 @@ jobs:
           if ($zh) { $isccArgs += "/DZhCnMessages=$($zh.FullName)" }
           & $iscc @isccArgs installer\companyos.iss 2>&1 | Tee-Object hark-evidence/iscc.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # A message name the runner's Inno does not know would be a silent translation gap.
+          $msgWarn = @(Select-String -Path hark-evidence/iscc.log -Pattern 'Warning' -SimpleMatch | Where-Object { $_.Line -match '(?i)message|language|\.isl' })
+          if ($msgWarn.Count -gt 0) { $msgWarn | ForEach-Object { Write-Host "ISCC language warning: $($_.Line)" }; exit 4 }
           Get-ChildItem hark-installer\*.exe | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)  $($_.Length)" } | Tee-Object hark-evidence/installer-sha256.txt
-          [ordered]@{ iscc = $iscc; isccVersion = (Get-Item $iscc).VersionInfo.ProductVersion; isccFileVersion = (Get-Item $iscc).VersionInfo.FileVersion; wizardLanguage = $(if ($zh) { 'zh-CN (' + $zh.FullName + ')' } else { 'en (ChineseSimplified.isl not shipped by the runner Inno Setup)' }) } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/iscc.json
+          [ordered]@{ iscc = $iscc; isccVersion = (Get-Item $iscc).VersionInfo.ProductVersion; isccFileVersion = (Get-Item $iscc).VersionInfo.FileVersion; wizardLanguage = $(if ($zh) { 'zh-CN (runner ' + $zh.FullName + ')' } else { 'zh-CN (in-repo installer/ChineseSimplified.isl over Default.isl; runner Inno ships none)' }) } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/iscc.json
 
       - name: Package probe-newer installer (H13 upgrade/downgrade CI only)
         shell: pwsh

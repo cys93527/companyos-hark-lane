@@ -10,8 +10,10 @@
 #ifndef OutDir
   #define OutDir "out"
 #endif
-; H12c: Simplified Chinese wizard. The workflow passes /DZhCnMessages=<path> when the
-; runner's Inno Setup ships Languages\ChineseSimplified.isl (nothing is downloaded).
+; H12c: Simplified Chinese wizard, always. The workflow passes /DZhCnMessages=<path> when the
+; runner's Inno Setup ships Languages\ChineseSimplified.isl; otherwise the in-repo
+; installer\ChineseSimplified.isl is layered over Default.isl (untranslated messages fall
+; back to English). Nothing is downloaded.
 
 [Setup]
 AppId={{6B0E7C4A-3D1F-4E8B-9A62-C0A5E1F7D2B9}
@@ -39,7 +41,7 @@ LanguageDetectionMethod=none
 #ifdef ZhCnMessages
 Name: "chs"; MessagesFile: "{#ZhCnMessages}"
 #else
-Name: "en"; MessagesFile: "compiler:Default.isl"
+Name: "chs"; MessagesFile: "compiler:Default.isl,ChineseSimplified.isl"
 #endif
 
 [Tasks]

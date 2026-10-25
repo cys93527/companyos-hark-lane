@@ -1,2 +1,5 @@
 # Preserve the audited byte fixture, including its upstream CRLF bytes.
 /tests/fixtures/kernel-readonly/bin.js.txt -text
+
+# Inno Setup language file: UTF-8 BOM + CRLF bytes as authored.
+/installer/*.isl -text

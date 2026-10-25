@@ -15,6 +15,8 @@ Check 'app-payload' (Test-Path (Join-Path $dir 'resources\app\apps\desktop\dist\
 Check 'uninstaller-present' (Test-Path (Join-Path $dir 'unins000.exe')) 'unins000.exe'
 $uninstKey = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'CompanyOS' }
 Check 'hkcu-uninstall-entry' ($null -ne $uninstKey) ($uninstKey.PSChildName)
+$wizardLang = if ($uninstKey) { (Get-ItemProperty $uninstKey.PSPath).'Inno Setup: Language' } else { $null }
+Check 'wizard-language-zh-cn' ($wizardLang -eq 'chs') "Inno Setup: Language=$wizardLang"
 $hklm = Get-ChildItem 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'CompanyOS' }
 Check 'no-machine-wide-entry' ($null -eq $hklm) 'per-user only'
 

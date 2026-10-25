@@ -23,5 +23,10 @@ Inno Setup never removes files that a previous version installed. A downgrade ov
 
 Depends on H12c (a): the shipped build refuses a database that a newer build migrated.
 
+## First CI run red, fixed at the root (H13b)
+hark-upgrade 40212306477 @4a9ba6a failed one check, `p5-no-bootstrap-failure`. The p5 launch itself was healthy (`database ready`, schemaVersion 10). Two real defects behind it:
+1. Harness: the app APPENDS to its log across launches, and `Launch` read every log file touched since the launch, i.e. the whole file, so p5 saw p3's (expected) refusal lines. `upgrade-retention.ps1` now records each log file's line count before a launch and reads only the lines that launch appended.
+2. Product: in the p3 downgrade launch the 0.1.0 app logged `database bootstrap failed … SCHEMA_FROM_NEWER_VERSION` six times: every renderer call re-entered the lazy workflow bootstrap and re-opened the newer database. The refusal is terminal for the process; `apps/desktop/src/database-bootstrap-policy.ts` (`isDatabaseBootstrapRetryable`) now stops the re-open (only `OPEN_FAILED` is retried). New CI check `p3-refusal-not-retried` (exactly one refusal line per launch); unit test `apps/desktop/tests/h13-database-bootstrap-policy.test.ts`.
+
 ## CI
 Run ids and results: PROJECT_HANDOFF.md (H13 section).

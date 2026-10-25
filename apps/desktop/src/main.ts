@@ -47,6 +47,7 @@ import {
   resolveArtifactTarget,
 } from './artifacts.js';
 import { projectReadiness } from './readiness.js';
+import { isDatabaseBootstrapRetryable } from './database-bootstrap-policy.js';
 import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
 import { productionCompositionOptions } from './production-composition.js';
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
@@ -206,7 +207,8 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
     // ONE durable handle for the whole app (Sprint 6 carry-over): the shell opened it with
     // every chain enabled, so the workflow service and the provider registry share the
     // same connection and the same transaction coordinator.
-    const opened: DurableDatabase | null = shellDatabase ?? bootstrapDatabase(activeLogger);
+    const opened: DurableDatabase | null =
+      shellDatabase ?? (isDatabaseBootstrapRetryable(databaseFailure) ? bootstrapDatabase(activeLogger) : null);
     if (opened === null) {
       workflowError = databaseError ?? 'durable database unavailable';
       return null;
