@@ -1,7 +1,7 @@
 ## Hark lane — H12b typed cancellation terminal (2026-10-25)
 - Commit 26ce6be (+docs). Frozen 17-state L1 kept (cancel = FAILED + typed failureReason, SM-L1-07); every boss projection now reads `runTerminalOutcome` (CANCELLED/TIMED_OUT/FAILED/COMPLETED); blocker RUN_CANCELLED; renderer 已取消/已超时; migration engine/0009 enforces failure_reason; typed run-row decode fails closed.
 - Root fixes found on the way: cancel intent without settlement (process exit) now converges at the next start; read-only control-plane ops + autonomy snapshot run in the read fence (a cancel of Goal B no longer kills Goal A's driver with CROSS_CONTEXT_TRANSACTION_READ_REFUSED); home.summary pages past 100 runs.
-- Gates: offline 132/132, boundaries/architecture/typecheck/eslint 0, full vitest 37/3770 baseline-equivalent. CI hark-windows 40206148040 / hark-installer 40206148063 / hark-restart: see docs/hark-lane/H12B_TYPED_CANCEL_TERMINAL.md. Hark self-review only.
+- Gates: offline 132/132, boundaries/architecture/typecheck/eslint 0, full vitest 37/3770 baseline-equivalent. CI GREEN @26ce6be: hark-windows 40206148040, hark-installer 40206148063, hark-restart 40206446875. Hark self-review only.
 
 ## Hark lane — H12 restart consistency / UNKNOWN no-replay on the installed app (2026-10-25)
 - Commit c233140. CI @c233140: hark-windows 40198010566 ✓, hark-installer 40198010569 ✓, hark-restart 40198306740 ✓ (3 separate CompanyOS.exe processes, one dataDir, counting fake provider, CNY 0).

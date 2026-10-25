@@ -67,7 +67,7 @@ No real Provider, no network model call, CNY 0. No DSH, no native.job production
 | offline (test-hark-offline.mjs) | 132/132 |
 | check-boundaries / check-architecture / typecheck / eslint (full) | exit 0 / 0 / 0 / 0 |
 | vitest full | 37 failed / 3733 passed of 3770 (H12: 38/3716 of 3754). New vs H12: sprint17 repository-git 13-14 and repository-process-tools "long stderr" — both pass on isolated rerun (vitest-rerun-sprint17.txt; same flaky process-capture family as the baseline); gone: supervisor-ownership B1-01, process-failure-evidence 1-3, sprint6 secrets scan. ⇒ baseline-equivalent, no new failure |
-| CI @26ce6be | hark-windows 40206148040, hark-installer 40206148063, then hark-restart (workflow_run) — results recorded in PROJECT_HANDOFF when complete |
+| CI @26ce6be | GREEN: hark-windows 40206148040 (offline 132/132, native 25/25), hark-installer 40206148063 (setup sha256 6CDAD651…B693, install/launch/uninstall smoke pass), hark-restart 40206446875 (p1/p2/p3 exit 0). Evidence lane/evidence/H12b-ci/ |
 
 ## Not done / limits
 - `docs/tests/handoff.test.ts` needs git tag `sprint-11.0.0`, absent in the Hark repo; creating tags needs approval.
