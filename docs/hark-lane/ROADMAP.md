@@ -18,7 +18,7 @@ not independent review), NEXT, BLOCKED(<who must approve / provide>), NOT RUN.
 | 10 | Controlled real tools / DSH runtime, actual file Artifact/CAS/Validation/Handoff on a real goal | — | BLOCKED(user: approved DSH runtime source + licence; native.job production wiring approval) |
 | 11 | Windows file/network isolation (beyond Job Object) | — | BLOCKED(user: ACL/firewall/account changes approval) |
 | 12 | Ordinary-user desktop acceptance, same-device comparison with Codex lane | — | BLOCKED(user + independent reviewer) |
-| 13 | Ubuntu gate where applicable | H14 | IN PROGRESS: hark-ubuntu workflow + triaged env-only baseline |
+| 13 | Ubuntu gate where applicable | H14 | DONE (self-review) on CI: hark-ubuntu 40227470496 @243eded (vitest 3806/3809, 0 unexpected, 3 env-bound baselined with reasons) |
 | 14 | tag / release | — | BLOCKED(user) |
 
 Rules carried by every stage: keep first failures, never add counts across runs,

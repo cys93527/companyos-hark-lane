@@ -37,5 +37,16 @@ The baseline may hold ENVIRONMENT-BOUND failures only, each with its reason:
 6. A cancel test guessed child start-up time (400 ms); the fixture now publishes a ready marker after its
    output exists.
 
+7. **The Ubuntu job never built `apps/desktop/dist`** (gitignored) although
+   `tests/embedded-storage-lifecycle.test.ts` spawns Node against it (first hark-ubuntu run 40221981935,
+   ERR_MODULE_NOT_FOUND). The workflow now builds libs + desktop dist from the checkout before vitest.
+8. **A wall-clock bound** in `execution-safety-process.test.ts` ("bounds failed cleanup", < 350 ms; 459 ms
+   on the runner). Rewritten load-independent: the request deadline fires once the fixture's pid line is
+   seen, the test asserts the provider returned (timeout, termination unproven) while the unkillable
+   process was still alive, then releases it and checks the late exit does not change the outcome.
+
 ## CI
-Run ids and results: PROJECT_HANDOFF.md (H14 section).
+- First run 40221981935 @00ab0b6: 3 UNEXPECTED (items 7, 8) — kept in lane evidence H14-ci.
+- GREEN @243eded: hark-ubuntu 40227470496 (offline 132/132, typecheck/eslint/boundaries/architecture 0,
+  vitest 3806/3809, 0 UNEXPECTED, 3 baselined env-bound), hark-windows 40227470473, hark-installer
+  40227470462, hark-restart 40227910957, hark-upgrade 40227910782.
