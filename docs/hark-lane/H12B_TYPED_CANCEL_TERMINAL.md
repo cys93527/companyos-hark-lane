@@ -58,4 +58,17 @@ No real Provider, no network model call, CNY 0. No DSH, no native.job production
 - `tests/sprint3/migration.test.ts`, `tests/sprint4/boundary.test.ts`: chain lists include 0009.
 
 ## Results (real output in lane/evidence/H12b-*)
-See the table appended at commit time below.
+| run | result |
+|---|---|
+| vitest targeted run1 | 4 fail — first failure kept: goal-client CLIENT-05 expected raw `FAILED` badge text (fixed: canonical state kept as badge title); H12 R1–R3 failed: autonomy driver refused `CROSS_CONTEXT_TRANSACTION_READ_REFUSED` (unfenced COUNT reads in loadGoalState while Goal B's cancel settled) — root-fixed with the read fence |
+| h12b C5 first version | CHECK constraint on `state` fired first (kept); test split into storage refusal + legacy decode |
+| h12b C7 first version | hung: store reads are already fenced, the negative control used one — replaced with the raw unfenced read that actually races |
+| vitest targeted run2 / run3 | 225/225; then 147/148 (C7 hang above) → 7/7 C1–C7 |
+| offline (test-hark-offline.mjs) | 132/132 |
+| check-boundaries / check-architecture / typecheck / eslint (full) | exit 0 / 0 / 0 / 0 |
+| vitest full | 37 failed / 3733 passed of 3770 (H12: 38/3716 of 3754). New vs H12: sprint17 repository-git 13-14 and repository-process-tools "long stderr" — both pass on isolated rerun (vitest-rerun-sprint17.txt; same flaky process-capture family as the baseline); gone: supervisor-ownership B1-01, process-failure-evidence 1-3, sprint6 secrets scan. ⇒ baseline-equivalent, no new failure |
+| CI @26ce6be | hark-windows 40206148040, hark-installer 40206148063, then hark-restart (workflow_run) — results recorded in PROJECT_HANDOFF when complete |
+
+## Not done / limits
+- `docs/tests/handoff.test.ts` needs git tag `sprint-11.0.0`, absent in the Hark repo; creating tags needs approval.
+- UNKNOWN reconciliation, hard-kill harness, migration chain hygiene: queued as H12c.
