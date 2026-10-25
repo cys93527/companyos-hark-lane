@@ -1,3 +1,8 @@
+## Hark lane — H12 restart consistency / UNKNOWN no-replay on the installed app (2026-10-25)
+- Commit c233140. CI @c233140: hark-windows 40198010566 ✓, hark-installer 40198010569 ✓, hark-restart 40198306740 ✓ (3 separate CompanyOS.exe processes, one dataDir, counting fake provider, CNY 0).
+- p1 hard stop with an admitted unsettled call → p2 recovery: UNKNOWN at bound (¥0.112 nominal), 0 provider calls, GOAL_USAGE_UNKNOWN, run.budget unknown.calls=1 → p3: cancelled terminals + history unchanged. Negative control: without recovery the call is replayed.
+- No product code changed. Details: docs/hark-lane/H12_RESTART_UNKNOWN.md. Hark self-review PASS only; independent review not granted.
+
 ## Hark lane — H11 budget/spend/UNKNOWN + previewed-plan view (2026-10-25)
 - Read-only `run.budget` control-plane op + runtime-panel 费用 rows and 计划预览（未执行）. UNKNOWN shown as "最多 <bound>", never zero.
 - Fixed an H10b regression: plan preview is now explicit opt-in `COS_PLAN_PREVIEW_WITHOUT_EXECUTOR=1` (default production contract restored).
