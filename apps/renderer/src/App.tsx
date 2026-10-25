@@ -83,6 +83,7 @@ import {
 } from './approvals.js';
 import { runArtifactAction } from './artifacts-view.js';
 import { loadGoalUsage, projectTelemetry } from './usage.js';
+import { loadGoalBudget } from './budget.js';
 import type { ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
@@ -145,6 +146,8 @@ export function App() {
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalFailure, setApprovalFailure] = useState<{ code: string; message: string } | null>(null);
   const [usageProjection, setUsageProjection] = useState<Awaited<ReturnType<typeof loadGoalUsage>>>(null);
+  // H11: the boss's budget/spend + previewed-plan projection for the selected Goal.
+  const [budgetRead, setBudgetRead] = useState<Awaited<ReturnType<typeof loadGoalBudget>>>(null);
   const [readinessRows, setReadinessRows] = useState<readonly ReadinessRow[] | null>(null);
   const [platformInfo, setPlatformInfo] = useState<{ electron: string; nodeVersion: string } | null>(null);
   const [artifactPreview, setArtifactPreview] = useState<{
@@ -630,6 +633,22 @@ export function App() {
     };
   }, [controlPlane, openGoalRunId, refreshKey]);
 
+  // H11: the budget/spend projection (read-only; a failure renders nothing, never a guess).
+  useEffect(() => {
+    if (controlPlane === null || openGoalRunId === null) {
+      setBudgetRead(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const read = await loadGoalBudget(controlPlane, openGoalRunId).catch(() => null);
+      if (!cancelled) setBudgetRead(read);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [controlPlane, openGoalRunId, refreshKey]);
+
   // The derived readiness projection (Settings / Diagnostics / blocker routing).
   useEffect(() => {
     if (workflow === null || view !== 'settings') return;
@@ -975,6 +994,7 @@ export function App() {
       artifacts: runtimeArtifacts,
       timeline: runtimeTimeline,
       taskDetail: runtimeTask,
+      budget: budgetRead,
       // STAGE 3 — canonical blockers + the pending approval behind them.
       blockers: runtimeWorkspace?.blockers ?? [],
       pendingApproval:

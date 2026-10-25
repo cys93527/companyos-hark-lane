@@ -267,7 +267,10 @@ export const productionCompositionOptions = (
       ...(options.trustedBudgetProofs === undefined ? {} : { trustedProofs: options.trustedBudgetProofs }) },
     providerKinds: [GOAL_WORK_KIND, SOFTWARE_WORK_KIND],
     // H10b: plan without an executor; compile/dispatch stays refused (typed precondition).
-    planPreviewWithoutExecutor: true,
+    // EXPLICIT operator opt-in only (H11 fix): the default production path keeps the
+    // pre-H10b contract (preflight blocks before planning; a dispatch to an unknown
+    // executor leaves its durable typed FAILED attempt).
+    ...(env['COS_PLAN_PREVIEW_WITHOUT_EXECUTOR'] === '1' ? { planPreviewWithoutExecutor: true } : {}),
     /*
      * DRA-04 — the embedded runtime root rides EVERY production composition: the
      * absolute, launch-independent managed root above (never inferred downstream

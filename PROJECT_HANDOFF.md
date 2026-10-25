@@ -1,3 +1,8 @@
+## Hark lane — H11 budget/spend/UNKNOWN + previewed-plan view (2026-10-25)
+- Read-only `run.budget` control-plane op + runtime-panel 费用 rows and 计划预览（未执行）. UNKNOWN shown as "最多 <bound>", never zero.
+- Fixed an H10b regression: plan preview is now explicit opt-in `COS_PLAN_PREVIEW_WITHOUT_EXECUTOR=1` (default production contract restored).
+- Details: docs/hark-lane/H11_BUDGET_UI.md. Hark self-review PASS only; no independent review; no execution/approval-to-execute.
+
 ## 2026-10-25 Hark lane H10b — plan-only preview: real DeepSeek planning turn (run 40162770951, ¥0.00574) produced a 1-item plan; execution refused with EXECUTOR_PROVIDER_UNKNOWN. See docs/hark-lane/H10_TRUSTED_BUDGET.md.
 
 ## Hark lane — 2026-10-25 H8 per-user Windows installer (CI)

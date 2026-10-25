@@ -86,7 +86,8 @@ const makeHarness = () => {
           resolve({ ok: true, value: { pending: [] } });
           return;
         }
-        if (request.operation === 'run.usage') {
+        if (request.operation === 'run.usage' || request.operation === 'run.budget') {
+          // H11: run.budget is a read-only projection like run.usage (null => renders nothing).
           resolve({ ok: true, value: null });
           return;
         }
@@ -235,6 +236,7 @@ const READ_OPERATIONS = [
   'run.artifacts',
   'run.task',
   'run.usage',
+  'run.budget',
 ];
 
 beforeEach(() => {

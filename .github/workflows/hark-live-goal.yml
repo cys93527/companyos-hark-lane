@@ -27,6 +27,7 @@ jobs:
       COS_MODEL_ID: deepseek-flash
       COS_MODEL_TIMEOUT_MS: '90000'
       COS_MODEL_STRUCTURED_OUTPUT: json_object
+      COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: '1'
       COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
       H10_WATCHDOG_MS: '300000'
     steps:

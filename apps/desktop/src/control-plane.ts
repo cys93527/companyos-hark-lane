@@ -23,7 +23,8 @@
  * turn); reads project the Sprint23 observation. ADR-B adds durable cancellation
  * acceptance; it does not claim remote work has stopped or introduce a pause UI.
  */
-import { DomainError, domainError, err, ok, type Result } from '@companyos/core';
+import { DomainError, domainError, err, ok, type GoalExecutionBudget, type Result } from '@companyos/core';
+import { projectGoalBudget, type BudgetCurrency } from './efficiency/goal-budget-projection.js';
 import { executionRunIdOf } from '@companyos/engine';
 import { fileDeliveriesOf } from './verified-file-delivery.js';
 
@@ -90,6 +91,8 @@ export const CONTROL_PLANE_OPERATIONS = [
   'decisions.pending',
   // STAGE 3: read-only E1 usage projection for one Goal (startup/observability surface).
   'run.usage',
+  // H11: read-only budget/spend projection + the previewed plan (boss view; never admission).
+  'run.budget',
 ] as const;
 
 export type ControlPlaneOperation = (typeof CONTROL_PLANE_OPERATIONS)[number];
@@ -319,6 +322,12 @@ export interface ControlPlaneDeps {
    * STAGE 3 — read-only E1 usage projection for one Goal (main-process truth; the
    * renderer never sees a database). Answers UNKNOWN honestly where no source exists.
    */
+  /** H11 — read-only durable budget facts for the boss view (the admission store itself). */
+  readonly goalBudget?: {
+    read(goalRunId: string): Promise<GoalExecutionBudget | null>;
+    readonly currency: BudgetCurrency | null;
+    now(): number;
+  };
   readonly goalUsage?: {
     usageOf(input: { readonly companyId: string; readonly runId: string }): Promise<Result<unknown, DomainError>>;
   };
@@ -1463,6 +1472,56 @@ const runUsage = async (
   return deps.goalUsage.usageOf({ companyId: deps.companyId, runId: runId.value });
 };
 
+/**
+ * H11 — `run.budget`: the boss's read-only view of one Goal's spend (KNOWN settled,
+ * UNKNOWN at its bound, held in-flight, worst-case remaining) plus the plan the planner
+ * produced, when one exists (plan-only preview shows it while execution is refused).
+ * Pure read: no admission, no dispatch, no repair.
+ */
+const runBudget = async (
+  deps: ControlPlaneDeps,
+  payload: Readonly<Record<string, unknown>>,
+): Promise<Result<unknown, DomainError>> => {
+  const companyId = readString(payload, 'companyId', 64);
+  if (!companyId.ok) return companyId;
+  const scoped = proveCompany(deps, companyId.value);
+  if (!scoped.ok) return scoped;
+  const runId = readString(payload, 'runId', 128);
+  if (!runId.ok) return runId;
+  const owned = await loadOwnedRun(deps, deps.companyId, runId.value);
+  if (!owned.ok) return owned;
+  if (deps.goalBudget === undefined) {
+    return err(domainError('PERSISTENCE_FAILED', 'The budget projection is not wired in this composition.', { reason: 'CONTROL_PLANE_BUDGET_UNAVAILABLE' }));
+  }
+  let budget: GoalExecutionBudget | null;
+  try { budget = await deps.goalBudget.read(runId.value); }
+  catch (error) {
+    if (error instanceof DomainError) return err(error);
+    return err(domainError('PERSISTENCE_FAILED', 'The budget facts could not be read.', { reason: 'GOAL_BUDGET_READ_FAILED' }));
+  }
+  const projection = projectGoalBudget(runId.value, budget, { nowMs: deps.goalBudget.now(), currency: deps.goalBudget.currency });
+  let plan: { readonly artifactId: string; readonly items: readonly { readonly planItemId: string; readonly objective: string; readonly taskKind: string | null }[]; readonly criteria: readonly { readonly criterionId: string; readonly requirement: string }[] } | null = null;
+  const planRow = (await deps.artifacts.listByRun(runId.value)).filter((row) => row.kind === 'companyos:plan').at(-1);
+  if (planRow !== undefined) {
+    const command = await deps.artifacts.commandIdOf(planRow.id);
+    const located = command === null ? null : await deps.artifacts.getByCreationCommand(command);
+    const bytes = located === null ? null : await deps.artifacts.readContent(located.artifact.contentRef);
+    if (bytes !== null) {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+        const items = Array.isArray(parsed['planItems']) ? (parsed['planItems'] as Record<string, unknown>[]) : [];
+        const criteria = Array.isArray(parsed['acceptanceCriteria']) ? (parsed['acceptanceCriteria'] as Record<string, unknown>[]) : [];
+        plan = {
+          artifactId: planRow.id,
+          items: items.map((item) => ({ planItemId: String(item['planItemId'] ?? ''), objective: String(item['objective'] ?? '').slice(0, 2000), taskKind: typeof item['taskKind'] === 'string' ? item['taskKind'] : null })),
+          criteria: criteria.map((c) => ({ criterionId: String(c['criterionId'] ?? ''), requirement: String(c['requirement'] ?? '').slice(0, 2000) })),
+        };
+      } catch { plan = null; }
+    }
+  }
+  return ok({ budget: projection, plan });
+};
+
 /* ------------------------------------------------------------- the service --- */
 
 export function createControlPlaneService(deps: ControlPlaneDeps): {
@@ -1540,6 +1599,9 @@ export function createControlPlaneService(deps: ControlPlaneDeps): {
           break;
         case 'run.usage':
           outcome = await runUsage(deps, payloadResult.value);
+          break;
+        case 'run.budget':
+          outcome = await runBudget(deps, payloadResult.value);
           break;
       }
       if (outcome.ok) return { ok: true, value: outcome.value };

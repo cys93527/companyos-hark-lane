@@ -10,6 +10,7 @@
  * handoffs) · 详情 (run/goal facts). Default: collapsed — the centre stays conversation-first.
  */
 import { createElement as h, type JSX } from 'react';
+import { budgetRows, type GoalBudgetRead } from './budget.js';
 
 /* ------------------------------------------------- canonical input shapes --- */
 
@@ -255,6 +256,8 @@ export interface RuntimePanelViewProps {
   /** STAGE 3: canonical blockers + the pending approval behind them. */
   readonly blockers?: readonly CanonicalBlocker[];
   readonly pendingApproval?: { readonly riskLevel: string; readonly reason: string; readonly runId: string } | null;
+  /** H11: canonical budget/spend projection + the previewed plan (read-only). */
+  readonly budget?: GoalBudgetRead | null;
   readonly onToggleExpanded: () => void;
   readonly onSelectTab: (tab: RuntimeTab) => void;
   readonly onSelectTask: (taskId: string) => void;
@@ -342,6 +345,28 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                 lifecycle === null
                   ? null
                   : h('div', { className: 'runtime-tree__row' }, `规划 · ${lifecycle.planningState ?? '—'}`),
+                props.budget === undefined || props.budget === null
+                  ? null
+                  : h(
+                      'div',
+                      { className: 'runtime-budget', 'aria-label': 'runtime-budget' },
+                      ...budgetRows(props.budget.budget).map((row, index) =>
+                        h('div', { className: index === 0 ? 'runtime-tree__row runtime-tree__row--goal' : 'runtime-tree__row', key: `b${String(index)}` }, row),
+                      ),
+                    ),
+                props.budget === undefined || props.budget === null || props.budget.plan === null || (lifecycle !== null && lifecycle.tasks.length > 0)
+                  ? null
+                  : h(
+                      'div',
+                      { className: 'runtime-plan-preview', 'aria-label': 'runtime-plan-preview' },
+                      h('div', { className: 'runtime-tree__row runtime-tree__row--goal' }, `计划预览（未执行） · ${String(props.budget.plan.items.length)} 步`),
+                      ...props.budget.plan.items.map((item) =>
+                        h('div', { className: 'runtime-tree__row runtime-tree__row--task', key: `p${item.planItemId}` }, `${item.planItemId} · ${item.objective}`),
+                      ),
+                      ...props.budget.plan.criteria.map((c) =>
+                        h('div', { className: 'runtime-tree__row muted', key: `c${c.criterionId}` }, `验收 · ${c.requirement}`),
+                      ),
+                    ),
                 lifecycle === null || lifecycle.tasks.length === 0
                   ? h('div', { className: 'runtime-tree__row muted' }, '任务 0/0 · 编译前')
                     : lifecycle.tasks.map((task) =>

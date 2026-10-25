@@ -3980,6 +3980,11 @@ export async function composeCoreServices(
             },
             // STAGE 3 — the read-only E1 usage projection (KNOWN/ESTIMATED/UNKNOWN).
             goalUsage: goalUsageService as never,
+            goalBudget: {
+              read: async (goalRunId: string) => database.executionBudget.read(goalRunId),
+              currency: (['USD', 'CNY', 'EUR', 'CREDIT'] as const).find((c) => c === options.executionSafety?.trustedProofs?.currency) ?? null,
+              now: () => Date.now(),
+            },
             workProfile: options.goalWorkProfile ?? {
               stageKind: 'work',
               taskKind: GOAL_WORK_KIND,
