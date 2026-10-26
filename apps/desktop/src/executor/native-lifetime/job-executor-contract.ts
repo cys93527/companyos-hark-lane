@@ -1,9 +1,9 @@
 /**
  * Hark lane — H6: Supervisor integration CONTRACT for the Job-backed native
  * executor. It maps the canonical ExecutorProvider port onto the H3-H5
- * JobLifetimeAdapter. This module is NOT registered in production composition
- * (an architecture guard test enforces that). Wiring it in needs separate
- * approval and an independent review.
+ * JobLifetimeAdapter. H15b (user approval 2026-10-26): production reaches it ONLY
+ * through native-job-composition.ts, dynamically imported by core-services.ts (an
+ * architecture guard test enforces that single seam). Independent review: NOT GRANTED.
  *
  * Contract (each clause has an offline test in job-executor-contract.node-test.ts):
  *  C1  Unknown task kind -> provider-failed NATIVE_OPERATION_UNKNOWN, zero native calls.
@@ -43,6 +43,8 @@ import type {
   ExecutorProvider,
   ExecutorProviderOutcome,
 } from '@companyos/engine';
+import { mkdirSync } from 'node:fs';
+import { win32 } from 'node:path';
 import type { JobLifetimeAdapter, LifetimeResult } from './job-lifetime.js';
 import { LaunchRefused, verifyLaunch, type LaunchPolicy, type LaunchRequest } from './launch-pins.js';
 
@@ -78,6 +80,29 @@ const failed = (reasonCode: string, detail: string, exitCode = -1): ExecutorProv
 const summarise = (r: LifetimeResult): string =>
   r.errors.map(e => (e.nativeCode === null ? e.operation : `${e.operation}#${e.nativeCode}`)).join('; ');
 
+/**
+ * C12 (H15b): per-request environment. A value may start with the literal token
+ * `{workspace}` — replaced by the dispatch's trusted workspace root (win32 grammar), so a
+ * production operation's TEMP/TMP live inside the workspace the launch is pinned to
+ * (launch-pins refuses profile directories outside it). Directories named by TEMP/TMP are
+ * created (inside the workspace only). No other substitution exists.
+ */
+export const WORKSPACE_TOKEN = '{workspace}';
+function resolveEnvironment(environment: Readonly<Record<string, string>>, workspaceRoot: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (!value.startsWith(WORKSPACE_TOKEN)) { out[name] = value; continue; }
+    const rest = value.slice(WORKSPACE_TOKEN.length).replace(/^[\\/]+/u, '');
+    const resolved = rest === '' ? workspaceRoot : win32.join(workspaceRoot, rest);
+    const up = name.toUpperCase();
+    const rel = win32.relative(workspaceRoot, resolved);
+    // Never create anything outside the workspace; launch-pins then refuses the value.
+    if ((up === 'TEMP' || up === 'TMP') && !rel.startsWith('..') && !win32.isAbsolute(rel)) mkdirSync(resolved, { recursive: true });
+    out[name] = resolved;
+  }
+  return out;
+}
+
 export function createNativeJobExecutorProvider(deps: NativeJobProviderDeps): NativeJobProvider {
   if (deps.adapter.launchPinning !== 'REQUIRED') throw new Error('native-job-provider requires an adapter with launchPinning REQUIRED');
   let blockReason: string | null = null;
@@ -110,7 +135,7 @@ export function createNativeJobExecutorProvider(deps: NativeJobProviderDeps): Na
       argv: [...op.args, ...typed],
       workspaceRoot: request.workspace.root,
       cwd: request.workspace.cwd,
-      environment: op.environment,
+      environment: resolveEnvironment(op.environment, request.workspace.root),
       timeoutMs: Math.min(request.timeoutMs ?? op.timeoutMs, op.timeoutMs),
     };
     let launch;

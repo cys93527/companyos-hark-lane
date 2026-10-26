@@ -93,6 +93,40 @@ jobs:
           node scripts/hark/kernel-health-smoke.mjs $k "$env:RUNNER_TEMP\kernel-state" hark-evidence/kernel-health.json --pong
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: native.job binding - koffi 3.3.3 (integrity pinned sha512, no lifecycle scripts; shipped under resources/native, H15b)
+        shell: pwsh
+        env:
+          KOFFI_SHA512: sha512-XWNI4eyxJJzR2MakPZzR3QeZ06JOklLbxglin0dHhx/qIQCby8lqHs9Acq4Q7CpCKnOrBSj+6b9J5y69wfr2ZA==
+          KOFFI_WIN_SHA512: sha512-tLTF17wl4CCwOlo1Tt0NbduwUduDvM6c8JSyearcLu6hpNHQo44RF3rKN2i7UkxwCqXyiudZK0lS421CC/TPZA==
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'hark-koffi'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $a = (npm view koffi@3.3.3 dist.integrity).Trim()
+          $b = (npm view '@koromix/koffi-win32-x64@3.3.3' dist.integrity).Trim()
+          "koffi=$a`nkoffi-win32-x64=$b" | Tee-Object hark-evidence/koffi-integrity.txt
+          if ($a -ne $env:KOFFI_SHA512 -or $b -ne $env:KOFFI_WIN_SHA512) { Write-Error 'koffi integrity mismatch'; exit 1 }
+          Set-Content -Encoding utf8 (Join-Path $dir 'package.json') '{"private":true,"name":"hark-koffi","version":"0.0.0","dependencies":{"koffi":"3.3.3"}}'
+          Push-Location $dir
+          npm install --ignore-scripts --no-audit --no-fund 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-install.log')
+          $code = $LASTEXITCODE
+          npm ls --all 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-tree.txt')
+          Copy-Item package-lock.json (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-package-lock.json')
+          Pop-Location
+          $lock = Get-Content (Join-Path $dir 'package-lock.json') -Raw | ConvertFrom-Json -AsHashTable
+          if ($lock['packages']['node_modules/koffi']['integrity'] -ne $env:KOFFI_SHA512) { Write-Error 'installed koffi integrity mismatch'; exit 1 }
+          $w = $lock['packages']['node_modules/@koromix/koffi-win32-x64']
+          if ($null -eq $w -or $w['integrity'] -ne $env:KOFFI_WIN_SHA512) { Write-Error 'installed koffi-win32-x64 integrity mismatch'; exit 1 }
+          "HARK_KOFFI_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          exit $code
+
+      - name: native.job - pack resources/native (binding manifest, operations.json, operation scripts)
+        shell: pwsh
+        run: |
+          node scripts/hark/pack-native-job.mjs --koffi "$env:HARK_KOFFI_DIR" --kernel "$env:RUNNER_TEMP\agent-kernel\dsh-v0.2.0-rc.2" --out "$env:RUNNER_TEMP\native-job" 2>&1 | Tee-Object hark-evidence/native-job-pack.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:RUNNER_TEMP\native-job\operations.json" hark-evidence/native-operations.json
+          Copy-Item "$env:RUNNER_TEMP\native-job\koffi-3.3.3\binding-manifest.json" hark-evidence/native-binding-manifest.json
+
       - name: Electron runtime (locked version, checksum-verified by electron/install.js)
         shell: pwsh
         working-directory: apps/desktop
@@ -106,7 +140,13 @@ jobs:
 
       - name: Stage app
         shell: pwsh
-        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" "$env:RUNNER_TEMP/agent-kernel" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
+        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" "$env:RUNNER_TEMP/agent-kernel" "$env:RUNNER_TEMP/native-job" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
+
+      - name: native.job smoke on the staged app (shipped modules, Job Object, real file artifact)
+        shell: pwsh
+        run: |
+          node scripts/hark/native-job-smoke.mjs "$env:RUNNER_TEMP/companyos-stage/app" hark-evidence/native-job-smoke.json 2>&1 | Tee-Object hark-evidence/native-job-smoke.log
+          exit $LASTEXITCODE
 
       - name: Package installer (Inno Setup preinstalled on the runner)
         shell: pwsh

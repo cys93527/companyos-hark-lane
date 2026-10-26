@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Hark lane H8: assemble the portable CompanyOS desktop app (no new dependencies).
-// Usage: node scripts/hark/stage-desktop.mjs <electronDistDir> <outDir> [<agentKernelDir>]
+// Usage: node scripts/hark/stage-desktop.mjs <electronDistDir> <outDir> [<agentKernelDir> [<nativeJobDir>]]
+//   H15b: <nativeJobDir> = the packed native.job resource (scripts/hark/pack-native-job.mjs), copied to
+//   <out>/resources/native (pinned koffi binding + manifest, operations.json, operation scripts).
 //   H15: <agentKernelDir> = the packed resources/agent-kernel tree (scripts/hark/pack-agent-kernel.mjs);
 //   it is copied verbatim to <out>/resources/agent-kernel (immutable install resource).
 // Requires `pnpm run build` first. Layout:
@@ -14,7 +16,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const [electronDist, out, agentKernel] = process.argv.slice(2);
+const [electronDist, out, agentKernel, nativeJob] = process.argv.slice(2);
 if (!electronDist || !out) { console.error('usage: stage-desktop.mjs <electronDistDir> <outDir>'); process.exit(2); }
 const must = (p) => { if (!existsSync(p)) { console.error(`missing: ${p}`); process.exit(3); } return p; };
 
@@ -28,6 +30,10 @@ const app = join(out, 'resources', 'app');
 if (agentKernel) {
   cpSync(must(agentKernel), join(out, 'resources', 'agent-kernel'), { recursive: true });
   console.log(`staged agent kernel from ${agentKernel}`);
+}
+if (nativeJob) {
+  cpSync(must(nativeJob), join(out, 'resources', 'native'), { recursive: true });
+  console.log(`staged native.job resource from ${nativeJob}`);
 }
 const desktopPkg = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'));
 mkdirSync(app, { recursive: true });

@@ -413,6 +413,8 @@ export interface CoreServices {
   readonly runObservation: ReturnType<typeof createRunObservationService> | null;
   /** Sprint24: implementation-only provider registry (what exists / capabilities). */
   readonly executorProviders: ExecutorProviderRegistry | null;
+  /** H15b: null when no native job operations were declared; otherwise registration status. */
+  readonly nativeJobStatus: { readonly registered: boolean; readonly reasonCode: string | null; readonly detail: string | null } | null;
   readonly runObservationNotifier: ReturnType<typeof createRunObservationNotifier>;
   /**
    * Sprint26 — the Product Control Plane: the trusted application service behind the
@@ -630,6 +632,32 @@ export interface ComposeCoreServicesOptions {
       }
     >
   >;
+  /**
+   * H15b (Hark lane): the authorized native JOB operations — taskKind → a sha256-pinned
+   * executable + inputs + literal argv + bound — as TRUSTED DEPLOYMENT DATA, executed by
+   * the Job-backed provider (kill-on-close Job Object, atomic assignment, handle-pinned
+   * launch, bounded pipe capture). win32/x64 only; on any other host, or when the shipped
+   * binding fails its manifest, the provider is NOT registered and the composition records
+   * the typed reason in `nativeJobStatus` — a routed task then fails loud at dispatch; it is
+   * never re-routed to an unbounded spawn.
+   */
+  readonly nativeJob?: {
+    readonly bindingDir: string;
+    readonly operations: Readonly<
+      Record<
+        string,
+        {
+          readonly operationId: string;
+          readonly executable: { readonly path: string; readonly sha256: string };
+          readonly inputs: readonly { readonly path: string; readonly sha256: string }[];
+          readonly args: readonly string[];
+          readonly inputArgs?: readonly string[];
+          readonly timeoutMs: number;
+          readonly environment: Readonly<Record<string, string>>;
+        }
+      >
+    >;
+  };
   /**
    * Task-18-07 authority corrective: additional TOOL PORTS bound at composition — the SAME
    * trusted application seam the repository runtime's own tool ports enter through. A
@@ -1268,6 +1296,8 @@ export async function composeCoreServices(
     let workPackageProjectorHolder: ReturnType<typeof createWorkPackageProjector> | null = null;
     /** Sprint24: late-bound provider registry (implementation authority only). */
     let executorProvidersHolder: ExecutorProviderRegistry | null = null;
+    // H15b: whether the Job-backed native executor was registered, and why not.
+    let nativeJobStatus: CoreServices['nativeJobStatus'] = null;
     /**
      * Sprint25: the typed, source-annotated provider configurations (provenance +
      * fingerprint for the safety preflight). Registration data — never provider- or
@@ -3852,6 +3882,30 @@ export async function composeCoreServices(
       }
     }
 
+    // H15b (Hark lane): the Job-backed native executor, composed ONLY from trusted
+    // deployment data. A refusal is typed and visible (nativeJobStatus), never a fallback.
+    if (options.nativeJob !== undefined && Object.keys(options.nativeJob.operations).length > 0) {
+      const { composeNativeJobProvider, NATIVE_JOB_PROVIDER_KEY } = await import('./executor/native-lifetime/native-job-composition.js');
+      const composed = composeNativeJobProvider({ bindingDir: options.nativeJob.bindingDir, operations: options.nativeJob.operations });
+      if (composed.ok) {
+        const jobConfig = resolveExecutorConfig({
+          providerKey: NATIVE_JOB_PROVIDER_KEY,
+          schema: { capability: { name: 'capability', kind: 'string', required: false, defaultValue: 'native.job' } },
+          envNames: {},
+        });
+        if (jobConfig.ok) {
+          executorProviderList.push(composed.provider);
+          executorConfigsHolder.set(NATIVE_JOB_PROVIDER_KEY, jobConfig.value);
+          nativeJobStatus = { registered: true, reasonCode: null, detail: null };
+        } else {
+          nativeJobStatus = { registered: false, reasonCode: 'NATIVE_JOB_CONFIG_INVALID', detail: jobConfig.error.message };
+        }
+      } else {
+        nativeJobStatus = { registered: false, reasonCode: composed.reasonCode, detail: composed.detail };
+        activeLogger.warn('native job executor not registered', { reasonCode: composed.reasonCode, detail: composed.detail });
+      }
+    }
+
     // Sprint26: trusted injected implementations — the provider-agnostic seam. The
     // registry is the ONLY resolution path for every implementation alike.
     for (const implementation of options.executorProviderImplementations ?? []) {
@@ -4422,6 +4476,7 @@ export async function composeCoreServices(
       workPackageProjector,
       runObservation,
       executorProviders,
+      nativeJobStatus,
       runObservationNotifier,
       controlPlane,
       autonomyDriver,

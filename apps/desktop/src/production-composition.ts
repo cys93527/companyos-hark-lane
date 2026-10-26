@@ -20,8 +20,8 @@
  *   - a missing or unknown adapter fails LOUD at dispatch (typed, fail-closed) —
  *     never a silent mock, never fake execution.
  */
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { TrustedBudgetProofSource } from './trusted-budget-proof.js';
 import type { DeploymentBudgetCap } from './deployment-budget-proof.js';
@@ -58,6 +58,67 @@ export const productionEmbeddedDshRuntimeRoot = (): string => {
   return fileURLToPath(new URL('../../../.companyos-embedded/dsh-runtime', import.meta.url));
 };
 
+
+/** H15b: the native.job task kind the packaged deployment data declares. */
+export const NATIVE_INVENTORY_KIND = 'companyos:native-inventory';
+/** H15b: route target of every packaged native job kind (= NATIVE_JOB_PROVIDER_KEY; a test pins equality). */
+export const NATIVE_JOB_ROUTE = 'native.job';
+
+type NativeJobOption = NonNullable<ComposeCoreServicesOptions['nativeJob']>;
+interface PackedNativeOperation {
+  readonly operationId: string;
+  readonly executable: { readonly resource: string; readonly sha256: string };
+  readonly inputs: readonly { readonly resource: string; readonly sha256: string }[];
+  readonly args: readonly string[];
+  readonly timeoutMs: number;
+  readonly environment: Readonly<Record<string, string>>;
+}
+
+/**
+ * H15b: the INSTALLED native.job deployment data — `<install>/resources/native/operations.json`
+ * (written at build time by scripts/hark/pack-native-job.mjs). Paths are resource-relative and
+ * resolved here against `<install>/resources`; every executable and input stays sha256-pinned
+ * (re-verified through a pinned handle at every launch). `{input:N}` in args is replaced by the
+ * N-th resolved input path; nothing else is substituted. Absent file (dev tree, non-packaged
+ * build) -> undefined, and no native.job provider exists. A malformed file throws: deployment
+ * data is never silently ignored.
+ */
+export const productionNativeJob = (
+  resourcesRoot: string = fileURLToPath(new URL('../../../../', import.meta.url)),
+  hostEnv: Readonly<Record<string, string | undefined>> = process.env,
+): NativeJobOption | undefined => {
+  const file = join(resourcesRoot, 'native', 'operations.json');
+  if (!existsSync(file)) return undefined;
+  const parsed = JSON.parse(readFileSync(file, 'utf8')) as { schema?: string; operations?: Record<string, PackedNativeOperation> };
+  if (parsed.schema !== 'companyos.native-job-operations.v1' || typeof parsed.operations !== 'object' || parsed.operations === null) {
+    throw new Error(`native job deployment data malformed: ${file}`);
+  }
+  const resolveResource = (rel: string): string => {
+    if (rel.includes('..') || win32.isAbsolute(rel) || posix.isAbsolute(rel)) throw new Error(`native job resource path refused: ${rel}`);
+    return join(resourcesRoot, ...rel.split('/'));
+  };
+  const operations: Record<string, NativeJobOption['operations'][string]> = {};
+  for (const [kind, op] of Object.entries(parsed.operations)) {
+    const inputs = op.inputs.map((i) => ({ path: resolveResource(i.resource), sha256: i.sha256 }));
+    const args = op.args.map((a) => {
+      const m = /^\{input:(\d+)\}$/u.exec(a);
+      if (m === null) return a;
+      const input = inputs[Number(m[1])];
+      if (input === undefined) throw new Error(`native job ${kind}: ${a} names no input`);
+      return input.path;
+    });
+    operations[kind] = {
+      operationId: op.operationId,
+      executable: { path: resolveResource(op.executable.resource), sha256: op.executable.sha256 },
+      inputs,
+      args,
+      timeoutMs: op.timeoutMs,
+      // SystemRoot is the one host value the launch needs (trusted OS location, not a secret).
+      environment: { SystemRoot: hostEnv['SystemRoot'] ?? hostEnv['SYSTEMROOT'] ?? 'C:\\Windows', ...op.environment },
+    };
+  }
+  return { bindingDir: join(resourcesRoot, 'native', 'koffi-3.3.3'), operations };
+};
 
 /**
  * The executor kinds of the production deployment: the planning kind (its task is
@@ -249,7 +310,7 @@ export const productionEmbeddedModelRoute = (
  */
 export const productionCompositionOptions = (
   env: Readonly<Record<string, string | undefined>> = process.env,
-  options: {readonly extraModelProfiles?: readonly Omit<ModelProfile, 'configurationVersion'>[]; readonly trustedBudgetProofs?: TrustedBudgetProofSource; readonly budgetCap?: DeploymentBudgetCap} = {},
+  options: {readonly extraModelProfiles?: readonly Omit<ModelProfile, 'configurationVersion'>[]; readonly trustedBudgetProofs?: TrustedBudgetProofSource; readonly budgetCap?: DeploymentBudgetCap; readonly nativeJobResourcesRoot?: string | null} = {},
 ): Pick<
   ComposeCoreServicesOptions,
   | 'stageHandlers'
@@ -262,6 +323,7 @@ export const productionCompositionOptions = (
   | 'goalWorkProfile'
   | 'executionSafety'
   | 'planPreviewWithoutExecutor'
+  | 'nativeJob'
 > => {
   if (options.trustedBudgetProofs !== undefined && options.trustedBudgetProofs.scope !== 'PRODUCTION_VERIFIED') throw new Error('TEST_ONLY budget proofs cannot enable production admission.');
   // H10: an operator budget cap only ever rides WITH a production trusted proof source;
@@ -271,6 +333,7 @@ export const productionCompositionOptions = (
   const routing = productionModelRouting(env, options.extraModelProfiles ?? []);
   const embeddedRoute = productionEmbeddedModelRoute(env);
   const executorRoute = productionExecutorRoute(env);
+  const nativeJob = options.nativeJobResourcesRoot === null ? undefined : productionNativeJob(options.nativeJobResourcesRoot, env);
   return {
     stageHandlers: { executorKinds: [...PRODUCTION_EXECUTOR_KINDS, SOFTWARE_WORK_KIND] },
     // ADR-A: every production entry enables durable admission. No verified tariff /
@@ -278,7 +341,7 @@ export const productionCompositionOptions = (
     // These limits are not a claim that an upstream accepts a monetary hard cap.
     executionSafety: { policyId: 'v1-bounded-execution-1', maxCalls: cap.maxCalls, maxTokens: cap.maxTokens, maxCostMicros: cap.maxCostMicros, durationMs: cap.durationMs,
       ...(options.trustedBudgetProofs === undefined ? {} : { trustedProofs: options.trustedBudgetProofs }) },
-    providerKinds: [GOAL_WORK_KIND, SOFTWARE_WORK_KIND],
+    providerKinds: [GOAL_WORK_KIND, SOFTWARE_WORK_KIND, ...(nativeJob === undefined ? [] : Object.keys(nativeJob.operations))],
     // H10b: plan without an executor; compile/dispatch stays refused (typed precondition).
     // EXPLICIT operator opt-in only (H11 fix): the default production path keeps the
     // pre-H10b contract (preflight blocks before planning; a dispatch to an unknown
@@ -294,7 +357,12 @@ export const productionCompositionOptions = (
     embeddedDshRuntimeRoot: productionEmbeddedDshRuntimeRoot(),
     // The SAME executor route serves both work kinds; the route table is keyed by the
     // task kind (core-services dispatch resolves providerRouteTable[task.kind]).
-    providerRoutes: { [GOAL_WORK_KIND]: executorRoute, [SOFTWARE_WORK_KIND]: executorRoute },
+    providerRoutes: {
+      [GOAL_WORK_KIND]: executorRoute,
+      [SOFTWARE_WORK_KIND]: executorRoute,
+      // H15b: each packaged native job kind routes to the Job-backed provider and nowhere else.
+      ...(nativeJob === undefined ? {} : Object.fromEntries(Object.keys(nativeJob.operations).map((kind) => [kind, NATIVE_JOB_ROUTE]))),
+    },
     repositoryRuntime: { repositoryCapableKinds: [GOAL_WORK_KIND, SOFTWARE_WORK_KIND] },
     /*
      * STAGE 4 P1 (DYNAMIC_PLAN_VALIDATION_CLOSURE): every dynamically planned work item
@@ -333,6 +401,8 @@ export const productionCompositionOptions = (
         [SOFTWARE_WORK_KIND]: ['repo.test-check', 'evidence.grounding-check'],
       },
     },
+    // H15b: the Job-backed native executor, only when the install ships its deployment data.
+    ...(nativeJob === undefined ? {} : { nativeJob }),
     ...(routing === undefined ? {} : { modelRouting: routing }),
     ...(embeddedRoute === undefined ? {} : { embeddedDshModelRoute: embeddedRoute }),
   };

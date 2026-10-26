@@ -194,8 +194,11 @@ describe('H6 contract: never success without proof (C9), adapter throw latches',
   });
 });
 
-describe('H6 architecture guard: contract is NOT production-wired', () => {
-  it('no source file outside native-lifetime imports native-lifetime or mentions native.job', () => {
+describe('H15b architecture guard: native.job enters production through ONE seam', () => {
+  // H6 kept the contract out of production entirely. H15b (user approval 2026-10-26)
+  // wires it through exactly one dynamic import in core-services.ts, of the composition
+  // module only (never the adapter, ports or koffi directly), and nowhere else.
+  it('only core-services.ts reaches native-lifetime, only via native-job-composition, only dynamically', () => {
     const src = fileURLToPath(new URL('../../src/', import.meta.url));
     const offenders: string[] = [];
     const walk = (dir: string): void => {
@@ -203,8 +206,20 @@ describe('H6 architecture guard: contract is NOT production-wired', () => {
         const p = join(dir, name);
         if (statSync(p).isDirectory()) { if (name !== 'native-lifetime') walk(p); continue; }
         if (!/\.(ts|tsx|mts|js)$/u.test(name)) continue;
+        const rel = relative(src, p);
         const text = readFileSync(p, 'utf8');
-        if (/native-lifetime\//u.test(text) || /['"]native\.job['"]/u.test(text)) offenders.push(relative(src, p));
+        const refs = text.match(/native-lifetime\/[\w.-]+/gu) ?? [];
+        if (rel === 'core-services.ts') {
+          if (refs.some(r => r !== 'native-lifetime/native-job-composition.js')) offenders.push(`${rel}: ${refs.join(',')}`);
+          if (/^import[^\n]*native-lifetime/mu.test(text)) offenders.push(`${rel}: static import`);
+          continue;
+        }
+        // production-composition.ts names the route target once (NATIVE_JOB_ROUTE) as deployment data.
+        if (rel === 'production-composition.ts') {
+          if (refs.length > 0 || (text.match(/['"]native\.job['"]/gu) ?? []).length !== 1) offenders.push(rel);
+          continue;
+        }
+        if (refs.length > 0 || /['"]native\.job['"]/u.test(text)) offenders.push(rel);
       }
     };
     walk(src);

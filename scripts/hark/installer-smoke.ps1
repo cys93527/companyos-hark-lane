@@ -15,6 +15,8 @@ Check 'app-payload' (Test-Path (Join-Path $dir 'resources\app\apps\desktop\dist\
 # H15: the exact-pinned agent kernel ships as an install resource (manifest + SBOM + licences + pinned node).
 $kdir = Join-Path $dir 'resources\agent-kernel\dsh-v0.2.0-rc.2'
 Check 'agent-kernel-installed' ((Test-Path (Join-Path $kdir 'manifest.json')) -and (Test-Path (Join-Path $kdir 'sbom.cdx.json')) -and (Test-Path (Join-Path $kdir 'licenses\LICENSE')) -and (Test-Path (Join-Path $kdir 'node\node.exe'))) $kdir
+$ndir = Join-Path $dir 'resources\native'
+Check 'native-job-installed' ((Test-Path (Join-Path $ndir 'operations.json')) -and (Test-Path (Join-Path $ndir 'koffi-3.3.3\binding-manifest.json')) -and (Test-Path (Join-Path $ndir 'operations\workspace-inventory.cjs'))) $ndir
 Check 'uninstaller-present' (Test-Path (Join-Path $dir 'unins000.exe')) 'unins000.exe'
 $uninstKey = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'CompanyOS' }
 Check 'hkcu-uninstall-entry' ($null -ne $uninstKey) ($uninstKey.PSChildName)
