@@ -33,6 +33,8 @@ import { writeFileSync } from 'node:fs';
 
 import {createCoreDomainEvent, domainError, type DomainError, err, ok, redactSecrets, type Result} from '@companyos/core';
 import {createHash} from 'node:crypto';
+import { planIsolatedLaunch, type IsolationLaunchConfig } from './isolation/isolated-launch-seam.js';
+import type { IsolationDispatchDecision } from './isolation/isolation-status.js';
 import {existsSync} from 'node:fs';
 
 import {
@@ -187,6 +189,13 @@ export interface DshProviderConfig {
     readonly requireRequestedModel?: boolean;
     /** Node executable for the managed child (default: the running process's node). */
     readonly nodeExecutable?: string;
+    /**
+     * H16b-3: Windows file/network isolation (isolation/isolated-launch-seam.ts). When present, every
+     * attempt asks the helper's status check first: ISOLATED launches the kernel AS the agent account
+     * through companyos-isolated-launch.exe with the broker on the allow-listed port; NOT_CONFIGURED
+     * launches unchanged ("未隔离"); ISOLATION_DEGRADED refuses the dispatch (never a silent fallback).
+     */
+    readonly isolation?: IsolationLaunchConfig;
     /**
      * LIVE-SMOKE-FIX-08B (LEVEL B attribution): optional audit sink. When present,
      * every `tool_call <tool> <args-json>` line the kernel streams on stdout is
@@ -823,6 +832,26 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           detail: 'The embedded DSH provider requires a model pool or explicit model route (fail-closed).',
         };
       }
+      // H16b-3: the isolation decision precedes the broker (it fixes the broker port).
+      let isolationDecision: IsolationDispatchDecision | undefined;
+      if (embedded.isolation !== undefined) {
+        try {
+          isolationDecision = await embedded.isolation.decide();
+        } catch (error) {
+          isolationDecision = {
+            kind: 'refuse',
+            reasonCode: 'ISOLATION_DEGRADED',
+            problems: [`status:threw:${error instanceof Error ? error.message : String(error)}`],
+          };
+        }
+        if (isolationDecision.kind === 'refuse') {
+          return {
+            kind: 'transport-failed',
+            reasonCode: 'ISOLATION_DEGRADED',
+            detail: `Windows isolation was configured but no longer matches (${isolationDecision.problems.join(', ')}); the goal is not dispatched unisolated. Re-run isolation setup or remove it in Settings.`,
+          };
+        }
+      }
       // The loopback model broker: injects the real credential upstream, streams SSE
       // both ways, and dies with the invocation (in-process; never a child process,
       // never a port held past the attempt, never a secret in kernel-visible config
@@ -845,6 +874,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           },
         }),
         ...(request.modelCallAdmission === undefined ? {} : { admission: request.modelCallAdmission }),
+        ...(isolationDecision?.kind === 'launch-isolated' ? { listenPort: isolationDecision.brokerPort } : {}),
       });
       if (!broker.ok) {
         return {
@@ -953,13 +983,36 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         // the user's PATH node is consulted only for a dev materialization without one.
         const childExecutable = embedded.nodeExecutable ?? stage.value.nodeExecutablePath ?? resolveEmbeddedChildNode();
         const childIsElectron = childExecutable === process.execPath;
+        // Official 0.2.0 launcher grammar: positional profile first, then options,
+        // then the task (passThroughOptions requires the leading positional).
+        const kernelArgv = [stage.value.cliEntryPath, embedded.runtime.manifest.profileName, '--json'];
+        let launchExecutable = childExecutable;
+        let launchArgv: readonly string[] = kernelArgv;
+        if (embedded.isolation !== undefined && isolationDecision !== undefined) {
+          const plan = planIsolatedLaunch({
+            decision: isolationDecision,
+            config: embedded.isolation,
+            workspaceRoot,
+            childExecutable,
+            childArgv: kernelArgv,
+          });
+          if (plan.kind === 'refused') {
+            return {
+              kind: 'transport-failed',
+              reasonCode: plan.reasonCode,
+              detail: `Windows isolation is configured but its launch prerequisites are missing (${plan.problems.join(', ')}); the goal is not dispatched unisolated.`,
+            };
+          }
+          if (plan.kind === 'isolated') {
+            launchExecutable = plan.executable;
+            launchArgv = plan.argvPrefix;
+          }
+        }
         const provider = createProcessExecutorProvider({
           providerKey: DSH_PROVIDER_KEY,
           capabilities: DSH_CAPABILITIES,
-          executable: childExecutable,
-          // Official 0.2.0 launcher grammar: positional profile first, then options,
-          // then the task (passThroughOptions requires the leading positional).
-          baseArgv: [stage.value.cliEntryPath, embedded.runtime.manifest.profileName, '--json'],
+          executable: launchExecutable,
+          baseArgv: [...launchArgv],
           fallbackCwd: null,
           trustedRoot: workspaceRoot,
           envPolicy: {

@@ -139,9 +139,20 @@ jobs:
           [ordered]@{ package = (Get-Content (Join-Path $el 'package.json') | ConvertFrom-Json).version; dist = $dist; version = (Get-Content (Join-Path $dist 'version') -Raw).Trim(); electronExeSha256 = (Get-FileHash (Join-Path $dist 'electron.exe') -Algorithm SHA256).Hash } | ConvertTo-Json | Tee-Object ../../hark-evidence/electron.json
           "ELECTRON_DIST=$dist" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
+      - name: Isolation (H16b-3) - build companyos-isolated-launch.exe with the in-box .NET Framework csc; pack resources/isolation
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\isolation"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /target:exe /optimize+ "/out:$dir\companyos-isolated-launch.exe" /r:System.Security.dll scripts\hark\isolation\isolated-launch.cs 2>&1 | Tee-Object hark-evidence/isolation-csc.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item scripts\hark\isolation\setup.ps1, scripts\hark\isolation\wfp-persistent.cs -Destination $dir
+          Get-ChildItem $dir | ForEach-Object { [ordered]@{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() } } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/isolation-resources.json
+
       - name: Stage app
         shell: pwsh
-        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" "$env:RUNNER_TEMP/agent-kernel" "$env:RUNNER_TEMP/native-job" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
+        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" "$env:RUNNER_TEMP/agent-kernel" "$env:RUNNER_TEMP/native-job" "$env:RUNNER_TEMP/isolation" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
 
       - name: native.job smoke on the staged app (shipped modules, Job Object, real file artifact)
         shell: pwsh

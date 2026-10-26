@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Hark lane H8: assemble the portable CompanyOS desktop app (no new dependencies).
-// Usage: node scripts/hark/stage-desktop.mjs <electronDistDir> <outDir> [<agentKernelDir> [<nativeJobDir>]]
+// Usage: node scripts/hark/stage-desktop.mjs <electronDistDir> <outDir> [<agentKernelDir> [<nativeJobDir> [<isolationDir>]]]
+//   H16b-3: <isolationDir> = setup.ps1 + wfp-persistent.cs + companyos-isolated-launch.exe (built in-box csc),
+//   copied to <out>/resources/isolation (the app's start-time status check + the isolated kernel launcher).
 //   H15b: <nativeJobDir> = the packed native.job resource (scripts/hark/pack-native-job.mjs), copied to
 //   <out>/resources/native (pinned koffi binding + manifest, operations.json, operation scripts).
 //   H15: <agentKernelDir> = the packed resources/agent-kernel tree (scripts/hark/pack-agent-kernel.mjs);
@@ -16,7 +18,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const [electronDist, out, agentKernel, nativeJob] = process.argv.slice(2);
+const [electronDist, out, agentKernel, nativeJob, isolation] = process.argv.slice(2);
 if (!electronDist || !out) { console.error('usage: stage-desktop.mjs <electronDistDir> <outDir>'); process.exit(2); }
 const must = (p) => { if (!existsSync(p)) { console.error(`missing: ${p}`); process.exit(3); } return p; };
 
@@ -34,6 +36,11 @@ if (agentKernel) {
 if (nativeJob) {
   cpSync(must(nativeJob), join(out, 'resources', 'native'), { recursive: true });
   console.log(`staged native.job resource from ${nativeJob}`);
+}
+if (isolation) {
+  for (const required of ['setup.ps1', 'wfp-persistent.cs', 'companyos-isolated-launch.exe']) must(join(isolation, required));
+  cpSync(must(isolation), join(out, 'resources', 'isolation'), { recursive: true });
+  console.log(`staged isolation helper + launcher from ${isolation}`);
 }
 const desktopPkg = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'));
 mkdirSync(app, { recursive: true });

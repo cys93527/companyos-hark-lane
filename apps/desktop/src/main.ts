@@ -49,7 +49,8 @@ import {
 import { projectReadiness } from './readiness.js';
 import { isDatabaseBootstrapRetryable } from './database-bootstrap-policy.js';
 import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
-import { productionCompositionOptions } from './production-composition.js';
+import { productionCompositionOptions, productionIsolationResourcesDir } from './production-composition.js';
+import { productionIsolationLaunchConfig } from './executor/isolation/isolation-status-runner.js';
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
 import { CSP, createWindowOptions } from './security.js';
 import { createWorkflowApi, type WorkflowApi } from './workflows.js';
@@ -230,6 +231,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
             ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
             usageReconciliationDir: join(app.getPath('userData'), 'budget'),
       embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
+      embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
           });
     if (core === null) return null;
     coreServices = core;
@@ -872,6 +874,7 @@ async function main(): Promise<void> {
       ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
       usageReconciliationDir: join(app.getPath('userData'), 'budget'),
       embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
+      embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
     });
     if (core === null) {
       // Composition failure keeps the frozen Sprint 5/6 shell rule: the window may

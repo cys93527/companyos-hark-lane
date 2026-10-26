@@ -951,6 +951,13 @@ export const startModelBroker = (input: {
    * durable evidence (hark-live-goal 40266877047 left one unexplained).
    */
   readonly observe?: (observation: ModelBrokerExchangeObservation) => void;
+  /**
+   * H16b-3: the fixed loopback port the isolation setup allow-listed for the agent account
+   * (WFP blocks every other destination, loopback included). Absent = ephemeral port (unisolated).
+   * A busy port fails closed with EXECUTOR_EMBEDDED_BROKER_LISTEN_FAILED — never a silent re-bind
+   * to another port the agent could not reach anyway.
+   */
+  readonly listenPort?: number;
 }): Promise<Result<ModelBrokerHandle, DomainError>> =>
   new Promise((resolve) => {
     let upstream: URL;
@@ -1230,7 +1237,7 @@ export const startModelBroker = (input: {
       sockets.add(socket);
       socket.once('close', () => sockets.delete(socket));
     });
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(input.listenPort ?? 0, '127.0.0.1', () => {
       const address = server.address();
       if (address === null || typeof address === 'string') {
         server.close();

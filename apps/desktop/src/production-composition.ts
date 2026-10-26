@@ -59,6 +59,13 @@ export const productionEmbeddedDshRuntimeRoot = (): string => {
   return fileURLToPath(new URL('../../../.companyos-embedded/dsh-runtime', import.meta.url));
 };
 
+/**
+ * H16b-3: the packaged isolation helper + launcher directory `<install>/resources/isolation/`
+ * (same four-levels-up anchor as the kernel). The dev layout has none: a configured isolation
+ * state with no helper is ISOLATION_DEGRADED, never an unisolated launch.
+ */
+export const productionIsolationResourcesDir = (): string =>
+  fileURLToPath(new URL('../../../../isolation', import.meta.url));
 
 /** H15b: the native.job task kind the packaged deployment data declares. */
 export const NATIVE_INVENTORY_KIND = 'companyos:native-inventory';

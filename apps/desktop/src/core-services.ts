@@ -11,6 +11,7 @@
  * repository-capable and no workspace is open. A model, an agent payload, a workflow payload
  * and a pack manifest cannot reach this seam.
  */
+import type { IsolationLaunchConfig } from './executor/isolation/isolated-launch-seam.js';
 import {
   executionAttemptIdOf,
 DomainError, SystemClock, UlidFactory, validatorIdsOf, domainError, type FaultCheckpointPort } from '@companyos/core';
@@ -550,6 +551,11 @@ export interface ComposeCoreServicesOptions {
    * resource. Absent = the managed root (dev materialization layout).
    */
   readonly embeddedDshStateRoot?: string;
+  /**
+   * H16b-3: Windows file/network isolation for the embedded kernel (executor/isolation/*). Absent = the
+   * kernel launches as the signed-in user (tests, dev). Production passes productionIsolationLaunchConfig.
+   */
+  readonly embeddedDshIsolation?: IsolationLaunchConfig;
   readonly embeddedDshModelRoute?: {
     readonly providerId: string;
     readonly modelId: string;
@@ -3805,6 +3811,7 @@ export async function composeCoreServices(
             config: embeddedTypedConfig.value,
             embedded: {
               runtime: embeddedRuntime.value,
+              ...(options.embeddedDshIsolation === undefined ? {} : { isolation: options.embeddedDshIsolation }),
               modelRoute: {
                 providerId: route.providerId,
                 modelId: route.modelId,
