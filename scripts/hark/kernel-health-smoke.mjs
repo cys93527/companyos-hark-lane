@@ -34,12 +34,18 @@ if (!resolved.ok) {
   report = { ...report, layoutVersion: resolved.value.manifest.layoutVersion ?? null, closureFiles: Object.keys(resolved.value.closure.files).length, links: (resolved.value.closure.links ?? []).length };
 }
 const runPong = async (runtime) => {
+  // H15c: on Windows the turn also drives the persistent pwsh terminal (the production
+  // terminal-pwsh row with the headless shell guard) — hark-live-goal 40266877047 hung 300 s
+  // in `Get-Location; Get-ChildItem`; the smoke must prove a pwsh command returns promptly.
+  const withPwsh = process.platform === 'win32';
   const scenario = [
+    ...(withPwsh ? [{ tool_call: { name: 'pwsh', arguments: { command: 'Get-Location; Write-Output PWSH-$((20+22))' } } }] : []),
     { tool_call: { name: 'write', arguments: { file_path: 'PLACEHOLDER', content: 'PONG' } } },
     { text: 'PONG' },
   ];
   const workspace = mkdtempSync(join(tmpdir(), 'companyos-kernel-pong-ws-'));
-  scenario[0].tool_call.arguments.file_path = join(workspace, 'pong.txt');
+  scenario[withPwsh ? 1 : 0].tool_call.arguments.file_path = join(workspace, 'pong.txt');
+  const exchangeTimes = [];
   let calls = 0;
   const requestBytes = [];
   const capFields = [];
@@ -50,6 +56,7 @@ const runPong = async (runtime) => {
     req.on('data', (c) => bodyChunks.push(c));
     req.on('end', () => {
       calls += 1;
+      exchangeTimes.push({ call: calls, requestAt: Date.now() });
       requestBytes.push(Buffer.concat(bodyChunks).length);
       try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); capFields.push({ max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null }); } catch { capFields.push(null); }
       if (process.env.KERNEL_PONG_DUMP) writeFileSync(`${process.env.KERNEL_PONG_DUMP}-${calls}.json`, Buffer.concat(bodyChunks));
@@ -66,6 +73,7 @@ const runPong = async (runtime) => {
       }
       res.write('data: [DONE]\n\n');
       res.end();
+      exchangeTimes[exchangeTimes.length - 1].respondedAt = Date.now();
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -85,7 +93,7 @@ const runPong = async (runtime) => {
     const out = await new Promise((resolvePromise) => {
       let stdout = ''; let stderr = '';
       const child = spawn(node, [stage.value.cliEntryPath, runtime.manifest.profileName, '--json', 'Write PONG into pong.txt in the workspace, then reply PONG.'], { cwd: workspace, env, windowsHide: true });
-      const timer = setTimeout(() => child.kill(), 180_000);
+      const timer = setTimeout(() => child.kill(), withPwsh ? 240_000 : 180_000);
       child.stdout.on('data', (c) => { stdout += c; });
       child.stderr.on('data', (c) => { stderr += c; });
       child.on('close', (code) => { clearTimeout(timer); resolvePromise({ code, stdout, stderr }); });
@@ -100,9 +108,13 @@ const runPong = async (runtime) => {
     const fileText = existsSync(join(workspace, 'pong.txt')) ? readFileSync(join(workspace, 'pong.txt'), 'utf8') : null;
     const finalLine = out.stdout.split(/\r?\n/u).filter((l) => l.includes('"type":"final"') || l.includes('"type": "final"')).pop() ?? null;
     const post = stage.value.verifyStaged();
-    const ok = out.code === 0 && fileText === 'PONG' && finalLine !== null && finalLine.includes('PONG') && calls >= 2 && post.ok
+    // pwsh tool latency = gap between the model's pwsh tool_call response and the next model request.
+    const pwshToolMs = withPwsh && exchangeTimes.length >= 2 && exchangeTimes[0].respondedAt !== undefined ? exchangeTimes[1].requestAt - exchangeTimes[0].respondedAt : null;
+    const pwshResult = withPwsh ? (out.stdout.split(/\r?\n/u).find((l) => l.includes('PWSH-42')) ?? null) : null;
+    const pwshOk = !withPwsh || (pwshToolMs !== null && pwshToolMs <= 90_000 && pwshResult !== null);
+    const ok = pwshOk && out.code === 0 && fileText === 'PONG' && finalLine !== null && finalLine.includes('PONG') && calls >= (withPwsh ? 3 : 2) && post.ok
       && capFields.length >= 1 && capFields.every((c) => c !== null && c.max_tokens === 4096 && c.max_completion_tokens === null && c.store === null);
-    return { ok, exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 ? {} : { startupLog }) };
+    return { ok, ...(withPwsh ? { pwsh: { ok: pwshOk, toolMs: pwshToolMs, resultLine: pwshResult === null ? null : pwshResult.slice(0, 600) } } : {}), exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 && pwshOk ? {} : { startupLog }) };
   } finally {
     server.close();
   }

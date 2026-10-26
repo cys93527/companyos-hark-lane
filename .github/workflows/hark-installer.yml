@@ -90,6 +90,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $k = "$env:RUNNER_TEMP\agent-kernel\dsh-v0.2.0-rc.2"
           Copy-Item "$k\manifest.json", "$k\sbom.cdx.json", "$k\packages.txt", "$k\licenses\INDEX.json" hark-evidence/ -Force
+          node scripts/hark/pwsh-pty-probe.mjs $k hark-evidence/pwsh-pty-probe.json
           node scripts/hark/kernel-health-smoke.mjs $k "$env:RUNNER_TEMP\kernel-state" hark-evidence/kernel-health.json --pong
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
