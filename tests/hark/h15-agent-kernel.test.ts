@@ -112,4 +112,8 @@ describe('H15 packaged agent kernel', () => {
     expect(smoke).toContain("Check 'agent-kernel-installed'");
     expect(smoke).toContain("Check 'kernel-first-start-health'");
   });
+  it('builds the official host exactly like upstream build:lib:host (tsc under a 4096 MiB heap; default heap OOMed on the Windows runner)', () => {
+    expect(materialize).toMatch(/'--max-old-space-size=4096', join\('node_modules', 'typescript', 'bin', 'tsc'\), '-b', 'tsconfig\.host\.json'/);
+    expect(materialize).not.toMatch(/\['exec', 'tsc', '-b'/);
+  });
 });

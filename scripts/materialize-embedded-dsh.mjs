@@ -102,7 +102,10 @@ const materialize = () => {
   }
   const cliEntry = join(runtime, ...PINNED.cliEntry.split('/'));
   if (!existsSync(cliEntry)) {
-    run('pnpm', ['exec', 'tsc', '-b', 'tsconfig.host.json'], runtime, 'official host typecheck+emit', process.platform === 'win32');
+    // Exactly the upstream build:lib:host invocation (package.json @639ed015): tsc runs under
+    // `node --max-old-space-size=4096`. Running tsc with the default heap OOMs on the
+    // 2 GiB-default Windows runner (hark-installer 40254706132, evidence lane H15-ci).
+    run(process.execPath, ['--max-old-space-size=4096', join('node_modules', 'typescript', 'bin', 'tsc'), '-b', 'tsconfig.host.json'], runtime, 'official host typecheck+emit (upstream build:lib:host heap)');
     run('pnpm', ['exec', 'tsdown', '--env.DSH_BUILD_FACE', 'host'], runtime, 'official host bundle', process.platform === 'win32');
   }
   if (!existsSync(cliEntry)) {

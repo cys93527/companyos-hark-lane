@@ -84,11 +84,23 @@ describe('execution safety: local owned process only (no kernel or ACL)', () => 
   it('captures actual timeout and stops the owned root and grandchild', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'owned-tree-')); dirs.push(dir);
     const pids: number[] = [];
+    // Load-independent (H15 CI hark-ubuntu 40254706085): the request deadline fires only once
+    // the root has printed both pids, so a slow runner can no longer time the root out before
+    // the grandchild exists (which made the run observe zero pids).
+    let fireDeadline: (() => void) | undefined;
+    let deadlineArmed = false;
     const provider = createProcessExecutorProvider({
       providerKey: 'fixture', capabilities: ['timeout'], executable: process.execPath, fallbackCwd: dir, buildArgs: () => [],
       baseArgv: ['-e', "const c=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true}); console.log(JSON.stringify([process.pid,c.pid]));setInterval(()=>{},1000)"],
-      tapStdoutLine: (line) => { const parsed = JSON.parse(line) as number[]; pids.push(...parsed); owned.push(...parsed); },
-      timer: (ms, callback) => { const handle = setTimeout(callback, ms); return () => clearTimeout(handle); },
+      tapStdoutLine: (line) => { const parsed = JSON.parse(line) as number[]; pids.push(...parsed); owned.push(...parsed); deadlineArmed = true; fireDeadline?.(); },
+      timer: (ms, callback) => {
+        if (ms === 800) {
+          fireDeadline = callback;
+          if (deadlineArmed) queueMicrotask(callback);
+          return () => { fireDeadline = undefined; };
+        }
+        const handle = setTimeout(callback, ms); return () => clearTimeout(handle);
+      },
     });
     const outcome = await provider.start({ ...requestOf(), timeoutMs: 800 });
     expect(pids).toHaveLength(2);
