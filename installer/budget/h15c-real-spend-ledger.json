@@ -1,0 +1,12 @@
+{
+  "purpose": "User-approved operator cap for ALL real DeepSeek calls of the Hark lane (2026-10-26 08:39): CNY 1 cumulative. Each settled reservation counts its KNOWN usage cost; an UNKNOWN reservation counts its full worst-case bound. The next live run's cap.maxCostMicros must fit in capMicros - sum(entries).",
+  "currency": "CNY",
+  "capMicros": 1000000,
+  "entries": [
+    { "run": "hark-live-goal 40263437730", "callId": "planning-1", "status": "KNOWN", "micros": 6216 },
+    { "run": "hark-live-goal 40263437730", "callId": "planning-2", "status": "KNOWN", "micros": 5268 },
+    { "run": "hark-live-goal 40266877047", "callId": "planning-1", "status": "KNOWN", "micros": 6530 },
+    { "run": "hark-live-goal 40266877047", "callId": "planning-2", "status": "KNOWN", "micros": 5784 },
+    { "run": "hark-live-goal 40266877047", "callId": "kernel-1", "status": "UNKNOWN (worst-case bound)", "micros": 113536 }
+  ]
+}

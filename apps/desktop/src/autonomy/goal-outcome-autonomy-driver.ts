@@ -329,7 +329,20 @@ export interface AutonomyDriverDeps {
   /** The derived outcome projection from canonical truth. */
   readonly projectOutcome: (input: {readonly companyId: string; readonly runId: string; readonly state: GoalAutonomyState; readonly status: AutonomyTerminalState; readonly externalBlocks: readonly string[]}) => Promise<FinalOutcomeProjection>;
   readonly budgets?: Partial<AutonomyBudget>;
+  /**
+   * H15c — the Goal's durable external-admission state (the operator budget envelope).
+   * Returns the typed reason when EVERY further external call is refused until an
+   * operator acts (an UNKNOWN usage reservation awaiting reconciliation, the budget
+   * deadline passed), else null. Absent = no budget envelope in this composition.
+   * hark-live-goal 40266877047: after one UNKNOWN settlement the driver kept advancing
+   * and 19 supervisor turns were each refused at admission until the stall detector
+   * fired — the Goal must instead stop at once as an operator-actionable block.
+   */
+  readonly standingAdmissionRefusal?: (input: {readonly companyId: string; readonly runId: string}) => Promise<string | null>;
 }
+
+/** Durable admission refusals that no autonomous step can clear (operator action required). */
+export const STANDING_ADMISSION_REFUSALS: readonly string[] = ['GOAL_USAGE_UNKNOWN', 'GOAL_DEADLINE_EXCEEDED'];
 
 export const createGoalOutcomeAutonomyDriver = (deps: AutonomyDriverDeps) => {
   const defaultBudgets: AutonomyBudget = {...DEFAULT_AUTONOMY_BUDGET, ...(deps.budgets ?? {})};
@@ -471,6 +484,19 @@ export const createGoalOutcomeAutonomyDriver = (deps: AutonomyDriverDeps) => {
       } else {
         stallSteps = 0;
         lastFingerprint = state.value.fingerprint;
+      }
+
+      // H15c: a standing admission refusal (operator reconciliation / budget renewal) is
+      // an external block NOW — advancing would only spend turns that admission refuses.
+      if (deps.standingAdmissionRefusal !== undefined) {
+        const refusal = await durableValue('goal.admission.read', () =>
+          deps.standingAdmissionRefusal!({companyId: input.companyId, runId: input.runId}),
+        );
+        if (!refusal.ok) return refusal;
+        if (refusal.value !== null && STANDING_ADMISSION_REFUSALS.includes(refusal.value)) {
+          externalBlockCount = 1;
+          return finish('EXTERNAL_PRECONDITION_BLOCKED', refusal.value, state.value, [refusal.value]);
+        }
       }
 
       // ONE deterministic action: the EXISTING advance command.

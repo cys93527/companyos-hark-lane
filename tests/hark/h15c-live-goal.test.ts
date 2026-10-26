@@ -11,12 +11,16 @@ const template = JSON.parse(readFileSync('installer/budget/deepseek-flash.h15c.a
 };
 
 describe('H15c live goal (execute mode)', () => {
-  it('worst case of every admitted call at peak rates fits the CNY 1 cap', () => {
+  it('worst case of every admitted call at peak rates fits what remains of the cumulative CNY 1 cap', () => {
     const { cap, proof } = template;
     const perCall = Math.ceil((proof.tokens.inputUpperBound * proof.pricing.inputRate + proof.tokens.outputUpperBound * proof.pricing.outputRate) / 1e6);
     expect(proof.pricing.currency).toBe('CNY');
     expect(proof.identity.modelId).toBe('deepseek-flash');
-    expect(cap.maxCostMicros).toBe(1_000_000);
+    // The CNY 1 cap is CUMULATIVE across live runs: prior settlements (UNKNOWN at worst case) are in the ledger.
+    const ledger = JSON.parse(readFileSync('installer/budget/h15c-real-spend-ledger.json', 'utf8')) as { capMicros: number; entries: { micros: number }[] };
+    expect(ledger.capMicros).toBe(1_000_000);
+    const spent = ledger.entries.reduce((n, e) => n + e.micros, 0);
+    expect(cap.maxCostMicros).toBeLessThanOrEqual(ledger.capMicros - spent);
     expect(perCall * cap.maxCalls).toBeLessThanOrEqual(cap.maxCostMicros);
     expect(cap.maxCalls * (proof.tokens.inputUpperBound + proof.tokens.outputUpperBound)).toBeLessThanOrEqual(cap.maxTokens);
   });

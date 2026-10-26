@@ -137,6 +137,7 @@ import {
 import {
   autonomyFingerprintOf,
   createGoalOutcomeAutonomyDriver,
+  STANDING_ADMISSION_REFUSALS,
   userDecisionRequestFromApproval,
   type AutonomyDriverDeps,
   type DoctorCheck,
@@ -4163,6 +4164,18 @@ export async function composeCoreServices(
      * restarted process continues from durable state.
      */
     const autonomyDriverDeps: AutonomyDriverDeps = {
+      // H15c: the durable budget envelope's standing refusal (null when no envelope is bound).
+      ...(executionSafety === null ? {} : {
+        standingAdmissionRefusal: async ({runId}: {readonly companyId: string; readonly runId: string}) => {
+          try {
+            await executionSafety.budget.check(runId);
+            return null;
+          } catch (error) {
+            const reason = error instanceof DomainError ? String(error.details['reason'] ?? '') : '';
+            return STANDING_ADMISSION_REFUSALS.includes(reason) ? reason : null;
+          }
+        },
+      }),
       advanceGoal: async ({companyId, runId}) => {
         if (controlPlane === null) {
           return err(new DomainError('PERSISTENCE_FAILED', 'The control plane is not wired.', {details: {reason: 'CONTROL_PLANE_PIPELINE_UNAVAILABLE'}}));
