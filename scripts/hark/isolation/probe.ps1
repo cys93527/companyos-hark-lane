@@ -41,7 +41,7 @@ function New-ChildSpec([string]$name) {
   $spec = [ordered]@{
     out = (Join-Path $workspace "child-$name.json"); brokerPort = $brokerPort; otherPort = $otherPort; children = $true
     reads = [ordered]@{ workspaceInput = (Join-Path $workspace 'input.txt'); kernelFile = (Join-Path $kernelDir 'probe-child.cjs');
-      userDataVault = (Join-Path $userData 'vault.json'); userDataDir = $userData; profileSecret = (Join-Path $env:USERPROFILE 'h16-profile-secret.txt') }
+      userDataVault = (Join-Path $userData 'vault.json'); userDataDir = $userData; profileDir = $env:USERPROFILE; profileSecret = (Join-Path $env:USERPROFILE 'h16-profile-secret.txt') }
     writes = [ordered]@{ workspace = (Join-Path $workspace "w-$name.txt"); kernelDir = (Join-Path $kernelDir "w-$name.txt"); userData = (Join-Path $userData "w-$name.txt") }
   }
   if ($otherVolume) { $spec.reads.otherVolumeRoot = $otherVolume }
@@ -125,6 +125,20 @@ function Set-Ace([string]$path, [string]$sid, [string]$rights, [string]$type, [b
   $rule = New-Object Security.AccessControl.FileSystemAccessRule($id, $rights, $inherit, 'None', $type)
   $acl.AddAccessRule($rule); Set-Acl -Path $path -AclObject $acl
 }
+# Run 3 (40333947869): node's realpath lstat()s every ancestor; the account may traverse the runner's profile
+# (bypass-traverse) but cannot read its directories' attributes -> EPERM lstat C:\Users\<user>\AppData before the
+# script even loads. Narrow fix: a this-folder-only ReadAttributes ACE on each ancestor (no list, no read data).
+$script:ancestorGrants = @()
+function Grant-AncestorAttributes([string]$path, [string]$sid) {
+  $parent = Split-Path -Parent $path
+  while ($parent -and (Split-Path -Parent $parent)) {
+    if ($script:ancestorGrants -notcontains $parent) {
+      Set-Ace $parent $sid 'ReadAttributes, Synchronize' 'Allow' $false
+      $script:ancestorGrants += $parent
+    }
+    $parent = Split-Path -Parent $parent
+  }
+}
 function Remove-Aces([string]$path, [string]$sid) {
   $acl = Get-Acl $path; $id = New-Object Security.Principal.SecurityIdentifier($sid)
   $acl.PurgeAccessRules($id); Set-Acl -Path $path -AclObject $acl
@@ -158,6 +172,9 @@ try {
   Set-Ace $workspace $sid 'Modify' 'Allow' $true
   Set-Ace $kernelDir $sid 'ReadAndExecute' 'Allow' $true
   Set-Ace $userData $sid 'FullControl' 'Deny' $true
+  Grant-AncestorAttributes $workspace $sid
+  Grant-AncestorAttributes $kernelDir $sid
+  $report.host.ancestorGrants = $script:ancestorGrants
 
   # Pass B - account, before firewall rules.
   $b = New-ChildSpec 'B'
@@ -218,6 +235,7 @@ try {
   Check 'C.file.userData.vaultDenied' ($C -and $C.files.'read:userDataVault'.outcome -eq 'DENIED') $C.files.'read:userDataVault'
   Check 'C.file.userData.listDenied' ($C -and $C.files.'read:userDataDir'.outcome -eq 'DENIED') $C.files.'read:userDataDir'
   Check 'C.file.userData.writeDenied' ($C -and $C.files.'write:userData'.outcome -eq 'DENIED') $C.files.'write:userData'
+  Check 'C.file.profile.listDenied' ($C -and $C.files.'read:profileDir'.outcome -eq 'DENIED') $C.files.'read:profileDir'
   Check 'C.file.profileSecret.denied' ($C -and $C.files.'read:profileSecret'.outcome -eq 'DENIED') $C.files.'read:profileSecret'
   # Recorded residuals (documented, not claimed closed): DNS via DNS Client service; other volume roots.
   $report.residuals = [ordered]@{ dns = $C.net.dns; otherVolumeRoot = $C.files.'read:otherVolumeRoot' }
@@ -232,7 +250,9 @@ finally {
   $report.cleanup.rulesLeft = @(Get-NetFirewallRule -DisplayName "CompanyOS H16 probe $tag*" -ErrorAction SilentlyContinue).Count
   if ($report.host.accountSid) {
     $s = $report.host.accountSid
-    $report.cleanup.acesLeft = (Remove-Aces $workspace $s) + (Remove-Aces $kernelDir $s) + (Remove-Aces $userData $s)
+    $left = (Remove-Aces $workspace $s) + (Remove-Aces $kernelDir $s) + (Remove-Aces $userData $s)
+    foreach ($anc in $script:ancestorGrants) { $left += (Remove-Aces $anc $s) }
+    $report.cleanup.acesLeft = $left
   }
   Remove-LocalUser -Name $account -ErrorAction SilentlyContinue
   $report.cleanup.accountLeft = [bool](Get-LocalUser -Name $account -ErrorAction SilentlyContinue)
