@@ -37,19 +37,29 @@ Add-Type -TypeDefinition (Get-Content (Join-Path $PSScriptRoot 'wfp-persistent.c
 
 function Check([string]$id, [bool]$ok, $observed) { $script:report.checks += [ordered]@{ id = $id; ok = $ok; observed = $observed } }
 function New-Password { $rb = New-Object byte[] 24; (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($rb); [Convert]::ToBase64String($rb) + 'aA1!' }
-function Invoke-Setup([string[]]$argv) {
-  $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $setup @argv 2>&1
-  $code = $LASTEXITCODE
-  $last = @($out | ForEach-Object { "$_" } | Where-Object { $_.TrimStart().StartsWith('{') }) | Select-Object -Last 1
+# Run 1 (40339654328): `& powershell -File setup.ps1 @array` died with "Cannot validate argument on parameter"
+# and the wrapper's Stop preference turned the child's stderr into a terminating error. The helper is now invoked
+# through -Command with every value single-quoted (full PowerShell binding, as the app's launcher will do), and
+# native stderr is only recorded.
+function Quote-Ps([string]$v) { "'" + $v.Replace("'", "''") + "'" }
+function Invoke-Setup($named) {
+  $parts = @('&', (Quote-Ps $setup))
+  foreach ($k in $named.Keys) { $parts += "-$k"; $parts += (Quote-Ps ([string]$named[$k])) }
+  $cmdLine = ($parts -join ' ') + '; exit $LASTEXITCODE'
+  $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { $out = & powershell -NoProfile -ExecutionPolicy Bypass -Command $cmdLine 2>&1; $code = $LASTEXITCODE }
+  finally { $ErrorActionPreference = $prevEap }
+  $lines = @($out | ForEach-Object { "$_" })
+  $last = @($lines | Where-Object { $_.TrimStart().StartsWith('{') }) | Select-Object -Last 1
   $json = $null; if ($last) { try { $json = $last | ConvertFrom-Json } catch {} }
-  return [ordered]@{ code = $code; json = $json; raw = (($out | ForEach-Object { "$_" }) -join "`n") }
+  return [ordered]@{ code = $code; json = $json; raw = ($lines -join "`n") }
 }
 function Install-Isolation([string]$password) {
   $pw = Join-Path $userData "isolation\handoff-$([Guid]::NewGuid().ToString('N')).txt"
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pw) | Out-Null
   Set-Content -LiteralPath $pw -Value $password -NoNewline -Encoding ascii
-  $r = Invoke-Setup @('-Action', 'install', '-StatePath', $statePath, '-PasswordFile', $pw, '-BrokerPort', "$brokerPort",
-    '-AccountName', $account, '-WorkspaceDirs', $workspace, '-StateDirs', $stateDir, '-KernelDirs', $kernelDir, '-DenyDirs', $userData)
+  $r = Invoke-Setup ([ordered]@{ Action = 'install'; StatePath = $statePath; PasswordFile = $pw; BrokerPort = "$brokerPort";
+    AccountName = $account; WorkspaceDirs = $workspace; StateDirs = $stateDir; KernelDirs = $kernelDir; DenyDirs = $userData })
   $r.handoffDeleted = -not (Test-Path -LiteralPath $pw)
   return $r
 }
@@ -79,7 +89,7 @@ try {
   $sid = if ($l1.json) { $l1.json.sid } else { $null }
 
   # L2
-  $l2 = Invoke-Setup @('-Action', 'status', '-StatePath', $statePath)
+  $l2 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   $report.steps.L2_status = $l2
   Check 'L2.status.isolatedFromNewProcess' ($l2.code -eq 0 -and $l2.json.state -eq 'ISOLATED') $l2.json
 
@@ -133,7 +143,7 @@ try {
   Add-LocalGroupMember -Group 'Users' -Member $stdUser
   $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
   $stdOut = Join-Path $pub 'status-std.txt'
-  $stdCmd = "`"$cmdExe`" /d /s /c `"`"$ps`" -NoProfile -ExecutionPolicy Bypass -File `"$pub\setup.ps1`" -Action status -StatePath `"$pub\state.json`" > `"$stdOut`" 2>&1`""
+  $stdCmd = "`"$cmdExe`" /d /s /c `"`"$ps`" -NoProfile -ExecutionPolicy Bypass -Command `"& '$pub\setup.ps1' -Action status -StatePath '$pub\state.json'; exit `$LASTEXITCODE`" > `"$stdOut`" 2>&1`""
   $report.steps.L4_launch = [CompanyOSCpwl]::RunInJob($stdUser, $stdPw, $cmdExe, $stdCmd, $pub, 120000)
   $report.steps.L4_standardUserStatus = if (Test-Path $stdOut) { Get-Content $stdOut -Raw } else { $null }
 
@@ -141,7 +151,7 @@ try {
   [CompanyOSWfp]::Open() | Out-Null
   $report.steps.L5_tamper = ('0x{0:x}' -f [CompanyOSWfp]::DeleteV6ForTamperTest())
   [CompanyOSWfp]::Close()
-  $l5 = Invoke-Setup @('-Action', 'status', '-StatePath', $statePath)
+  $l5 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   $report.steps.L5_status = $l5.json
   Check 'L5.wfpTamper.degraded' ($l5.code -eq 2 -and $l5.json.state -eq 'ISOLATION_DEGRADED' -and (@($l5.json.problems) -match 'wfp:filterV6:missing').Count -gt 0) $l5.json
 
@@ -149,7 +159,7 @@ try {
   $acl = Get-Acl -LiteralPath $workspace
   $acl.Access | Where-Object { -not $_.IsInherited -and $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $sid } | ForEach-Object { $acl.RemoveAccessRuleSpecific($_) }
   Set-Acl -LiteralPath $workspace -AclObject $acl
-  $l6 = Invoke-Setup @('-Action', 'status', '-StatePath', $statePath)
+  $l6 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   $report.steps.L6_status = $l6.json
   Check 'L6.aclTamper.degraded' ($l6.code -eq 2 -and (@($l6.json.problems) -match '^acl:missing:Allow:Modify').Count -gt 0) $l6.json
 
@@ -162,10 +172,10 @@ try {
   Check 'L7.repair.noDuplicates' ($report.steps.L7_filterCounts.v4 -eq 1 -and $report.steps.L7_filterCounts.v6 -eq 1) $report.steps.L7_filterCounts
 
   # L8
-  $l8 = Invoke-Setup @('-Action', 'uninstall', '-StatePath', $statePath)
+  $l8 = Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })
   $report.steps.L8_uninstall = $l8
   Check 'L8.uninstall.ok' ($l8.code -eq 0 -and $l8.json.ok -eq $true) $l8.json
-  $l8s = Invoke-Setup @('-Action', 'status', '-StatePath', $statePath)
+  $l8s = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   Check 'L8.status.notConfigured' ($l8s.json.state -eq 'NOT_CONFIGURED') $l8s.json
   $left = Get-WfpFilterCount 'CompanyOS agent'
   Check 'L8.wfp.noneLeft' ($left -eq 0) $left
@@ -176,7 +186,7 @@ catch {
   $exit = 1
 }
 finally {
-  if (Test-Path -LiteralPath $statePath) { $report.finalCleanup = (Invoke-Setup @('-Action', 'uninstall', '-StatePath', $statePath)).json }
+  if (Test-Path -LiteralPath $statePath) { $report.finalCleanup = (Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })).json }
   Remove-LocalUser -Name $stdUser -ErrorAction SilentlyContinue
   foreach ($p in @($s1, $s2)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
   if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 25) { $exit = 1 }
