@@ -1,3 +1,8 @@
+## Hark lane — H15 DONE: packaged DSH kernel executes a real DeepSeek goal (2026-10-26)
+- PASS: hark-live-goal 40305126182 (installer 40302720078 @b97bdee) — result EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF, driver COMPLETED in 44 s, real files hello.txt/summary.md, 2 blocking validations pass, 1 role handoff, 13 CAS files, 15 real calls all KNOWN (actual ¥0.078). Cumulative H15c ledger ¥0.468 / ¥1 (UNKNOWN at bound).
+- Root fixes on the way (each with first-failure evidence in lane/evidence/H15c-ci): admission credentialRef/max_tokens (c018204); DeepSeek wire compat max_tokens (dfd732b); pwsh ConPTY readiness race + PSReadLine history (edae7cc/691a57a); stall after GOAL_USAGE_UNKNOWN → typed block (c78386a); SSE keep-alive comments (1aed64c); gzip-compressed upstream body metered raw (5087578); spent call envelope → typed GOAL_BUDGET_EXHAUSTED + declared COS_MODEL_MAX_OUTPUT_TOKENS (b97bdee).
+- Details docs/hark-lane/H15_AGENT_KERNEL_NATIVE_JOB.md. Hark self-review PASS only; independent review not granted.
+
 ## Hark lane — H15a/H15b packaged DSH kernel + native.job production wiring (2026-10-26, in progress)
 - User approval 2026-10-26 08:39 (ROADMAP #10/#11/#12/#14; code signing declined). Commits 0d36374 (H15a), ddee1b4 (root fixes), 9c19293 (H15b).
 - H15a first failures kept (lane/evidence/H15-ci): hark-installer 40254706132 upstream host tsc OOM → upstream build:lib:host heap; hark-ubuntu 40254706085 owned-tree timeout race → deadline on pid line. After fix: hark-windows 40257829046 ✓, hark-ubuntu 40257828903 ✓.

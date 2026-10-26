@@ -34,15 +34,31 @@
 - 根治（CompanyOS 自有的 headless shell guard，不改上游）：guard 安装 `CompanyOSOrderedPrompt`——先记录退出码，flush，等 120 ms 让 ConPTY 画完积压文本，再输出与内核引导完全相同的标记字节和 `dsh> `；用只读别名 `prompt` 指向它（别名在 PowerShell 命令解析中优先于函数，内核自己的 `function prompt` 定义仍成功但不会被调用）。PONG 冒烟改为不挂任何调试器运行；pwsh-pty-probe 在生产 windows-acl 受限令牌下按内核方式（spawn 后立即写引导）各重复 8 次比较旧 guard 与新 guard 的就绪可达率，并核对 `Get-Command prompt` 为 Alias。回归测试 tests/hark/h15c-pwsh-ordered-prompt.test.ts。证据 lane/evidence/H15c-ci/run3-installer-pwsh、run4-installer。
 - 验证 hark-installer 40287349555（@edae7cc，无调试器）：PONG 冒烟 pwsh 工具 1.8 s 返回；探针旧 guard 8 次就绪 7 次（失败那次复现：标记之后到达 PSReadLine 异步打印的“历史文件拒绝访问”错误与换行），新 guard 8/8，`Get-Command prompt` 均为 Alias，taskkill 后无残留 pwsh。据此再根治第二个乱序来源：guard 在受限令牌下设置 `Set-PSReadLineOption -HistorySaveStyle SaveNothing`（历史文件本就不可写；无人值守代理的命令也不应进入用户的交互历史）。
 
-## H15c 第 3 次真实运行与 usage UNKNOWN 的根因（@本提交）
+## H15c 第 3 次真实运行与 usage UNKNOWN 的根因（@1aed64c）
 - hark-live-goal 40291557860（安装包 40289465806，pwsh 修复后）：规划 2 次 KNOWN（¥0.0063 + ¥0.0047）；内核第 1 次调用上游 200、946 字节正常结束，但 `executor.model_exchange_observed` 记录 `usageDisposition=absent` → 预留 UNKNOWN（按上界 ¥0.0975 记账）→ 第 2 次调用 `GOAL_USAGE_UNKNOWN` 被准入拒绝，Goal 按 c78386a 设计立即以类型化原因结束（不再空转）。与 run 2 同一现象。
 - 根因：DeepSeek 文档（api-docs.deepseek.com/quick_start/rate_limit）说明流式请求等待调度期间会先发 SSE 注释 `: keep-alive`。broker 旧逻辑只有当响应体**以 `data:` 开头**时才按 SSE 解析，否则整体当一个 JSON 解析 → 以 keep-alive 开头的流里的 usage 全部丢失。本地复现用的假上游不发 keep-alive，所以一直 KNOWN。
 - 根治：`observeResponseUsage()`（embedded-dsh-runtime.ts）按 content-type 或任一 `data:` 行识别 SSE，逐个 `data:` 事件读取，注释与空行只算分帧，`usage:null` 不算证据，`[DONE]` 结束；多个不同值 → conflicting，非法值 → invalid，均保持 UNKNOWN（不放松冲突规则）；非流式 JSON 允许前导空行。观察事件新增 `responseShape`（只有计数与类型，不含模型文本），下次若仍 absent 可直接看出原因。PONG 冒烟的假上游先发 `: keep-alive`，并断言内核请求带 `stream_options.include_usage=true`。测试 tests/hark/h15c-response-usage.test.ts + goal-broker-admission 新用例。
 - 预算：累计记账 ¥0.2458（UNKNOWN 按上界），下一次运行上限改为 7 次 × ¥0.0975 = ¥0.683 ≤ ¥0.75 ≤ 剩余 ¥0.754。
 
+## H15c 第 4 次真实运行：压缩响应（@5087578）
+- hark-live-goal 40296992054（安装包 40292509800 @1aed64c）：内核第 1 次调用仍 usage absent。新增的 `responseShape` 一眼看出原因：`framing=sse`、`text/event-stream`，但 `dataEvents=0`、`commentLines=0`、`unparsedEvents=0`，751 字节里没有一行文本 → 响应是压缩的。
+- 根因：内核的 HTTP 客户端发 `Accept-Encoding: gzip, deflate` 并自行透明解压（PONG 冒烟记录到的请求头可证）；broker 原样转发该头，DeepSeek 返回 gzip 流，broker 却把**压缩后的字节**当 UTF-8 去找 usage。
+- 根治：broker 只向上游转发自己能解码的编码（gzip/x-gzip/deflate/br/identity，否则 identity）；计量副本按 `Content-Encoding` 解码（上限 4 MiB）；未知/损坏编码为新的类型化结论 `undecodable`（保持 UNKNOWN）；`responseShape.contentEncoding` 记录编码。PONG 假上游在内核接受 gzip 时以 gzip 回复。broker 回环测试：gzip、br 流 KNOWN，zstd 保持 UNKNOWN，上游只见可解码编码。
+
+## H15c 第 5 次真实运行：计量已通，调用次数上限耗尽（@b97bdee）
+- hark-live-goal 40300575683（安装包 40298183916）：**全部 7 次交换 KNOWN**（contentEncoding gzip，usageEvents 1）——压缩根治在真实上游上成立。随包内核在真实工作区写出 hello.txt 与 summary.md，但 7 次上限（规划 2 + 内核 5）在内核最后一轮前用完，第 6 次内核调用被准入拒绝 → provider-failed；随后 19 次监督轮次均被拒，driver 以 AUTONOMY_STALLED 结束。
+- 根治 1：调用额度用完是"常驻拒绝"——`standingAdmissionRefusal` 在 reservations ≥ maxCalls 时返回 `GOAL_BUDGET_EXHAUSTED`，driver 在出现一步无进展时以 EXTERNAL_PRECONDITION_BLOCKED 类型化结束（状态仍在推进时不拦，后续可能只剩确定性的校验/交接）。
+- 根治 2：调用次数太少的根因是每次调用都按写死的 max_tokens 8192 计上界（¥0.0975/次）。新增可选部署变量 `COS_MODEL_MAX_OUTPUT_TOKENS`（256..8192，缺省 8192），同时作用于 env profile 和内核路由；准入仍拒绝宽于预算证明上界的路由。hark-live-goal execute 模式声明 2048（实测输出 ≤ 600 tokens），上界 ¥0.0324/次 → 18 次上限 ¥0.583 ≤ ¥0.59。
+
+## H15c 通过：hark-live-goal 40305126182（安装包 40302720078 @b97bdee）
+- 结果 `EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF`，driver `COMPLETED`（44 s）。规划 → 两个 work 任务都 DONE；hello.txt = "Hello CompanyOS"，summary.md 写出一句说明；两条 `evidence.grounding-check` 校验 pass（blocking）；一条角色间 Handoff（READY）；CAS 文件 13 个。
+- 15 次真实调用全部 KNOWN：CompanyOS 侧 6 次（规划/监督）+ 随包内核 9 次（两个 attempt），合计实际 ¥0.0775。
+- H15c 累计记账 ¥0.4681 / ¥1（含两次 UNKNOWN 按上界 ¥0.2111 与 run 4 的 ¥0.0975；实际已知花费约 ¥0.16）。账本 installer/budget/h15c-real-spend-ledger.json。
+- 注意（观察）：run 5 中内核在任务 1 里把两个计划项都做了（提示只含任务 1 的目标与验收项）；run 6 中按任务分开执行。留给 CNY 5 真实验收任务继续观察。
+
 ## 价格核对（H15c 前置）
 - 2026-10-26 官方价格页：模型名 `deepseek-flash`（DeepSeek-V4.1-Flash-1017），`deepseek-chat` 已不在列。CNY 高峰：输入未命中 2 元/M、输出 8 元/M——与 `installer/budget/deepseek-flash.approval-template.json` 一致。Search/Fetch 自 2026-11-01 起 5 元/千次（含经 Harness 的服务端工具调用）→ H15c 内核 profile 保持网页搜索/抓取关闭。
 
 ## 未完成 / 下一步
-- 根治提交的 CI（hark-installer 全流程 + hark-restart/hark-upgrade）。
-- H15c：在 CI 上用真实 DeepSeek（≤ CNY 1）经随包内核跑一个真实目标，产出文件 Artifact/CAS/Validation/Handoff。
+- H15 完成（Hark self-review PASS；独立评审未授予）。
+- 下一步：CNY 5 独立预算的贴近真实使用验收任务（多步、较长上下文、多轮工具调用，单独账本），然后 H16。
