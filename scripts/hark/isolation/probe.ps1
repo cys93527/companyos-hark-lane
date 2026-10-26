@@ -197,6 +197,16 @@ try {
     } catch { $report.host.ipv6RuleErrors += @("$($form -join ','): $($_.Exception.Message)") }
   }
   if (-not $report.host.ipv6RuleForm) { throw 'no IPv6 block rule form accepted' }
+  # WFP layer (run 5: firewall rules never see loopback). Dynamic session lives while this script runs.
+  Add-Type -TypeDefinition (Get-Content (Join-Path $PSScriptRoot 'wfp.cs') -Raw)
+  $wfp = [ordered]@{ open = ('0x{0:x}' -f [H16Wfp]::Open()) }
+  $subLayer = [Guid]::NewGuid()
+  $wfp.subLayer = ('0x{0:x}' -f [H16Wfp]::AddSubLayer($subLayer))
+  $wfp.v4 = ('0x{0:x}' -f [H16Wfp]::AddBlock($subLayer, [H16Wfp]::LAYER_CONNECT_V4, $sid, [uint16]$brokerPort, "CompanyOS H16 $tag v4 except broker"))
+  $wfp.v6 = ('0x{0:x}' -f [H16Wfp]::AddBlock($subLayer, [H16Wfp]::LAYER_CONNECT_V6, $sid, [uint16]0, "CompanyOS H16 $tag v6 all"))
+  $wfp.log = @([H16Wfp]::Log)
+  $report.host.wfp = $wfp
+  if ($wfp.open -ne '0x0' -or $wfp.subLayer -ne '0x0' -or $wfp.v4 -ne '0x0' -or $wfp.v6 -ne '0x0') { throw "WFP setup failed: $($wfp | ConvertTo-Json -Compress)" }
   # (b) every TCP port except the fixed broker port, ANY address, and all UDP. Run 4 (40334164826): rules whose
   # RemoteAddress names loopback (127.0.0.0/8 or an IPv6 range containing ::1) never matched loopback traffic, while
   # an any-address rule does (identity-proof doc). Combined with (a) the only reachable TCP endpoint is loopback:broker.
@@ -247,7 +257,13 @@ catch {
   $exit = 1
 }
 finally {
-  # Pass D - cleanup with read-back.
+  # Pass D - cleanup with read-back. Closing the dynamic WFP session deletes its sublayer and filters.
+  try { [H16Wfp]::Close(); $report.cleanup.wfpSessionClosed = $true } catch { $report.cleanup.wfpSessionClosed = $false }
+  try {
+    & netsh wfp show filters file="$OutDir\wfp-after.xml" | Out-Null
+    $report.cleanup.wfpFiltersLeft = @(Select-String -Path "$OutDir\wfp-after.xml" -SimpleMatch "CompanyOS H16 $tag").Count
+    Remove-Item "$OutDir\wfp-after.xml" -ErrorAction SilentlyContinue
+  } catch { $report.cleanup.wfpFiltersLeft = -1 }
   foreach ($r in @($ruleA, "$ruleA v6", $ruleB, "$ruleB udp")) { Remove-NetFirewallRule -DisplayName $r -ErrorAction SilentlyContinue }
   $report.cleanup.rulesLeft = @(Get-NetFirewallRule -DisplayName "CompanyOS H16 probe $tag*" -ErrorAction SilentlyContinue).Count
   if ($report.host.accountSid) {
@@ -258,7 +274,7 @@ finally {
   }
   Remove-LocalUser -Name $account -ErrorAction SilentlyContinue
   $report.cleanup.accountLeft = [bool](Get-LocalUser -Name $account -ErrorAction SilentlyContinue)
-  if ($report.cleanup.rulesLeft -ne 0 -or $report.cleanup.acesLeft -ne 0 -or $report.cleanup.accountLeft) { $exit = 1 }
+  if ($report.cleanup.wfpFiltersLeft -ne 0 -or $report.cleanup.rulesLeft -ne 0 -or $report.cleanup.acesLeft -ne 0 -or $report.cleanup.accountLeft) { $exit = 1 }
   foreach ($p in @($s1, $s2)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
   Get-ChildItem $workspace -Filter 'child-*.json' -ErrorAction SilentlyContinue | Copy-Item -Destination $OutDir
   $report.finishedAt = (Get-Date).ToString('o')
