@@ -277,4 +277,7 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
   [hark-lane/H13_UPGRADE_RETENTION.md](./hark-lane/H13_UPGRADE_RETENTION.md) ·
   [hark-lane/H14_UBUNTU_GATE.md](./hark-lane/H14_UBUNTU_GATE.md) ·
   [hark-lane/H15_AGENT_KERNEL_NATIVE_JOB.md](./hark-lane/H15_AGENT_KERNEL_NATIVE_JOB.md) ·
+  [hark-lane/H16_WINDOWS_ISOLATION.md](./hark-lane/H16_WINDOWS_ISOLATION.md) ·
+  [hark-lane/H17_REAL_PC_ACCEPTANCE_CHECKLIST.md](./hark-lane/H17_REAL_PC_ACCEPTANCE_CHECKLIST.md) ·
+  [hark-lane/H17_INDEPENDENT_REVIEW_PACKET.md](./hark-lane/H17_INDEPENDENT_REVIEW_PACKET.md) ·
   [hark-lane/ROADMAP.md](./hark-lane/ROADMAP.md)
