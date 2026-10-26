@@ -816,8 +816,77 @@ export interface ModelBrokerExchangeObservation {
   /** observed | absent | conflicting | invalid | oversize | http-error | not-reached */
   readonly usageDisposition: string;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
+  /** Structure only (never content) of the response body the usage was read from. */
+  readonly responseShape: ModelResponseShape | null;
   readonly durationMs: number;
 }
+
+/** Structural evidence of a model response body — counts and kinds, never model text. */
+export interface ModelResponseShape {
+  readonly framing: 'sse' | 'json';
+  readonly contentType: string;
+  readonly dataEvents: number;
+  readonly commentLines: number;
+  readonly doneMarker: boolean;
+  readonly usageEvents: number;
+  readonly nullUsageEvents: number;
+  readonly unparsedEvents: number;
+}
+
+/**
+ * H15c — read token usage from an upstream Chat Completions response body.
+ *
+ * Streaming (SSE): every `data:` event is a candidate wherever it sits; SSE comment lines
+ * (`: keep-alive`, which DeepSeek sends while a streaming request waits to be scheduled —
+ * api-docs.deepseek.com/quick_start/rate_limit) and blank lines are framing, never usage
+ * evidence, and `data: [DONE]` ends the stream. Chunks with `usage: null` (DeepSeek with
+ * stream_options.include_usage) carry no usage. Exactly one consistent usage value is
+ * `observed`; differing values are `conflicting` (never "whichever arrived last"); a
+ * usage object that is not two non-negative safe integers is `invalid`; none is `absent`.
+ * Non-streaming JSON may be preceded by blank keep-alive lines.
+ * hark-live-goal 40266877047 / 40291557860: the first kernel call settled UNKNOWN — the
+ * previous reader only treated a body as SSE when it STARTED with `data:`, so a stream
+ * opening with `: keep-alive` was parsed as one JSON document and its usage was lost.
+ */
+export const observeResponseUsage = (
+  text: string,
+  contentType: string,
+): { readonly disposition: 'observed' | 'absent' | 'conflicting' | 'invalid'; readonly usage: { inputTokens: number; outputTokens: number; totalCost: null } | null; readonly shape: ModelResponseShape } => {
+  const lines = text.split(/\r?\n/u);
+  const sse = contentType.toLowerCase().includes('text/event-stream') || lines.some((line) => line.startsWith('data:'));
+  let dataEvents = 0; let commentLines = 0; let doneMarker = false; let usageEvents = 0; let nullUsageEvents = 0; let unparsedEvents = 0;
+  let usage: { inputTokens: number; outputTokens: number; totalCost: null } | null = null;
+  let conflicting = false; let invalid = false;
+  const consider = (payload: string): void => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(payload); } catch { unparsedEvents += 1; return; }
+    if (parsed === null || typeof parsed !== 'object' || !('usage' in parsed)) return;
+    const u = (parsed as { usage: unknown }).usage;
+    if (u === null || u === undefined) { nullUsageEvents += 1; return; }
+    usageEvents += 1;
+    const p = (u as { prompt_tokens?: unknown }).prompt_tokens;
+    const c = (u as { completion_tokens?: unknown }).completion_tokens;
+    if (typeof p !== 'number' || !Number.isSafeInteger(p) || p < 0 || typeof c !== 'number' || !Number.isSafeInteger(c) || c < 0) { invalid = true; return; }
+    if (usage !== null && (usage.inputTokens !== p || usage.outputTokens !== c)) conflicting = true;
+    usage = { inputTokens: p, outputTokens: c, totalCost: null };
+  };
+  if (sse) {
+    for (const line of lines) {
+      if (line.startsWith(':')) { commentLines += 1; continue; }
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') { doneMarker = true; continue; }
+      dataEvents += 1;
+      consider(payload);
+    }
+  } else if (text.trim().length > 0) {
+    dataEvents = 1;
+    consider(text.trim());
+  }
+  const shape: ModelResponseShape = { framing: sse ? 'sse' : 'json', contentType: contentType.slice(0, 80), dataEvents, commentLines, doneMarker, usageEvents, nullUsageEvents, unparsedEvents };
+  const disposition = invalid ? 'invalid' : conflicting ? 'conflicting' : usage === null ? 'absent' : 'observed';
+  return { disposition, usage: disposition === 'observed' ? usage : null, shape };
+};
 
 const BROKER_MAX_BODY_BYTES = 8 * 1024 * 1024; // 8 MiB per model request
 const BROKER_MAX_CONCURRENCY = 4; // one kernel drives at most a handful of streams
@@ -916,6 +985,7 @@ export const startModelBroker = (input: {
       let upstreamStatus: number | null = null;
       let responseBytes = 0;
       let usageDisposition = 'not-reached';
+      let responseShape: ModelResponseShape | null = null;
       let settled = false;
       let proxied: ClientRequest | null = null;
       let admission: Awaited<ReturnType<NonNullable<typeof input.admission>>> | undefined;
@@ -932,7 +1002,7 @@ export const startModelBroker = (input: {
         inFlight -= 1;
         try {
           input.observe?.({
-            sequence, endedBy, upstreamStatus, requestBytes: size, responseBytes, usageDisposition,
+            sequence, endedBy, upstreamStatus, requestBytes: size, responseBytes, usageDisposition, responseShape,
             usage: usage === null ? null : { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
             durationMs: Date.now() - exchangeStarted,
           });
@@ -1045,25 +1115,14 @@ export const startModelBroker = (input: {
                 if (observedBytes <= 1_048_576) usageChunks.push(chunk);
               });
               upstreamResponse.on('end', () => {
-                let usage: InvocationResult['usage'] | null = null;
-                let conflictingUsage = false;
-                if (observedBytes <= 1_048_576 && (upstreamResponse.statusCode ?? 500) < 400) {
-                  const text = Buffer.concat(usageChunks).toString('utf8');
-                  const candidates = text.trimStart().startsWith('data:') ? text.split(/\r?\n/u).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()) : [text];
-                  for (const candidate of candidates) {
-                    try {
-                      const u = (JSON.parse(candidate) as { usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } }).usage;
-                      if (u !== undefined) {
-                        if (typeof u.prompt_tokens === 'number' && Number.isSafeInteger(u.prompt_tokens) && u.prompt_tokens >= 0 && typeof u.completion_tokens === 'number' && Number.isSafeInteger(u.completion_tokens) && u.completion_tokens >= 0) {
-                          if (usage !== null && (usage.inputTokens !== u.prompt_tokens || usage.outputTokens !== u.completion_tokens)) conflictingUsage = true;
-                          usage = { inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, totalCost: null };
-                        } else conflictingUsage = true;
-                      }
-                    } catch { /* SSE terminator or malformed payload is not usage evidence. */ }
-                  }
-                }
-                usageDisposition = observedBytes > 1_048_576 ? 'oversize' : (upstreamResponse.statusCode ?? 500) >= 400 ? 'http-error' : conflictingUsage ? 'conflicting' : usage === null ? 'absent' : 'observed';
-                settle(conflictingUsage ? null : usage, 'upstream-end');
+                const status = upstreamResponse.statusCode ?? 500;
+                const observed = observedBytes > 1_048_576 || status >= 400
+                  ? null
+                  : observeResponseUsage(Buffer.concat(usageChunks).toString('utf8'), String(upstreamResponse.headers['content-type'] ?? ''));
+                usageDisposition = observedBytes > 1_048_576 ? 'oversize' : status >= 400 ? 'http-error' : (observed?.disposition ?? 'absent');
+                responseShape = observed?.shape ?? null;
+                const usage = observed !== null && observed.disposition === 'observed' ? observed.usage : null;
+                settle(usage, 'upstream-end');
               });
               upstreamResponse.pipe(res);
             },

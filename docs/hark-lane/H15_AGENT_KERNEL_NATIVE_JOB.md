@@ -34,6 +34,12 @@
 - 根治（CompanyOS 自有的 headless shell guard，不改上游）：guard 安装 `CompanyOSOrderedPrompt`——先记录退出码，flush，等 120 ms 让 ConPTY 画完积压文本，再输出与内核引导完全相同的标记字节和 `dsh> `；用只读别名 `prompt` 指向它（别名在 PowerShell 命令解析中优先于函数，内核自己的 `function prompt` 定义仍成功但不会被调用）。PONG 冒烟改为不挂任何调试器运行；pwsh-pty-probe 在生产 windows-acl 受限令牌下按内核方式（spawn 后立即写引导）各重复 8 次比较旧 guard 与新 guard 的就绪可达率，并核对 `Get-Command prompt` 为 Alias。回归测试 tests/hark/h15c-pwsh-ordered-prompt.test.ts。证据 lane/evidence/H15c-ci/run3-installer-pwsh、run4-installer。
 - 验证 hark-installer 40287349555（@edae7cc，无调试器）：PONG 冒烟 pwsh 工具 1.8 s 返回；探针旧 guard 8 次就绪 7 次（失败那次复现：标记之后到达 PSReadLine 异步打印的“历史文件拒绝访问”错误与换行），新 guard 8/8，`Get-Command prompt` 均为 Alias，taskkill 后无残留 pwsh。据此再根治第二个乱序来源：guard 在受限令牌下设置 `Set-PSReadLineOption -HistorySaveStyle SaveNothing`（历史文件本就不可写；无人值守代理的命令也不应进入用户的交互历史）。
 
+## H15c 第 3 次真实运行与 usage UNKNOWN 的根因（@本提交）
+- hark-live-goal 40291557860（安装包 40289465806，pwsh 修复后）：规划 2 次 KNOWN（¥0.0063 + ¥0.0047）；内核第 1 次调用上游 200、946 字节正常结束，但 `executor.model_exchange_observed` 记录 `usageDisposition=absent` → 预留 UNKNOWN（按上界 ¥0.0975 记账）→ 第 2 次调用 `GOAL_USAGE_UNKNOWN` 被准入拒绝，Goal 按 c78386a 设计立即以类型化原因结束（不再空转）。与 run 2 同一现象。
+- 根因：DeepSeek 文档（api-docs.deepseek.com/quick_start/rate_limit）说明流式请求等待调度期间会先发 SSE 注释 `: keep-alive`。broker 旧逻辑只有当响应体**以 `data:` 开头**时才按 SSE 解析，否则整体当一个 JSON 解析 → 以 keep-alive 开头的流里的 usage 全部丢失。本地复现用的假上游不发 keep-alive，所以一直 KNOWN。
+- 根治：`observeResponseUsage()`（embedded-dsh-runtime.ts）按 content-type 或任一 `data:` 行识别 SSE，逐个 `data:` 事件读取，注释与空行只算分帧，`usage:null` 不算证据，`[DONE]` 结束；多个不同值 → conflicting，非法值 → invalid，均保持 UNKNOWN（不放松冲突规则）；非流式 JSON 允许前导空行。观察事件新增 `responseShape`（只有计数与类型，不含模型文本），下次若仍 absent 可直接看出原因。PONG 冒烟的假上游先发 `: keep-alive`，并断言内核请求带 `stream_options.include_usage=true`。测试 tests/hark/h15c-response-usage.test.ts + goal-broker-admission 新用例。
+- 预算：累计记账 ¥0.2458（UNKNOWN 按上界），下一次运行上限改为 7 次 × ¥0.0975 = ¥0.683 ≤ ¥0.75 ≤ 剩余 ¥0.754。
+
 ## 价格核对（H15c 前置）
 - 2026-10-26 官方价格页：模型名 `deepseek-flash`（DeepSeek-V4.1-Flash-1017），`deepseek-chat` 已不在列。CNY 高峰：输入未命中 2 元/M、输出 8 元/M——与 `installer/budget/deepseek-flash.approval-template.json` 一致。Search/Fetch 自 2026-11-01 起 5 元/千次（含经 Harness 的服务端工具调用）→ H15c 内核 profile 保持网页搜索/抓取关闭。
 

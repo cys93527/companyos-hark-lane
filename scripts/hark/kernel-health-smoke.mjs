@@ -59,11 +59,12 @@ const runPong = async (runtime) => {
       calls += 1;
       exchangeTimes.push({ call: calls, requestAt: Date.now() });
       requestBytes.push(Buffer.concat(bodyChunks).length);
-      try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); const msgs = Array.isArray(b.messages) ? b.messages : []; const tool = msgs.filter((m) => m && m.role === 'tool').pop(); if (tool !== undefined) toolResults.push(typeof tool.content === 'string' ? tool.content.slice(0, 6000) : JSON.stringify(tool.content).slice(0, 6000)); capFields.push({ max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null }); } catch { capFields.push(null); }
+      try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); const msgs = Array.isArray(b.messages) ? b.messages : []; const tool = msgs.filter((m) => m && m.role === 'tool').pop(); if (tool !== undefined) toolResults.push(typeof tool.content === 'string' ? tool.content.slice(0, 6000) : JSON.stringify(tool.content).slice(0, 6000)); capFields.push({ max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null, include_usage: b.stream_options?.include_usage ?? null }); } catch { capFields.push(null); }
       if (process.env.KERNEL_PONG_DUMP) writeFileSync(`${process.env.KERNEL_PONG_DUMP}-${calls}.json`, Buffer.concat(bodyChunks));
       const step = scenario[Math.min(calls - 1, scenario.length - 1)];
       const id = `pong-${calls}`;
       res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(': keep-alive\n\n'); // DeepSeek opens a waiting stream with SSE comments
       sse(res, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant' } }] });
       if (step.tool_call) {
         sse(res, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${calls}`, type: 'function', function: { name: step.tool_call.name, arguments: JSON.stringify(step.tool_call.arguments) } }] } }] });
@@ -153,7 +154,7 @@ const runPong = async (runtime) => {
     const pwshResult = withPwsh ? (out.stdout.split(/\r?\n/u).find((l) => l.includes('PWSH-42')) ?? null) : null;
     const pwshOk = !withPwsh || (pwshToolMs !== null && pwshToolMs <= 90_000 && pwshResult !== null);
     const ok = pwshOk && out.code === 0 && fileText === 'PONG' && finalLine !== null && finalLine.includes('PONG') && calls >= (withPwsh ? 3 : 2) && post.ok
-      && capFields.length >= 1 && capFields.every((c) => c !== null && c.max_tokens === 4096 && c.max_completion_tokens === null && c.store === null);
+      && capFields.length >= 1 && capFields.every((c) => c !== null && c.max_tokens === 4096 && c.max_completion_tokens === null && c.store === null && c.include_usage === true);
     return { ok, ...(withPwsh ? { pwsh: { ok: pwshOk, toolMs: pwshToolMs, resultLine: pwshResult === null ? null : pwshResult.slice(0, 600), terminalTimeoutShortenedIn: shortened, toolResults, hangDiag } } : {}), exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 && pwshOk ? {} : { startupLog }) };
   } finally {
     server.close();
