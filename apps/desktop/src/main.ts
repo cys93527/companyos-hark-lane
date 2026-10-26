@@ -11,6 +11,7 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,7 +50,9 @@ import {
 import { projectReadiness } from './readiness.js';
 import { isDatabaseBootstrapRetryable } from './database-bootstrap-policy.js';
 import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
-import { productionCompositionOptions, productionIsolationResourcesDir } from './production-composition.js';
+import { productionCompositionOptions, productionIsolationResourcesDir, productionResourcesRoot } from './production-composition.js';
+import { applyProviderSetupOverlay, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
+import { loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
 import { productionIsolationLaunchConfig } from './executor/isolation/isolation-status-runner.js';
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
 import { CSP, createWindowOptions } from './security.js';
@@ -535,6 +538,26 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
 }
 
 /**
+ * H17a — the ordinary user's provider setup ("CompanyOS 首次配置", resources/setup). Applied to
+ * the MAIN process environment once, before any composition reads it; a deployment environment
+ * that declares the model wins whole. The DPAPI binding is loaded only when a key file exists.
+ * Logged by state and counts only — never a name of a secret, never a value.
+ */
+async function applyInstalledProviderSetup(): Promise<void> {
+  const userData = app.getPath('userData');
+  const keyExists = existsSync(join(userData, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE));
+  const dpapi = keyExists ? await loadProviderSetupUnprotect(productionResourcesRoot()) : { unprotect: null, detail: null };
+  const result = applyProviderSetupOverlay(process.env, readProviderSetup(userData, dpapi.unprotect));
+  logger.info('provider setup', {
+    source: result.source,
+    setupState: result.setupState,
+    reasonCode: result.reasonCode,
+    appliedCount: result.applied.length,
+    ...(dpapi.detail === null ? {} : { unprotectDetail: dpapi.detail }),
+  });
+}
+
+/**
  * H10 — the operator-attested budget (userData/budget). Read once per composition; with
  * no valid approval this returns {} and the fail-closed default admission stands.
  */
@@ -831,6 +854,7 @@ async function main(): Promise<void> {
     mode: isDev ? 'development' : 'production',
   });
 
+  await applyInstalledProviderSetup();
   shellDatabase = bootstrapDatabase(logger);
   // Sprint 13 (Task-13-11) — the CAS reconciliation gate runs in QUIESCENT STARTUP:
   // the window, the IPC handlers and the workflow API do not exist yet, so no artifact

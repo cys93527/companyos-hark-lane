@@ -1,3 +1,7 @@
+## Hark lane — H17a first-run setup (2026-10-27, local; CI blocked by GitHub billing)
+- Gap closed locally: ordinary users configure DeepSeek key + per-Goal CNY cap via Start menu "CompanyOS 首次配置" (resources/setup/configure-deepseek.ps1 + configure-provider.mjs). Key DPAPI(CurrentUser) in userData/provider/model-api-key.dpapi; model.json + user budget approval/proof written through app parsers; main.ts applyInstalledProviderSetup() overlays main-process env before composition (deployment env wins whole), decrypt via shipped verified koffi 3.3.3 (dynamic import). Renderer untouched.
+- Tests tests/hark/h17a-provider-setup.test.ts (13); offline 138/138, typecheck, boundaries, architecture, eslint, targeted 354 green. Installer smoke pending Actions. Doc docs/hark-lane/H17A_FIRST_RUN_SETUP.md. Hark self-review PASS only.
+
 ## Hark lane — H16 draft + H17 acceptance kit (2026-10-27, CI blocked by GitHub billing)
 - H16 isolation: probe PASS hark-isolation 40334964921, lifecycle PASS 43/43 hark-isolation 40352982060, production seam 939655c (installer 40360476317). H16b-3b NOT RUN: GitHub Actions refuses to start jobs since 2026-10-27 00:51 CST ("recent account payments have failed or your spending limit needs to be increased"). Draft docs/hark-lane/H16_WINDOWS_ISOLATION.md.
 - H15d acceptance run 5 hark-live-goal 40359081704 INCOMPLETE (all work checks pass); root fix bd9d75a pushed, CI not started (billing). CNY 10 pool ledger: 5 818 416 spent / 4 181 584 left.

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Hark lane H8: assemble the portable CompanyOS desktop app (no new dependencies).
 // Usage: node scripts/hark/stage-desktop.mjs <electronDistDir> <outDir> [<agentKernelDir> [<nativeJobDir> [<isolationDir>]]]
+//   H17a: scripts/hark/setup/* is always copied to <out>/resources/setup (CompanyOS 首次配置).
 //   H16b-3: <isolationDir> = setup.ps1 + wfp-persistent.cs + companyos-isolated-launch.exe (built in-box csc),
 //   copied to <out>/resources/isolation (the app's start-time status check + the isolated kernel launcher).
 //   H15b: <nativeJobDir> = the packed native.job resource (scripts/hark/pack-native-job.mjs), copied to
@@ -42,6 +43,10 @@ if (isolation) {
   cpSync(must(isolation), join(out, 'resources', 'isolation'), { recursive: true });
   console.log(`staged isolation helper + launcher from ${isolation}`);
 }
+// H17a: the ordinary-user setup helper ("CompanyOS 首次配置") ships from the repo, always.
+for (const required of ['configure-deepseek.ps1', 'configure-provider.mjs']) must(join(root, 'scripts', 'hark', 'setup', required));
+cpSync(join(root, 'scripts', 'hark', 'setup'), join(out, 'resources', 'setup'), { recursive: true });
+console.log('staged provider setup helper (resources/setup)');
 const desktopPkg = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'));
 mkdirSync(app, { recursive: true });
 writeFileSync(join(app, 'package.json'), JSON.stringify({

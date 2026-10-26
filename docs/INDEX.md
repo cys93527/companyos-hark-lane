@@ -261,6 +261,7 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
 - 有界执行安全（Boss ADR-A/B/C，候选待独立审查）：[ADR-0032](./adr/0032-goal-execution-safety.md)
 - 可信预算证明绑定（桌面外层，候选待独立审查）：[ADR-0033](./adr/0033-trusted-budget-proof-binding.md)
 - Hark 独立开发线（离线候选，待独立审查，不是验收结论）：[hark-lane/TAKEOVER_REPORT.md](./hark-lane/TAKEOVER_REPORT.md) ·
+  [hark-lane/H17A_FIRST_RUN_SETUP.md](./hark-lane/H17A_FIRST_RUN_SETUP.md) ·
   [hark-lane/3B3E_OFFLINE_RESULT.md](./hark-lane/3B3E_OFFLINE_RESULT.md) ·
   [hark-lane/H2_DEPS_REGRESSION.md](./hark-lane/H2_DEPS_REGRESSION.md) ·
   [hark-lane/H3_WINDOWS_CI_NATIVE.md](./hark-lane/H3_WINDOWS_CI_NATIVE.md) ·

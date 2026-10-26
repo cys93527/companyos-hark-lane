@@ -209,7 +209,10 @@ describe('H15b architecture guard: native.job enters production through ONE seam
         const rel = relative(src, p);
         const text = readFileSync(p, 'utf8');
         const refs = text.match(/native-lifetime\/[\w.-]+/gu) ?? [];
-        if (rel === 'core-services.ts') {
+        // H17a: provider-setup-dpapi.ts decrypts the user's DPAPI key file over the SAME verified
+        // koffi binding; it obeys the core-services rule (composition module only, dynamic only)
+        // and never names the native.job route.
+        if (rel === 'core-services.ts' || rel === 'provider-setup-dpapi.ts') {
           if (refs.some(r => r !== 'native-lifetime/native-job-composition.js')) offenders.push(`${rel}: ${refs.join(',')}`);
           if (/^import[^\n]*native-lifetime/mu.test(text)) offenders.push(`${rel}: static import`);
           continue;

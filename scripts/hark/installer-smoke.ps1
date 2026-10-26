@@ -74,6 +74,41 @@ Start-Sleep -Seconds 3
 $left = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) }
 Check 'no-app-process-left' ($left.Count -eq 0) (($left | ForEach-Object Id) -join ',')
 
+# H17a: ordinary-user first-run setup on the INSTALLED app (fake key; no model call is made by setup).
+$setupPs1 = Join-Path $dir 'resources\setup\configure-deepseek.ps1'
+Check 'h17a-setup-helper-installed' ((Test-Path $setupPs1) -and (Test-Path (Join-Path $dir 'resources\setup\configure-provider.mjs'))) $setupPs1
+$lnk = @(Get-ChildItem (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') -Filter 'CompanyOS *.lnk' -ErrorAction SilentlyContinue)
+Check 'h17a-start-menu-shortcut' ($lnk.Count -ge 1) (($lnk | ForEach-Object Name) -join ',')
+$fakeKey = 'sk-harksmoke-' + [Guid]::NewGuid().ToString('N')
+$ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$ErrorActionPreference = 'Continue'  # native stderr must not throw under Stop (PS 5.1 NativeCommandError)
+$fakeKey | & $ps -NoProfile -ExecutionPolicy Bypass -File $setupPs1 -KeyFromStdin -CapCny 1 -NoPause *> (Join-Path $Evidence 'h17a-setup.txt')
+$setupExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+$approval = Join-Path $userData 'budget\approvals.json'
+Check 'h17a-setup-exit-0' ($setupExit -eq 0) "exit=$setupExit"
+Check 'h17a-setup-files' ((Test-Path (Join-Path $userData 'provider\model-api-key.dpapi')) -and (Test-Path (Join-Path $userData 'provider\model.json')) -and (Test-Path $approval)) 'provider/model-api-key.dpapi, provider/model.json, budget/approvals.json'
+$capOk = $false; try { $capOk = ((Get-Content $approval -Raw | ConvertFrom-Json).cap.maxCostMicros -eq 1000000) } catch { }
+Check 'h17a-approval-cap-1-cny' $capOk 'maxCostMicros=1000000'
+$app2 = Start-Process -FilePath $exe -PassThru
+$deadline2 = (Get-Date).AddSeconds(180); $setupLine = $null
+while ((Get-Date) -lt $deadline2 -and -not $app2.HasExited -and $null -eq $setupLine) {
+  $setupLine = @(Get-ChildItem (Join-Path $userData 'logs') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -ErrorAction SilentlyContinue } | Where-Object { $_ -match '"msg":"provider setup"' -and $_ -match '"setupState":"CONFIGURED"' }) | Select-Object -Last 1
+  if ($null -eq $setupLine) { Start-Sleep -Seconds 2 }
+}
+"$setupLine" | Out-File -Encoding utf8 (Join-Path $Evidence 'h17a-provider-setup-log.txt')
+Check 'h17a-app-reads-setup' ("$setupLine" -match '"source":"provider-setup"') "$setupLine"
+if (-not $app2.HasExited) { & taskkill.exe /PID $app2.Id /T /F | Out-File -Append (Join-Path $Evidence 'taskkill.log') }
+Start-Sleep -Seconds 3
+$leakFiles = @(Get-ChildItem $userData -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne '.dpapi' -and (Select-String -LiteralPath $_.FullName -SimpleMatch $fakeKey -Quiet -ErrorAction SilentlyContinue) })
+Check 'h17a-key-not-in-plain-files' ($leakFiles.Count -eq 0) (($leakFiles | ForEach-Object Name) -join ',')
+$ErrorActionPreference = 'Continue'
+& $ps -NoProfile -ExecutionPolicy Bypass -File $setupPs1 -Remove -NoPause *> (Join-Path $Evidence 'h17a-remove.txt')
+$removeExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Check 'h17a-remove' (($removeExit -eq 0) -and -not (Test-Path (Join-Path $userData 'provider\model-api-key.dpapi')) -and -not (Test-Path $approval)) "exit=$removeExit"
+if ($logs) { Get-ChildItem (Join-Path $userData 'logs') -File -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName (Join-Path $Evidence ("app-after-h17a-" + $_.Name)) } }
+
 $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=`"$Evidence\uninstall.log`"" -PassThru -Wait
 Check 'uninstall-exit-0' ($u.ExitCode -eq 0) $u.ExitCode
 Start-Sleep -Seconds 3  # the Inno uninstaller deletes itself via a short-lived helper

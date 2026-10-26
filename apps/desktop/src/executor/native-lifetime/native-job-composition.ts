@@ -27,7 +27,8 @@ import { createNativeJobExecutorProvider, NATIVE_JOB_PROVIDER_KEY, type NativeJo
 import { createJobLifetimeAdapter } from './job-lifetime.js';
 import { createKoffiFilePinPort, createKoffiJobPort, KOFFI_PINNED_VERSION, type KoffiLike } from './koffi-job-port.js';
 
-export { NATIVE_JOB_PROVIDER_KEY };
+export { NATIVE_JOB_PROVIDER_KEY, KOFFI_PINNED_VERSION };
+export type { KoffiLike };
 export type { NativeJobOperation };
 
 /** The install-resource directory name of the pinned binding (`<resources>/native/<dir>`). */
@@ -101,6 +102,24 @@ export const verifyNativeJobBinding = (bindingDir: string): string | null => {
 
 const defaultLoad = (bindingDir: string): KoffiLike =>
   createRequire(join(bindingDir, 'node_modules', 'koffi', 'package.json'))('koffi') as KoffiLike;
+
+/**
+ * H17a: the same verify-then-require path for another main-process consumer of the
+ * shipped binding (the provider-setup DPAPI decrypt). Nothing is required unless the
+ * directory is exactly the pinned, manifest-listed build.
+ */
+export const loadVerifiedKoffiBinding = (
+  bindingDir: string,
+  load: (bindingDir: string) => KoffiLike = defaultLoad,
+): { readonly ok: true; readonly koffi: KoffiLike } | { readonly ok: false; readonly detail: string } => {
+  const problem = verifyNativeJobBinding(bindingDir);
+  if (problem !== null) return { ok: false, detail: problem };
+  try {
+    return { ok: true, koffi: load(bindingDir) };
+  } catch (e) {
+    return { ok: false, detail: `binding failed to load: ${e instanceof Error ? e.message : String(e)}` };
+  }
+};
 
 export const composeNativeJobProvider = (input: NativeJobCompositionInput): NativeJobCompositionResult => {
   const host = input.host ?? process;

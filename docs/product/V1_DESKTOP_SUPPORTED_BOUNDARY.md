@@ -39,6 +39,12 @@ supported V1 boundary:
 * There is **no secure client-side credential-write seam** in V1
   (`SECURE_PROVIDER_ONBOARDING_PENDING`); provisioning stays on the trusted
   machine/environment configuration path.
+* Hark lane H17a (docs/hark-lane/H17A_FIRST_RUN_SETUP.md): the trusted machine path now
+  includes an ordinary-user helper, Start menu "CompanyOS 首次配置"
+  (`resources/setup/configure-deepseek.ps1`, runs as the user). It stores the key DPAPI
+  (CurrentUser) under `userData/provider/`, writes the non-secret model settings and the
+  user's budget approval, and the MAIN process overlays its environment at startup (a
+  deployment environment wins whole). The renderer still has no credential read or write seam.
 * Model registration into the canonical registry happens through the typed workflow seam
   (`models.register`) from the provider catalogue the configured adapter already published.
 

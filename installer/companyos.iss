@@ -65,6 +65,8 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 [Icons]
 Name: "{autoprograms}\CompanyOS"; Filename: "{app}\CompanyOS.exe"
 Name: "{autodesktop}\CompanyOS"; Filename: "{app}\CompanyOS.exe"; Tasks: desktopicon
+; H17a: ordinary-user provider setup (DeepSeek key via DPAPI + per-Goal budget), runs as the user, no elevation.
+Name: "{autoprograms}\CompanyOS 首次配置"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-deepseek.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CompanyOS.exe"
 
 [Run]
 Filename: "{app}\CompanyOS.exe"; Description: "{cm:LaunchProgram,CompanyOS}"; Flags: nowait postinstall skipifsilent

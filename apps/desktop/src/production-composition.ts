@@ -67,6 +67,10 @@ export const productionEmbeddedDshRuntimeRoot = (): string => {
 export const productionIsolationResourcesDir = (): string =>
   fileURLToPath(new URL('../../../../isolation', import.meta.url));
 
+/** H17a: the install `resources/` root (same four-levels-up anchor; holds native/, setup/, isolation/). */
+export const productionResourcesRoot = (): string =>
+  fileURLToPath(new URL('../../../../', import.meta.url));
+
 /** H15b: the native.job task kind the packaged deployment data declares. */
 export const NATIVE_INVENTORY_KIND = 'companyos:native-inventory';
 /** H15b: route target of every packaged native job kind (= NATIVE_JOB_PROVIDER_KEY; a test pins equality). */
