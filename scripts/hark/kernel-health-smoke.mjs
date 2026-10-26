@@ -46,6 +46,7 @@ const runPong = async (runtime) => {
   const workspace = mkdtempSync(join(tmpdir(), 'companyos-kernel-pong-ws-'));
   scenario[withPwsh ? 1 : 0].tool_call.arguments.file_path = join(workspace, 'pong.txt');
   const exchangeTimes = [];
+  const toolResults = [];
   let calls = 0;
   const requestBytes = [];
   const capFields = [];
@@ -58,7 +59,7 @@ const runPong = async (runtime) => {
       calls += 1;
       exchangeTimes.push({ call: calls, requestAt: Date.now() });
       requestBytes.push(Buffer.concat(bodyChunks).length);
-      try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); capFields.push({ max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null }); } catch { capFields.push(null); }
+      try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); const msgs = Array.isArray(b.messages) ? b.messages : []; const tool = msgs.filter((m) => m && m.role === 'tool').pop(); if (tool !== undefined) toolResults.push(typeof tool.content === 'string' ? tool.content.slice(0, 6000) : JSON.stringify(tool.content).slice(0, 6000)); capFields.push({ max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null }); } catch { capFields.push(null); }
       if (process.env.KERNEL_PONG_DUMP) writeFileSync(`${process.env.KERNEL_PONG_DUMP}-${calls}.json`, Buffer.concat(bodyChunks));
       const step = scenario[Math.min(calls - 1, scenario.length - 1)];
       const id = `pong-${calls}`;
@@ -87,13 +88,20 @@ const runPong = async (runtime) => {
       upstreamBaseURL: 'https://api.deepseek.com' };
     const home = stage.value.newDshHome({ attemptId: 'pong', workspaceRoot: workspace, route });
     if (!home.ok) return { ok: false, reason: 'HOME', detail: home.error.message };
+    // Smoke-only: bound the pwsh terminal at 60 s (production 300 s) so a hung terminal still
+    // returns its tool result (the kernel's own readiness verdict + viewport) as evidence.
+    const shortened = [];
+    if (withPwsh) {
+      const walk = (dir) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const f = join(dir, e.name); if (e.isDirectory()) walk(f); else if (/\.ya?ml$/u.test(e.name)) { const t = readFileSync(f, 'utf8'); if (t.includes('timeoutMs: 300000')) { writeFileSync(f, t.replaceAll('timeoutMs: 300000', 'timeoutMs: 60000')); shortened.push(f); } } } };
+      walk(home.value.dshHome);
+    }
     const env = { DSH_HOME: home.value.dshHome, HOME: home.value.dshHome, USERPROFILE: home.value.dshHome, APPDATA: join(home.value.dshHome, 'appdata'), COMPANYOS_LOOPBACK_KEY: 'loopback', NO_COLOR: '1' };
     for (const k of ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH', 'Path', 'PATHEXT', 'ComSpec']) if (process.env[k]) env[k] = process.env[k];
     const node = stage.value.nodeExecutablePath ?? process.execPath;
     const out = await new Promise((resolvePromise) => {
       let stdout = ''; let stderr = '';
       const child = spawn(node, [stage.value.cliEntryPath, runtime.manifest.profileName, '--json', 'Write PONG into pong.txt in the workspace, then reply PONG.'], { cwd: workspace, env, windowsHide: true });
-      const timer = setTimeout(() => child.kill(), withPwsh ? 240_000 : 180_000);
+      const timer = setTimeout(() => child.kill(), withPwsh ? 300_000 : 180_000);
       child.stdout.on('data', (c) => { stdout += c; });
       child.stderr.on('data', (c) => { stderr += c; });
       child.on('close', (code) => { clearTimeout(timer); resolvePromise({ code, stdout, stderr }); });
@@ -114,7 +122,7 @@ const runPong = async (runtime) => {
     const pwshOk = !withPwsh || (pwshToolMs !== null && pwshToolMs <= 90_000 && pwshResult !== null);
     const ok = pwshOk && out.code === 0 && fileText === 'PONG' && finalLine !== null && finalLine.includes('PONG') && calls >= (withPwsh ? 3 : 2) && post.ok
       && capFields.length >= 1 && capFields.every((c) => c !== null && c.max_tokens === 4096 && c.max_completion_tokens === null && c.store === null);
-    return { ok, ...(withPwsh ? { pwsh: { ok: pwshOk, toolMs: pwshToolMs, resultLine: pwshResult === null ? null : pwshResult.slice(0, 600) } } : {}), exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 && pwshOk ? {} : { startupLog }) };
+    return { ok, ...(withPwsh ? { pwsh: { ok: pwshOk, toolMs: pwshToolMs, resultLine: pwshResult === null ? null : pwshResult.slice(0, 600), terminalTimeoutShortenedIn: shortened, toolResults } } : {}), exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 && pwshOk ? {} : { startupLog }) };
   } finally {
     server.close();
   }
