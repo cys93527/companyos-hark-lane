@@ -22,7 +22,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const [kernelDir, reportPath] = process.argv.slice(2);
 if (!kernelDir || !reportPath) { console.error('usage: pwsh-pty-probe.mjs <kernelDir> <report.json>'); process.exit(2); }
 const report = { platform: process.platform, release: null, cases: [] };
-const done = () => { writeFileSync(reportPath, JSON.stringify(report, null, 2)); console.log(JSON.stringify(report.cases.map((c) => ({ name: c.name, markerSeen: c.markerSeen, promptSeen: c.promptSeen, commandEchoed: c.commandOutputSeen, error: c.error ?? null })))); process.exit(0); };
+const done = () => { writeFileSync(reportPath, JSON.stringify(report, null, 2)); console.log(JSON.stringify(report.race?.variants?.map((v) => ({ name: v.name, ready: v.ready, of: report.race.iterations })) ?? null)); console.log(JSON.stringify(report.cases.map((c) => ({ name: c.name, markerSeen: c.markerSeen, promptSeen: c.promptSeen, commandEchoed: c.commandOutputSeen, error: c.error ?? null })))); process.exit(0); };
 try {
   const os = await import('node:os');
   report.release = os.release();
@@ -86,6 +86,60 @@ try {
       rec.error = String(e?.stack ?? e);
     }
     report.cases.push(rec);
+  }
+  // H15c race evidence: the kernel writes its bootstrap IMMEDIATELY after spawn (not after a
+  // 4 s settle like the cases above) and judges readiness by the printable text after the LAST
+  // OSC 133;D marker being exactly 'dsh> ' (terminal-bash sanitizer). Repeat that startup under
+  // the production confinement with (a) the guard WITHOUT the H15c ordered prompt and (b) the
+  // shipped guard, and count how often readiness is reachable.
+  const { readFileSync, writeFileSync: writeGuard } = await import('node:fs');
+  const shipped = readFileSync(guard, 'utf8');
+  const cut = shipped.indexOf('# H15c: readiness-ordered prompt');
+  const legacyGuard = join(tempRoot, 'guard-legacy.ps1');
+  writeGuard(legacyGuard, cut >= 0 ? shipped.slice(0, cut) : shipped);
+  report.race = { shippedHasOrderedPrompt: cut >= 0, iterations: 8, variants: [] };
+  const E = String.fromCharCode(27); const BEL = String.fromCharCode(7);
+  const OSC_RE = new RegExp(`${E}\\][^${BEL}${E}]*(?:${BEL}|${E}\\\\)`, 'gu');
+  const CSI_RE = new RegExp(`${E}\\[[0-?]*[ -/]*[@-~]`, 'gu');
+  const ESC2_RE = new RegExp(`${E}.`, 'gu');
+  const strip = (t) => t.replace(OSC_RE, '').replace(CSI_RE, '').replace(ESC2_RE, '').replace(/\r/gu, '');
+  const kernelReady = (t) => { const i = t.lastIndexOf(`${ESC}]133;D;`); if (i < 0) return false; const after = t.slice(t.indexOf('\u0007', i) + 1); return strip(after) === 'dsh> '; };
+  const { spawnSync } = await import('node:child_process');
+  for (const v of [{ name: 'legacy-guard', file: legacyGuard }, { name: 'shipped-guard', file: guard }]) {
+    const rv = { name: v.name, ready: 0, runs: [] };
+    for (let i = 0; i < report.race.iterations; i += 1) {
+      const run = { readyMs: null, promptType: null, markers: 0, killMs: null, survivors: null, tailOnFail: null };
+      let out = ''; let lastData = Date.now(); const t0 = Date.now();
+      try {
+        const w = wrap(['pwsh.exe', '-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', v.file.split('\\').join('/')]);
+        const p = pty.spawn(w.file, w.args, { name: 'xterm-256color', cols: 160, rows: 40, cwd: ws, env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' } });
+        p.onData((d) => { out += d; lastData = Date.now(); });
+        p.write(`${preamble}${promptSetup}\r`);
+        while (Date.now() - t0 < 15_000) {
+          await sleep(50);
+          if (kernelReady(out) && Date.now() - lastData >= 200) { run.readyMs = Date.now() - t0; break; }
+        }
+        run.markers = out.split(`${ESC}]133;D;`).length - 1;
+        if (run.readyMs !== null) {
+          rv.ready += 1;
+          const mark = out.length;
+          p.write('Write-Output ("PCT=" + (Get-Command prompt).CommandType)\r');
+          await sleep(2500);
+          const m = /PCT=(\w+)/u.exec(strip(out.slice(mark)).replace(/PCT=" \+/gu, ''));
+          run.promptType = m ? m[1] : null;
+        } else {
+          run.tailOnFail = JSON.stringify(out.slice(-1200));
+        }
+        const k0 = Date.now();
+        spawnSync('taskkill', ['/PID', String(p.pid), '/T', '/F'], { windowsHide: true, timeout: 20_000 });
+        run.killMs = Date.now() - k0;
+        await sleep(500);
+        const list = spawnSync('powershell.exe', ['-NoProfile', '-Command', `@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${v.file.split('\\').pop()}*' -and $_.Name -eq 'pwsh.exe' }).Count`], { encoding: 'utf8', timeout: 30_000 });
+        run.survivors = Number.parseInt(String(list.stdout).trim(), 10);
+      } catch (e) { run.error = String(e?.stack ?? e); }
+      rv.runs.push(run);
+    }
+    report.race.variants.push(rv);
   }
 } catch (e) {
   report.error = String(e?.stack ?? e);

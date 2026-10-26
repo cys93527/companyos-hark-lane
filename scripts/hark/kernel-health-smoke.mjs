@@ -98,10 +98,9 @@ const runPong = async (runtime) => {
     const env = { DSH_HOME: home.value.dshHome, HOME: home.value.dshHome, USERPROFILE: home.value.dshHome, APPDATA: join(home.value.dshHome, 'appdata'), COMPANYOS_LOOPBACK_KEY: 'loopback', NO_COLOR: '1' };
     for (const k of ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH', 'Path', 'PATHEXT', 'ComSpec']) if (process.env[k]) env[k] = process.env[k];
     const node = stage.value.nodeExecutablePath ?? process.execPath;
-    // H15c diag: on win32 the kernel runs under the V8 inspector; if the pwsh tool has not
-    // returned 90 s after the tool call, pause it (Debugger.pause) and record the JS stack plus
-    // the kernel's process tree — a hung tool that also ignores its own 60 s terminal deadline
-    // means the kernel's event loop itself is blocked (hark-installer 40276998749).
+    // H15c diag: the kernel runs WITHOUT any debugger (an attached inspector changes timing:
+    // hark-installer 40278485168 passed under it, 40278831200 failed under it). If the pwsh tool
+    // has not returned 90 s after the tool call, record the kernel's process tree.
     const hangDiag = { inspector: null, pausedFrames: null, processTree: null, error: null };
     const captureHang = async (pid, wsUrl) => {
       try {
@@ -126,7 +125,7 @@ const runPong = async (runtime) => {
     };
     const out = await new Promise((resolvePromise) => {
       let stdout = ''; let stderr = '';
-      const args = [...(withPwsh ? ['--inspect=127.0.0.1:0'] : []), stage.value.cliEntryPath, runtime.manifest.profileName, '--json', 'Write PONG into pong.txt in the workspace, then reply PONG.'];
+      const args = [stage.value.cliEntryPath, runtime.manifest.profileName, '--json', 'Write PONG into pong.txt in the workspace, then reply PONG.'];
       const child = spawn(node, args, { cwd: workspace, env, windowsHide: true });
       const timer = setTimeout(() => child.kill(), withPwsh ? 300_000 : 180_000);
       let diagTimer = null;
@@ -136,7 +135,7 @@ const runPong = async (runtime) => {
           diagTimer = setTimeout(() => { if (exchangeTimes.length < 2) void captureHang(child.pid, hangDiag.inspector); }, 90_000);
         }
       });
-      child.stderr.on('data', (c) => { stderr += c; const m = /Debugger listening on (ws:\/\/\S+)/u.exec(stderr); if (m && hangDiag.inspector === null) hangDiag.inspector = m[1]; });
+      child.stderr.on('data', (c) => { stderr += c; });
       child.on('close', (code) => { clearTimeout(timer); if (diagTimer) clearTimeout(diagTimer); resolvePromise({ code, stdout, stderr }); });
       child.on('error', (e) => { clearTimeout(timer); resolvePromise({ code: -1, stdout, stderr: String(e) }); });
     });
