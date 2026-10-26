@@ -181,6 +181,27 @@ try {
   $report.steps.L4_standardUserStatus = if (Test-Path $stdOut) { Snap ([IO.File]::ReadAllText($stdOut)) } else { $null }
   Progress 'step' 'L4_standardUserStatus' $report.steps.L4_standardUserStatus
 
+  # L4b - observation: the SAME (installing) user with a non-elevated token, i.e. what the app's start check runs as.
+  # L4 above uses a different standard user, which cannot read the installing user's profile at all (run 5,
+  # 40346061564: Test-Path Access is denied) and so says nothing about WFP readability. runas /trustlevel:0x20000
+  # (SAFER Basic User) gives this user's token with Administrators deny-only and privileges stripped.
+  $l4bOut = Join-Path $pub 'status-same-user.txt'; $l4bDone = Join-Path $pub 'status-same-user.done'
+  $l4bCmd = Join-Path $pub 'l4b.cmd'
+  Set-Content -LiteralPath $l4bCmd -Encoding ascii -Value @(
+    '@echo off',
+    "whoami /groups > `"$pub\l4b-groups.txt`" 2>&1",
+    "`"$ps`" -NoProfile -ExecutionPolicy Bypass -Command `"& '$setup' -Action status -StatePath '$statePath'; exit `$LASTEXITCODE`" > `"$l4bOut`" 2>&1",
+    "echo exit=%ERRORLEVEL% > `"$l4bDone`"")
+  & runas.exe /trustlevel:0x20000 "$l4bCmd" | Out-Null
+  $deadline = (Get-Date).AddSeconds(120)
+  while (-not (Test-Path -LiteralPath $l4bDone) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+  $report.steps.L4b_sameUserUnelevated = [ordered]@{
+    done = if (Test-Path -LiteralPath $l4bDone) { Snap ([IO.File]::ReadAllText($l4bDone)) } else { 'TIMEOUT' }
+    status = if (Test-Path -LiteralPath $l4bOut) { Snap ([IO.File]::ReadAllText($l4bOut)) } else { $null }
+    adminDenyOnly = if (Test-Path "$pub\l4b-groups.txt") { [bool]((Get-Content -LiteralPath "$pub\l4b-groups.txt" | Out-String) -match 'BUILTIN\\Administrators.*Group used for deny only') } else { $null }
+  }
+  Progress 'step' 'L4b_sameUserUnelevated' $report.steps.L4b_sameUserUnelevated
+
   # L5
   [CompanyOSWfp]::Open() | Out-Null
   $report.steps.L5_tamper = Snap (('0x{0:x}' -f [CompanyOSWfp]::DeleteV6ForTamperTest()))
@@ -238,5 +259,6 @@ finally {
   Write-Output "verdict $($report.verdict) checks $(@($report.checks | Where-Object { $_.ok }).Count)/$($report.checks.Count)"
   $report.checks | Where-Object { -not $_.ok } | ForEach-Object { Write-Output "FAILED $($_.id): $($_.observed | ConvertTo-Json -Compress -Depth 4)" }
   Write-Output "L4 standard-user status: $($report.steps.L4_standardUserStatus)"
+  Write-Output "L4b same-user unelevated: $($report.steps.L4b_sameUserUnelevated | ConvertTo-Json -Compress)"
 }
 exit $exit
