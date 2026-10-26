@@ -433,6 +433,41 @@ describe('BB-002 — the real OpenAI-compatible model adapter (real protocol, lo
     expect(result.error.message).toContain('malformed structured output');
   });
 
+  // H15d (hark-live-goal 40308697073): a 2048-token ceiling cut the planner's JSON; the call was answered with real usage.
+  it('an answer truncated at max_tokens is typed PROVIDER_OUTPUT_TRUNCATED and carries the observed usage (charge is KNOWN)', async () => {
+    const fixture = await startFixture(planFor);
+    openServers.push(fixture);
+    fixture.setBehavior(() => ({
+      status: 200,
+      json: { choices: [{ message: { content: '{"planItems":[{"objective":"cut' }, finish_reason: 'length' }], usage: { prompt_tokens: 1500, completion_tokens: 2048 } },
+    }));
+    const adapter = createOpenAiCompatibleProvider({
+      config: { providerId: 'model.openai-compatible', baseUrl: fixture.url, modelId: 'fixture-model', timeoutMs: 5_000, apiKeyEnv: MODEL_PROVIDER_ENV.apiKey, source: {} },
+      resolveSecret: async () => 'k',
+    });
+    const result = await adapter.invoke({ modelId: 'fixture-model', messages: [{ role: 'user', content: 'x' }], responseFormat: { mode: 'json_object' }, maxOutputTokens: 2048 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.details['reason']).toBe('PROVIDER_OUTPUT_TRUNCATED');
+    expect(result.error.details['usageStatus']).toBe('KNOWN');
+    expect(result.error.details['observedUsage']).toEqual({ inputTokens: 1500, outputTokens: 2048 });
+  });
+
+  it('malformed output without usage stays usage UNKNOWN', async () => {
+    const fixture = await startFixture(planFor);
+    openServers.push(fixture);
+    fixture.setBehavior(() => ({ status: 200, json: { choices: [{ message: { content: 'nope' }, finish_reason: 'stop' }] } }));
+    const adapter = createOpenAiCompatibleProvider({
+      config: { providerId: 'model.openai-compatible', baseUrl: fixture.url, modelId: 'fixture-model', timeoutMs: 5_000, apiKeyEnv: MODEL_PROVIDER_ENV.apiKey, source: {} },
+      resolveSecret: async () => 'k',
+    });
+    const result = await adapter.invoke({ modelId: 'fixture-model', messages: [{ role: 'user', content: 'x' }], responseFormat: { mode: 'json_object' } });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.details['usageStatus']).toBe('UNKNOWN');
+    expect(result.error.details['observedUsage']).toBeUndefined();
+  });
+
   it('HTTP error statuses map to the frozen taxonomy: 401→auth_failed, 429→rate_limited(+retry), 500→unavailable', async () => {
     const fixture = await startFixture(planFor);
     openServers.push(fixture);

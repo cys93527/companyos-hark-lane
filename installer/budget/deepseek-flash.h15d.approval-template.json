@@ -7,9 +7,9 @@
     "organization": null
   },
   "cap": {
-    "maxCalls": 44,
-    "maxTokens": 2203000,
-    "maxCostMicros": 4950000,
+    "maxCalls": 37,
+    "maxTokens": 1928552,
+    "maxCostMicros": 4800000,
     "durationMs": 1800000
   },
   "proof": {
@@ -35,8 +35,8 @@
     },
     "tokens": {
       "inputUpperBound": 48000,
-      "outputUpperBound": 2048,
-      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 2048, set by hark-live-goal acceptance mode); input bound 48000 tokens, ENFORCED: the admission refuses a kernel request body larger than 48000 bytes (a byte-level BPE token covers >= 1 byte), so an UNKNOWN settlement at the bound never undercounts"
+      "outputUpperBound": 4096,
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 4096 (2048 truncated the planner JSON in hark-live-goal 40308697073), set by hark-live-goal acceptance mode); input bound 48000 tokens, ENFORCED: the admission refuses a kernel request body larger than 48000 bytes (a byte-level BPE token covers >= 1 byte), so an UNKNOWN settlement at the bound never undercounts"
     },
     "validForMs": 604800000
   }

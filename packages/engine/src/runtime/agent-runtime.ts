@@ -65,6 +65,15 @@ import type { SelectionPolicyService } from '../registry/selection-policy.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 
 /** Artifact references produced by an execution (mirrors the persistence record). */
+/** H15d: real usage a provider observed on an answered-but-unusable call (never invented). */
+export const observedUsageOf = (error: unknown): { inputTokens: number; outputTokens: number; totalCost: null } | null => {
+  const details = (error as { details?: Record<string, unknown> } | null)?.details;
+  const u = details?.['usageStatus'] === 'KNOWN' ? details['observedUsage'] as { inputTokens?: unknown; outputTokens?: unknown } | undefined : undefined;
+  if (u === undefined || u === null) return null;
+  const ok = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  return ok(u.inputTokens) && ok(u.outputTokens) ? { inputTokens: u.inputTokens, outputTokens: u.outputTokens, totalCost: null } : null;
+};
+
 export interface ExecutionArtifactRecord extends EntityId {
   readonly id: string;
   readonly executionId: string;
@@ -1296,7 +1305,8 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntimeService 
               },
             );
             settlementAttempted = true;
-            await admission?.settle(attempt.ok ? attempt.value.usage : null);
+            // H15d: a failed call that was answered with known usage settles KNOWN (the charge is real).
+            await admission?.settle(attempt.ok ? attempt.value.usage : observedUsageOf(attempt.error));
             if (!attempt.ok) throw attempt.error;
             return attempt;
             } catch (error) {

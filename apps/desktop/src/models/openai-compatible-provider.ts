@@ -468,22 +468,42 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
       if (status !== 200) return err(mapHttpFailure(status, retryAfterMs));
       const choice = (json as { readonly choices?: readonly { readonly message?: { readonly content?: unknown }; readonly finish_reason?: unknown }[] } | null)?.choices?.[0];
       const content = choice?.message?.content;
-      if (typeof content !== 'string' || content === '') {
-        return err(providerFailure('invalid_request', 'The model response contained no message content.'));
-      }
       const finishRaw = typeof choice?.finish_reason === 'string' ? choice.finish_reason : 'stop';
       const finishReason: InvocationResult['finishReason'] =
         finishRaw === 'length' ? 'length' : finishRaw === 'content_filter' ? 'content_filter' : 'stop';
       const usageRaw = (json as { readonly usage?: { readonly prompt_tokens?: unknown; readonly completion_tokens?: unknown } } | null)?.usage;
       const inputTokens = usageRaw?.prompt_tokens;
       const outputTokens = usageRaw?.completion_tokens;
+      /*
+       * H15d (hark-live-goal 40308697073): an answered call whose CONTENT is unusable still
+       * reported real usage — the remote charge is known. The failure carries it as
+       * `observedUsage` so the budget settles KNOWN instead of UNKNOWN-at-bound, and an
+       * answer cut off by the declared max_tokens is typed PROVIDER_OUTPUT_TRUNCATED (the
+       * live cause: a 2048-token ceiling truncated the planner's JSON), never "malformed".
+       */
+      const usageKnown = typeof inputTokens === 'number' && Number.isSafeInteger(inputTokens) && inputTokens >= 0 &&
+        typeof outputTokens === 'number' && Number.isSafeInteger(outputTokens) && outputTokens >= 0;
+      const contentFailure = (message: string): DomainError => {
+        const truncated = finishReason === 'length';
+        const failure = providerFailure('invalid_request', truncated
+          ? `The model output reached the declared max_tokens before the answer was complete (${message})`
+          : message);
+        return domainError(failure.code, failure.message, {
+          ...failure.details,
+          ...(truncated ? { reason: 'PROVIDER_OUTPUT_TRUNCATED', maxOutputTokens: request_.maxOutputTokens ?? null } : {}),
+          ...(usageKnown ? { usageStatus: 'KNOWN', observedUsage: { inputTokens, outputTokens } } : { usageStatus: 'UNKNOWN' }),
+        });
+      };
+      if (typeof content !== 'string' || content === '') {
+        return err(contentFailure('The model response contained no message content.'));
+      }
       let structured: unknown = null;
       if (request_.responseFormat !== undefined) {
         try {
           structured = JSON.parse(content);
         } catch {
           // §14 fail-loud: malformed structured output NEVER becomes business truth.
-          return err(providerFailure('invalid_request', 'The model returned malformed structured output (unparseable JSON).'));
+          return err(contentFailure('The model returned malformed structured output (unparseable JSON).'));
         }
       }
       // Preserve output-contract failures above. A valid answer still cannot

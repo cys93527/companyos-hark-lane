@@ -46,7 +46,7 @@ describe('H15c live goal (execute mode)', () => {
  */
 describe('H15d realistic acceptance run budget', () => {
   const t = JSON.parse(readFileSync('installer/budget/deepseek-flash.h15d.approval-template.json', 'utf8')) as typeof template;
-  it('44 worst-case calls fit the separate CNY 5 ledger; input bound is the enforced body-byte bound', () => {
+  it('every worst-case call fits the separate CNY 5 ledger; input bound is the enforced body-byte bound', () => {
     const perCall = Math.ceil((t.proof.tokens.inputUpperBound * t.proof.pricing.inputRate + t.proof.tokens.outputUpperBound * t.proof.pricing.outputRate) / 1e6);
     const ledger = JSON.parse(readFileSync('installer/budget/h15d-acceptance-ledger.json', 'utf8')) as { capMicros: number; entries: { micros: number }[] };
     expect(ledger.capMicros).toBe(5_000_000);
@@ -54,7 +54,7 @@ describe('H15d realistic acceptance run budget', () => {
     expect(t.cap.maxCostMicros).toBeLessThanOrEqual(ledger.capMicros - spent);
     expect(perCall * t.cap.maxCalls).toBeLessThanOrEqual(t.cap.maxCostMicros);
     expect(t.cap.maxCalls * (t.proof.tokens.inputUpperBound + t.proof.tokens.outputUpperBound)).toBeLessThanOrEqual(t.cap.maxTokens);
-    expect(t.proof.tokens.outputUpperBound).toBe(2048);
+    expect(t.proof.tokens.outputUpperBound).toBe(4096);
   });
   it('the acceptance scenario seeds the fixture and checks the result independently of the model', () => {
     const harness = readFileSync('scripts/hark/live-goal-execute.mjs', 'utf8');
