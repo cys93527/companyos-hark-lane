@@ -282,6 +282,11 @@ export const createEvidenceGroundingPort = (
       const pathMatches = [...artifactText.matchAll(BACKTICK_TOKEN_PATTERN)].map((m) => m[1] ?? '');
       for (const candidate of pathMatches) {
         if (candidate === '' || candidate.includes('..') || candidate.includes('://')) continue;
+        // A scheme-qualified specifier (`node:assert/strict`, `npm:pkg`, `data:…`) names a module or
+        // URI, not a workspace-relative path (H15d acceptance run 4, hark-live-goal 40345609717: two
+        // false `fail` verdicts on `node:assert/strict` forced corrective rework). A one-letter
+        // "scheme" is a Windows drive and stays checked.
+        if (/^[A-Za-z][A-Za-z0-9+.-]+:/.test(candidate)) continue;
         if (/\s/.test(candidate)) continue;
         // Skip non-path tokens (ids, commands, single words without an extension/separator).
         if (!candidate.includes('/') && !candidate.includes('.')) continue;
