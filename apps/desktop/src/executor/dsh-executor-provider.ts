@@ -50,6 +50,21 @@ import {
   type SelectedModelSnapshot,
 } from './model-pool.js';
 
+
+/**
+ * H15d-fix3 — the embedded kernel's model working window, derived from the request-body
+ * byte bound the CompanyOS admission enforces. The kernel's token meter prices a request at
+ * roughly four bytes per token, so a window of bound/4 tokens puts the kernel's compaction
+ * threshold (min(0.8 x window, window - completion reserve - headroom)) well below the byte
+ * bound. If a request still outgrows the bound, the broker answers with a typed
+ * context-length error and the kernel compacts and retries (never a dead attempt).
+ * hark-live-goal 40320541076: window 128k vs bound 48 000 bytes, no compaction -> 3 attempts
+ * refused mid-work.
+ */
+export const KERNEL_BYTES_PER_TOKEN = 4;
+export const kernelContextWindowFor = (routeWindow: number, inputBoundBytes: number | undefined): number =>
+  inputBoundBytes === undefined ? routeWindow : Math.min(routeWindow, Math.floor(inputBoundBytes / KERNEL_BYTES_PER_TOKEN));
+
 export const DSH_PROVIDER_KEY = 'dsh-headless';
 
 export const DSH_CAPABILITIES: readonly ExecutorCapabilityName[] = [
@@ -857,6 +872,8 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         sandboxMode: dshSandboxModeOf(request.work.goalStructured),
         route: {
           ...modelRoute,
+          // H15d-fix3: the kernel's working window never exceeds what the admission admits.
+          contextWindow: kernelContextWindowFor(modelRoute.contextWindow, request.modelCallInputBoundBytes),
           upstreamBaseURL: modelRoute.baseURL,
           baseURL: broker.value.url,
           apiKeyEnv: 'COMPANYOS_MODEL_ROUTE_ACCESS',

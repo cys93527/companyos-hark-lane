@@ -8,8 +8,8 @@
   },
   "cap": {
     "maxCalls": 120,
-    "maxTokens": 6251520,
-    "maxCostMicros": 4100000,
+    "maxTokens": 12011520,
+    "maxCostMicros": 3200000,
     "durationMs": 2400000
   },
   "proof": {
@@ -34,9 +34,9 @@
       "outputRate": 8000000
     },
     "tokens": {
-      "inputUpperBound": 48000,
+      "inputUpperBound": 96000,
       "outputUpperBound": 4096,
-      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 4096 (2048 truncated the planner JSON in hark-live-goal 40308697073), set by hark-live-goal acceptance mode); input bound 48000 tokens, ENFORCED: the admission refuses a kernel request body larger than 48000 bytes (a byte-level BPE token covers >= 1 byte), so an UNKNOWN settlement at the bound never undercounts"
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 4096 (2048 truncated the planner JSON in hark-live-goal 40308697073), set by hark-live-goal acceptance mode); input bound 96000 tokens, ENFORCED: the admission refuses a kernel request body larger than 96000 bytes (a byte-level BPE token covers >= 1 byte), so an UNKNOWN settlement at the bound never undercounts; the kernel's working window is derived from it (96000/4 = 24000 tokens, compaction mounted) and an oversize body is answered as context_length_exceeded so the kernel compacts (H15d-fix3 after hark-live-goal 40320541076). Cap 3200000 <= h15d ledger remainder 3214352."
     },
     "validForMs": 604800000
   }

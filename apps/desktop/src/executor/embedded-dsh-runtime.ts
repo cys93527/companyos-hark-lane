@@ -1081,7 +1081,29 @@ export const startModelBroker = (input: {
         if (refused || settled || res.writableEnded) return;
         if (input.admission !== undefined) {
           try { admission = await input.admission(Buffer.concat(chunks)); }
-          catch { respond(403, 'budget admission refused'); settle(null, 'admission-refused'); return; }
+          catch (error) {
+            /*
+             * H15d-fix3: a body past the proven input bound is a CONTEXT LIMIT, not a budget
+             * verdict. It is answered in the OpenAI-compatible context-length shape so the
+             * kernel's compaction recognises it, compacts, and retries — the refused request
+             * never reached the network and reserved nothing. Every other refusal stays the
+             * opaque 403 (hark-live-goal 40320541076 surfaced this as 'AUTH: 403' and lost
+             * three attempts).
+             */
+            const details = (error as { details?: Record<string, unknown> } | null)?.details;
+            if (details?.['reason'] === 'GOAL_KERNEL_REQUEST_INPUT_UNBOUNDED' && !res.headersSent && !res.writableEnded) {
+              const body = JSON.stringify({ error: {
+                message: `This request exceeds the maximum context length CompanyOS admits for this run (${String(details['inputUpperBound'])} request bytes; got ${String(details['requestBytes'])}). Compact the conversation and retry.`,
+                type: 'invalid_request_error',
+                code: 'context_length_exceeded',
+              } });
+              res.writeHead(400, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) });
+              res.end(body);
+              settle(null, 'admission-context-exceeded');
+              return;
+            }
+            respond(403, 'budget admission refused'); settle(null, 'admission-refused'); return;
+          }
           if (settled || admission.signal.aborted) {
             await admission.settle(null); admission.release();
             respond(403, 'execution stopped'); settle(null, 'stopped'); return;

@@ -115,6 +115,7 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
       let networkAttempt = 0;
       return {
         ...lease,
+        inputUpperBoundBytes: proof.inputTokens,
         async admitBody(bytes: Uint8Array) {
           const body = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
           // H15c: bound by the cap field the REAL upstream honours (DeepSeek: max_tokens only).

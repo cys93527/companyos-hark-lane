@@ -167,6 +167,14 @@ export interface ExecutorExecutionRequest {
     settle(usage: InvocationResult['usage'] | null): Promise<void>;
     release(): void;
   }>;
+  /**
+   * H15d-fix3: the request-body byte bound the admission above enforces (the proof's input
+   * upper bound; a byte-level BPE token covers >= 1 byte). A kernel provider derives its
+   * model working window from it, so the kernel compacts BEFORE a request would be refused
+   * (hark-live-goal 40320541076: the kernel had no compaction and a 128k window, and died on
+   * the first request past 48 000 bytes).
+   */
+  readonly modelCallInputBoundBytes?: number;
   readonly companyId: string;
   readonly runId: string;
   readonly taskId: string;

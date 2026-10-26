@@ -44,6 +44,13 @@ export interface DeploymentBudgetApproval {
 }
 
 const HEX_REF = /^sha256:([0-9a-f]{64})$/u;
+/*
+ * H15d-fix3: the token cap is a sanity bound on operator input, not the money limit
+ * (maxCostMicros is). 10M could not express 120 admissions of a 96 000-byte working window
+ * plus 4 096 output (12.0M), and a 1M-context route makes ten calls; 100M keeps a typo
+ * (an extra digit group) out while letting the cost cap do its job.
+ */
+const MAX_APPROVED_TOKENS = 100_000_000;
 const int = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= min && v <= max;
 const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 512;
 
@@ -57,7 +64,7 @@ const parseApproval = (raw: unknown): DeploymentBudgetApproval | null => {
     || typeof scope !== 'object' || scope === null || !str(scope['providerId']) || !str(scope['account'])
     || !(scope['organization'] === null || str(scope['organization']))
     || typeof cap !== 'object' || cap === null
-    || !int(cap['maxCalls'], 1, 1000) || !int(cap['maxTokens'], 1, 10_000_000)
+    || !int(cap['maxCalls'], 1, 1000) || !int(cap['maxTokens'], 1, MAX_APPROVED_TOKENS)
     || !int(cap['maxCostMicros'], 1, 1_000_000_000) || !int(cap['durationMs'], 1_000, 86_400_000)
     || !Array.isArray(a['proofs']) || a['proofs'].length === 0 || a['proofs'].length > 64
     || !a['proofs'].every((p) => typeof p === 'string' && HEX_REF.test(p))) return null;
