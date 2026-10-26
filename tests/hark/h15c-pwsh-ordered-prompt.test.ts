@@ -37,3 +37,11 @@ describe('H15c headless guard ordered prompt', () => {
     expect(text.indexOf("New-Item -Path Function: -Name 'global:cmd.exe'")).toBeLessThan(text.indexOf('# H15c: readiness-ordered prompt'));
   });
 });
+
+describe('H15c headless guard history', () => {
+  it('never saves PSReadLine history (write-denied under the confined token; agent commands stay out of user history)', () => {
+    const text = guard();
+    expect(text).toContain('Set-PSReadLineOption -HistorySaveStyle SaveNothing');
+    expect(text.indexOf('Set-PSReadLineOption -HistorySaveStyle SaveNothing')).toBeLessThan(text.indexOf('function global:CompanyOSOrderedPrompt {'));
+  });
+});

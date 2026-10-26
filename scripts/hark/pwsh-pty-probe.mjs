@@ -97,7 +97,7 @@ try {
   const cut = shipped.indexOf('# H15c: readiness-ordered prompt');
   const legacyGuard = join(tempRoot, 'guard-legacy.ps1');
   writeGuard(legacyGuard, cut >= 0 ? shipped.slice(0, cut) : shipped);
-  report.race = { shippedHasOrderedPrompt: cut >= 0, iterations: 8, variants: [] };
+  report.race = { shippedHasOrderedPrompt: cut >= 0, iterations: 12, variants: [] };
   const E = String.fromCharCode(27); const BEL = String.fromCharCode(7);
   const OSC_RE = new RegExp(`${E}\\][^${BEL}${E}]*(?:${BEL}|${E}\\\\)`, 'gu');
   const CSI_RE = new RegExp(`${E}\\[[0-?]*[ -/]*[@-~]`, 'gu');

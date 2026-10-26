@@ -28,6 +28,12 @@
 ## H15c 真实目标首次失败与根治
 - hark-live-goal 40263437730（mode=execute，安装包来自 hark-installer 40262297248）：真实 DeepSeek 规划成功（2 次调用，约 ¥0.0115），计划两个工作项；第一个工作项派发到随包内核前被**执行准入拒绝**（`GOAL_ADMISSION_REFUSED`，原因被吞掉）。根因两处：① 同一个运营凭据有两种写法——模型配置用 `vault://COMPANYOS_MODEL_API_KEY/live`，内核回退路由的预算绑定用 `env:COMPANYOS_MODEL_API_KEY`，可信预算按身份精确比较 → 不认；② 部署声明的 max_tokens 为 8192，而预算证明的输出上界为 8000 → 准入按设计拒绝。**根治**：新增唯一的 `envCredentialRef()`（models/credential-ref.ts），模型池与内核回退绑定都经由它；预算模板输出上界改为与部署声明一致的 8192（最坏情况 H10 6 次 ¥0.681、H15c 8 次 ¥0.908，均 ≤ ¥1）；派发拒绝时在持久 dispatch 行记录类型化原因（`NOT_INVOKED:GOAL_ADMISSION_REFUSED(<reason>)`）。回归测试 tests/hark/h15c-admission.test.ts 用真实部署模板 + 生产路由验证准入。证据 lane/evidence/H15c-ci/run1-live-40263437730。
 
+## H15c pwsh 工具卡死 300 s 的根因与根治（@edae7cc）
+- 现象：hark-live-goal 40266877047 中内核的 pwsh 工具（`Get-Location; Get-ChildItem`）挂满 300 s；免费复现于 hark-installer PONG 冒烟 40274121972 / 40275357324 / 40276998749 / 40278831200（最后一次挂着 Node inspector 也失败；40278485168 挂 inspector 通过只是概率命中，约 5 次过 1 次——是竞态，不是调试器掩盖）。inspector 暂停帧为 `processTimers`，说明内核事件循环正常运转，并非同步原生调用阻塞。
+- 根因（读固定上游源码 terminal-bash startupSession + session.pollReadiness + WindowsProcessInspector）：Windows 上 `isStdinWaiting` 恒为 false，pwsh 启动就绪只能靠“最后一个 OSC 133;D 标记之后的可打印文本恰好是 `dsh> `”。Windows ConPTY（Server 2022 build 20348）对 OSC 序列即时透传，但屏幕文本按渲染帧绘制，于是回显的引导命令行可能晚于标记到达 → 尾部失效；启动循环下一次 send 会清空就绪证据，而 pwsh 已空闲在提示符、不会再发标记 → 一直等到截止时间。
+- 根治（CompanyOS 自有的 headless shell guard，不改上游）：guard 安装 `CompanyOSOrderedPrompt`——先记录退出码，flush，等 120 ms 让 ConPTY 画完积压文本，再输出与内核引导完全相同的标记字节和 `dsh> `；用只读别名 `prompt` 指向它（别名在 PowerShell 命令解析中优先于函数，内核自己的 `function prompt` 定义仍成功但不会被调用）。PONG 冒烟改为不挂任何调试器运行；pwsh-pty-probe 在生产 windows-acl 受限令牌下按内核方式（spawn 后立即写引导）各重复 8 次比较旧 guard 与新 guard 的就绪可达率，并核对 `Get-Command prompt` 为 Alias。回归测试 tests/hark/h15c-pwsh-ordered-prompt.test.ts。证据 lane/evidence/H15c-ci/run3-installer-pwsh、run4-installer。
+- 验证 hark-installer 40287349555（@edae7cc，无调试器）：PONG 冒烟 pwsh 工具 1.8 s 返回；探针旧 guard 8 次就绪 7 次（失败那次复现：标记之后到达 PSReadLine 异步打印的“历史文件拒绝访问”错误与换行），新 guard 8/8，`Get-Command prompt` 均为 Alias，taskkill 后无残留 pwsh。据此再根治第二个乱序来源：guard 在受限令牌下设置 `Set-PSReadLineOption -HistorySaveStyle SaveNothing`（历史文件本就不可写；无人值守代理的命令也不应进入用户的交互历史）。
+
 ## 价格核对（H15c 前置）
 - 2026-10-26 官方价格页：模型名 `deepseek-flash`（DeepSeek-V4.1-Flash-1017），`deepseek-chat` 已不在列。CNY 高峰：输入未命中 2 元/M、输出 8 元/M——与 `installer/budget/deepseek-flash.approval-template.json` 一致。Search/Fetch 自 2026-11-01 起 5 元/千次（含经 Harness 的服务端工具调用）→ H15c 内核 profile 保持网页搜索/抓取关闭。
 
