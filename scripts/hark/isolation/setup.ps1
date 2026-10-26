@@ -103,7 +103,9 @@ switch ($Action) {
 
     $prev = $null
     if (Test-Path -LiteralPath $StatePath) { $prev = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json }
-    if (-not $AccountName) { $AccountName = if ($prev) { $prev.account } else { 'CompanyOSAgent-' + ([Guid]::NewGuid().ToString('N')).Substring(0, 6) } }
+    if (-not $AccountName) { $AccountName = if ($prev) { $prev.account } else { 'CompanyOSAgent' + ([Guid]::NewGuid().ToString('N')).Substring(0, 6) } }
+    # Local account names are limited to 20 characters (lifecycle run 2, 40340473413: 'CompanyOSAgent-xxxxxx' = 21).
+    if ($AccountName.Length -gt 20 -or $AccountName -notmatch '^[A-Za-z0-9-]+$') { Out-Result ([ordered]@{ ok = $false; error = 'ACCOUNT_NAME_INVALID' }) 1 }
     $existing = Get-LocalUser -Name $AccountName -ErrorAction SilentlyContinue
     if ($existing) { Set-LocalUser -Name $AccountName -Password $sec -PasswordNeverExpires $true; Enable-LocalUser -Name $AccountName }
     else { New-LocalUser -Name $AccountName -Password $sec -Description 'CompanyOS agent (isolated runtime)' -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null }

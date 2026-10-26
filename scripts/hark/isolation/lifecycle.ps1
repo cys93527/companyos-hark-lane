@@ -20,7 +20,7 @@ $setup = Join-Path $PSScriptRoot 'setup.ps1'
 $brokerPort = 47821
 $otherPort = 47822
 $tag = ([Guid]::NewGuid().ToString('N')).Substring(0, 6)
-$account = "CompanyOSAgent-$tag"
+$account = "CompanyOSAgent$tag"  # local account names are limited to 20 characters (run 2, 40340473413)
 
 # Production-like layout: per-user install, userData with the kernel state root INSIDE it, workspace in Documents.
 $kernelDir = Join-Path $env:LOCALAPPDATA "Programs\CompanyOS-H16L\resources\agent-kernel"
@@ -87,6 +87,7 @@ try {
   Check 'L1.install.readBackIsolated' ($l1.json -and $l1.json.readBack.state -eq 'ISOLATED') $l1.json.readBack
   Check 'L1.install.handoffDeleted' $l1.handoffDeleted $l1.handoffDeleted
   $sid = if ($l1.json) { $l1.json.sid } else { $null }
+  if (-not $sid -or $l1.code -ne 0) { throw "L1 install failed: $($l1.raw)" }
 
   # L2
   $l2 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
