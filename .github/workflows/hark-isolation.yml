@@ -25,10 +25,14 @@ jobs:
       - name: isolation probe (account + firewall + ACL + job, then cleanup)
         shell: powershell
         run: |
+          # Native stderr must not become a terminating error of this wrapper (the probe judges itself).
+          $ErrorActionPreference = 'Continue'
           New-Item -ItemType Directory -Force -Path hark-evidence | Out-Null
           node --version | Out-File hark-evidence/node-version.txt
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/hark/isolation/probe.ps1 -OutDir "$PWD\hark-evidence" 2>&1 | Tee-Object -FilePath hark-evidence/probe.log
-          exit $LASTEXITCODE
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/hark/isolation/probe.ps1 -OutDir "$PWD\hark-evidence" *> hark-evidence/probe.log
+          $code = $LASTEXITCODE
+          Get-Content hark-evidence/probe.log
+          exit $code
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4

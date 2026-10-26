@@ -13,7 +13,8 @@ const https = require('node:https');
 const dns = require('node:dns');
 const { spawnSync } = require('node:child_process');
 
-const spec = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+// Windows PowerShell 5.1 Set-Content -Encoding utf8 writes a BOM; JSON.parse rejects it.
+const spec = JSON.parse(fs.readFileSync(process.argv[2], 'utf8').replace(/^\uFEFF/u, ''));
 const result = { identity: process.env.USERNAME ?? null, pid: process.pid, net: {}, files: {}, children: {} };
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((resolve) => setTimeout(() => resolve({ outcome: 'TIMEOUT' }), ms))]);
