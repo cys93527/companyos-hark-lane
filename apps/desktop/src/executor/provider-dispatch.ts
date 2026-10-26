@@ -41,6 +41,13 @@ import type { ProviderDispatch, ProviderDispatchStore } from '@companyos/persist
 import type { CoreServices } from '../core-services.js';
 import {DEFAULT_ROUTING_MODE, budgetVerdictOf, attemptUsageOf, type RuntimeRoutingOutcome, type RoutingMode} from './runtime-routing.js';
 
+/** A safe, bounded token naming why admission was refused (typed reason or error code; never a message). */
+const admissionCauseOf = (error: unknown): string | undefined => {
+  const e = error as { details?: { reason?: unknown }; code?: unknown } | null;
+  const raw = typeof e?.details?.reason === 'string' ? e.details.reason : typeof e?.code === 'string' ? e.code : undefined;
+  return raw !== undefined && /^[A-Z0-9_]{1,64}$/u.test(raw) ? raw : undefined;
+};
+
 /**
  * The Agentic Work Envelope (Agentic Work Package Contract closeout): the bounded
  * canonical work semantics one executor receives — projected by the composition from
@@ -641,14 +648,16 @@ ${renderRetryDirective(retryEnvelope)}`;
       );
       await audit.append([requestedEvent]);
     }
-    const failed = async (reason: string, _message: string): Promise<ProviderDispatchExecutionResult> => {
-      await deps.dispatches.settle(dispatchId, `NOT_INVOKED:${reason}`, deps.clock.nowIso());
+    const failed = async (reason: string, _message: string, cause?: string): Promise<ProviderDispatchExecutionResult> => {
+      // H15c: the typed cause (e.g. GOAL_ADMISSION_BOUND_UNPROVEN) is kept on the durable
+      // dispatch row — a refusal must say WHY (it was swallowed in hark-live-goal 40263437730).
+      await deps.dispatches.settle(dispatchId, `NOT_INVOKED:${reason}${cause === undefined ? '' : `(${cause})`}`, deps.clock.nowIso());
       return { output: 'failed', dispatchId, providerKey, providerSessionId: null, state: 'SETTLED', failure: { stage: null, reason, code: 'POLICY_DENIED' } };
     };
     if (deps.prepareExternalAdmission !== undefined && provider.supportsCallAdmission !== true) return failed('EXECUTOR_COST_ADMISSION_UNSUPPORTED', 'The selected executor has no verified per-call budget gate.');
     let externalAdmission;
     try { externalAdmission = await deps.prepareExternalAdmission?.(request, selectedModelRoute); }
-    catch { return failed('GOAL_ADMISSION_REFUSED', 'Durable external execution admission was refused.'); }
+    catch (error) { return failed('GOAL_ADMISSION_REFUSED', 'Durable external execution admission was refused.', admissionCauseOf(error)); }
     let outcome;
     try {
     const fileDeliveryGoalRunId = await deps.fileDeliveryGoalOf?.(request.runId);

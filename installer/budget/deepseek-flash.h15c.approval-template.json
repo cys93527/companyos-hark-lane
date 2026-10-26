@@ -8,7 +8,7 @@
   },
   "cap": {
     "maxCalls": 8,
-    "maxTokens": 256000,
+    "maxTokens": 258000,
     "maxCostMicros": 1000000,
     "durationMs": 900000
   },
@@ -35,8 +35,8 @@
     },
     "tokens": {
       "inputUpperBound": 24000,
-      "outputUpperBound": 8000,
-      "evidenceRef": "max_tokens pinned by CompanyOS admission; input bound exceeded => settlement UNKNOWN"
+      "outputUpperBound": 8192,
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared maxOutputTokens 8192 for the env profile and the embedded kernel route); input bound exceeded => settlement UNKNOWN"
     },
     "validForMs": 604800000
   }

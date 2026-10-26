@@ -1,8 +1,17 @@
 {
   "approvedBy": "user_owner",
   "currency": "CNY",
-  "billingScope": { "providerId": "model.deepseek", "account": "deepseek:repo-secret:COMPANYOS_MODEL_API_KEY", "organization": null },
-  "cap": { "maxCalls": 6, "maxTokens": 200000, "maxCostMicros": 1000000, "durationMs": 600000 },
+  "billingScope": {
+    "providerId": "model.deepseek",
+    "account": "deepseek:repo-secret:COMPANYOS_MODEL_API_KEY",
+    "organization": null
+  },
+  "cap": {
+    "maxCalls": 6,
+    "maxTokens": 200000,
+    "maxCostMicros": 1000000,
+    "durationMs": 600000
+  },
   "proof": {
     "identity": {
       "providerId": "model.deepseek",
@@ -24,7 +33,11 @@
       "inputRate": 2000000,
       "outputRate": 8000000
     },
-    "tokens": { "inputUpperBound": 24000, "outputUpperBound": 8000, "evidenceRef": "max_tokens pinned by CompanyOS admission; input bound exceeded => settlement UNKNOWN" },
+    "tokens": {
+      "inputUpperBound": 24000,
+      "outputUpperBound": 8192,
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared maxOutputTokens 8192 for the env profile and the embedded kernel route); input bound exceeded => settlement UNKNOWN"
+    },
     "validForMs": 604800000
   }
 }

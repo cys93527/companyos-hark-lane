@@ -30,6 +30,7 @@ import type { ComposeCoreServicesOptions } from './core-services.js';
 import { GOAL_WORK_KIND, SOFTWARE_WORK_KIND } from './control-plane.js';
 import { ModelPool, type ModelProfile } from './executor/model-pool.js';
 import { ROUTING_POLICIES } from './executor/smart-model-router.js';
+import { envCredentialRef } from './models/credential-ref.js';
 import { resolveOpenAiCompatibleConfig } from './models/openai-compatible-provider.js';
 
 /** The default executor adapter id the composition routes the generic work kind to. */
@@ -248,7 +249,7 @@ export const productionModelRouting = (
     displayName: `${config.value.modelId} (operator env profile)`,
     endpointURL: config.value.baseUrl,
     // ABSENT exactly when the endpoint declares no-auth (never a fake pointer).
-    credentialRef: authentication === 'NONE' ? '' : `vault://${config.value.apiKeyEnv}/live`,
+    credentialRef: authentication === 'NONE' ? '' : envCredentialRef(config.value.apiKeyEnv),
     authentication,
     enabled: true,
     // Truthful capability claims only — the adapter answers structured requests;

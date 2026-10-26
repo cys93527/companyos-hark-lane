@@ -2,6 +2,7 @@ import { domainError, type CostAdmissionBound, type InvocationResult } from '@co
 import { createGoalExecutionBudget } from '@companyos/engine';
 import type { SelectedModelRoute } from '@companyos/engine';
 import type { DurableDatabase } from '@companyos/persistence';
+import { envCredentialRef } from './models/credential-ref.js';
 import { pinnedBudgetCost, readTrustedBudgetProof, trustedBudgetBound, trustedBudgetPolicyId, type ObservedBudgetBinding, type TrustedBudgetProofSource } from './trusted-budget-proof.js';
 
 export interface GoalSafetyConfiguration {
@@ -19,6 +20,20 @@ export interface GoalSafetyConfiguration {
 }
 
 /** Controllers/timers are transport handles ONLY. Every admission reads durable truth. */
+/**
+ * The observed transport binding of the embedded kernel's deterministic fallback route.
+ * The credential is named exactly as the model profile names it (envCredentialRef), so
+ * the trusted budget recognises the operator-approved credential (H15c root fix).
+ */
+export const executorFallbackBinding = (
+  modelKey: string,
+  fallback: { readonly providerId: string; readonly modelId: string; readonly baseURL?: string; readonly apiKeyEnv?: string } | undefined,
+): ObservedBudgetBinding => ({
+  modelKey, providerId: fallback?.providerId ?? '', modelId: fallback?.modelId ?? '',
+  ...(fallback?.baseURL === undefined ? {} : { endpoint: fallback.baseURL }),
+  ...(fallback?.apiKeyEnv === undefined ? {} : { credentialRef: envCredentialRef(fallback.apiKeyEnv) }),
+});
+
 export function createExecutionSafetyCoordinator(database: DurableDatabase, config: GoalSafetyConfiguration, now: () => number) {
   const budget = createGoalExecutionBudget(database.executionBudget, now);
   const proofSource = config.trustedProofs === undefined ? undefined : Object.freeze({ ...config.trustedProofs,
@@ -89,9 +104,7 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
       const modelId = input.route?.modelId ?? input.fallback?.modelId;
       const maxOutputTokens = input.route?.maxTokens ?? input.fallback?.maxTokens ?? null;
       const binding: ObservedBudgetBinding = input.route === undefined
-        ? { modelKey, providerId: input.fallback?.providerId ?? '', modelId: modelId ?? '',
-          ...(input.fallback?.baseURL === undefined ? {} : { endpoint: input.fallback.baseURL }),
-          ...(input.fallback?.apiKeyEnv === undefined ? {} : { credentialRef: `env:${input.fallback.apiKeyEnv}` }) }
+        ? executorFallbackBinding(modelKey, input.fallback)
         : { modelKey, providerId: input.route.providerId, modelId: input.route.modelId, endpoint: input.route.baseURL, credentialRef: input.route.credentialRef };
       // A trusted executor route must include the actual endpoint/credential reference.
       if (proofSource !== undefined && (binding.endpoint === undefined || binding.credentialRef === undefined)) throw domainError('POLICY_DENIED', 'Executor identity is incomplete.', { reason: 'GOAL_ADMISSION_IDENTITY_UNPROVEN', retryable: false });

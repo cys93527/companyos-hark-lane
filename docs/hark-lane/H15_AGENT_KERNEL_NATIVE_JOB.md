@@ -25,6 +25,9 @@
 - hark-installer 40258572797（@9c19293）：native.job 冒烟 8/9 通过（Job Object 内真实写出 `companyos-inventory.json`），唯一失败是冒烟脚本按裸对象读取结果，而 provider 契约返回 `{ schema: 'companyos/native-result/1', value }` → 冒烟脚本按契约读取并新增 schema 断言（测试代码缺陷，产品行为正确）。
 - 证据：lane/evidence/H15b-ci/run1-installer-*；回归测试 tests/hark/h15-path-budget.test.ts。
 
+## H15c 真实目标首次失败与根治
+- hark-live-goal 40263437730（mode=execute，安装包来自 hark-installer 40262297248）：真实 DeepSeek 规划成功（2 次调用，约 ¥0.0115），计划两个工作项；第一个工作项派发到随包内核前被**执行准入拒绝**（`GOAL_ADMISSION_REFUSED`，原因被吞掉）。根因两处：① 同一个运营凭据有两种写法——模型配置用 `vault://COMPANYOS_MODEL_API_KEY/live`，内核回退路由的预算绑定用 `env:COMPANYOS_MODEL_API_KEY`，可信预算按身份精确比较 → 不认；② 部署声明的 max_tokens 为 8192，而预算证明的输出上界为 8000 → 准入按设计拒绝。**根治**：新增唯一的 `envCredentialRef()`（models/credential-ref.ts），模型池与内核回退绑定都经由它；预算模板输出上界改为与部署声明一致的 8192（最坏情况 H10 6 次 ¥0.681、H15c 8 次 ¥0.908，均 ≤ ¥1）；派发拒绝时在持久 dispatch 行记录类型化原因（`NOT_INVOKED:GOAL_ADMISSION_REFUSED(<reason>)`）。回归测试 tests/hark/h15c-admission.test.ts 用真实部署模板 + 生产路由验证准入。证据 lane/evidence/H15c-ci/run1-live-40263437730。
+
 ## 价格核对（H15c 前置）
 - 2026-10-26 官方价格页：模型名 `deepseek-flash`（DeepSeek-V4.1-Flash-1017），`deepseek-chat` 已不在列。CNY 高峰：输入未命中 2 元/M、输出 8 元/M——与 `installer/budget/deepseek-flash.approval-template.json` 一致。Search/Fetch 自 2026-11-01 起 5 元/千次（含经 Harness 的服务端工具调用）→ H15c 内核 profile 保持网页搜索/抓取关闭。
 
