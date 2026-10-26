@@ -1,0 +1,11 @@
+{
+  "purpose": "User 2026-10-26 22:47 CST: CNY 10 pool for ALL remaining real DeepSeek spend until project end (freely allocated). UNKNOWN counted at worst-case bound. Every dispatch cap must fit remainingMicros; beyond asks user. CNY 5 h15d ledger closed at 1785648 (remainder not added).",
+  "currency": "CNY",
+  "capMicros": 10000000,
+  "totalMicros": 0,
+  "remainingMicros": 10000000,
+  "dispatches": [
+    {"run": "hark-live-goal 40345609717", "mode": "acceptance", "installer": "40342345540", "commit": "4c4c651", "capMicros": 3200000, "dispatchedAt": "2026-10-26T23:03+08:00"}
+  ],
+  "entries": []
+}

@@ -37,14 +37,32 @@ Add-Type -TypeDefinition (Get-Content (Join-Path $PSScriptRoot 'wfp-persistent.c
 
 # Run 3 (40340879915): ConvertTo-Json of the whole report threw OutOfMemoryException (some live object graph);
 # every observed value and step is snapshotted to a bounded JSON string at the moment it is recorded.
+# Run 4 (40342345408) still threw OutOfMemoryException: ROOT CAUSE = strings returned by Get-Content carry ETS note
+# properties (PSPath, PSParentPath, PSChildName, PSDrive, PSProvider). Snap passed such a string through unchanged
+# (`-is [string]` is true for the decorated PSObject), and the final ConvertTo-Json -Depth 8 then walked PSDrive /
+# PSProvider (provider -> drives -> provider ...), exhausting memory. Snap now returns PLAIN values only: a fresh
+# [string] (no PSObject wrapper, no notes), [bool], [long]; everything else becomes a bounded JSON string.
 function Snap($v) {
   if ($null -eq $v) { return $null }
-  if ($v -is [string] -or $v -is [bool] -or $v -is [int]) { return $v }
-  try { $t = $v | ConvertTo-Json -Compress -Depth 5 } catch { $t = 'unserializable: ' + $_.Exception.GetType().Name }
+  $b = if ($v -is [psobject]) { $v.psobject.BaseObject } else { $v }
+  if ($b -is [string]) { $t = New-Object string (,([string]$b).ToCharArray()) }  # a NEW instance: PS 5.1 resurrects instance notes by base object
+  elseif ($b -is [bool]) { return [bool]$b }
+  elseif ($b -is [int] -or $b -is [long]) { return [long]$b }
+  else { try { $t = [string]($v | ConvertTo-Json -Compress -Depth 5) } catch { $t = 'unserializable: ' + $_.Exception.GetType().Name } }
   if ($t.Length -gt 6000) { $t = $t.Substring(0, 6000) + '...' }
   return $t
 }
-function Check([string]$id, [bool]$ok, $observed) { $script:report.checks += [ordered]@{ id = $id; ok = $ok; observed = (Snap $observed) } }
+# Progress is appended to disk as each check is recorded, so a failure of the final report can never lose results.
+$progressPath = Join-Path $OutDir 'lifecycle-progress.ndjson'
+function Progress([string]$kind, [string]$id, $value) {
+  $line = [string]([ordered]@{ at = (Get-Date).ToString('o'); kind = $kind; id = $id; value = (Snap $value) } | ConvertTo-Json -Compress -Depth 3)
+  Add-Content -LiteralPath $progressPath -Value $line -Encoding utf8
+}
+function Check([string]$id, [bool]$ok, $observed) {
+  $o = Snap $observed
+  $script:report.checks += [ordered]@{ id = $id; ok = $ok; observed = $o }
+  Progress 'check' $id ([ordered]@{ ok = $ok; observed = $o })
+}
 function New-Password { $rb = New-Object byte[] 24; (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($rb); [Convert]::ToBase64String($rb) + 'aA1!' }
 # Run 1 (40339654328): `& powershell -File setup.ps1 @array` died with "Cannot validate argument on parameter"
 # and the wrapper's Stop preference turned the child's stderr into a terminating error. The helper is now invoked
@@ -92,6 +110,7 @@ try {
   $password = New-Password
   $l1 = Install-Isolation $password
   $report.steps.L1_install = Snap ($l1)
+  Progress 'step' 'L1_install' $report.steps.L1_install
   Check 'L1.install.exit0' ($l1.code -eq 0) $l1.code
   Check 'L1.install.readBackIsolated' ($l1.json -and $l1.json.readBack.state -eq 'ISOLATED') $l1.json.readBack
   Check 'L1.install.handoffDeleted' $l1.handoffDeleted $l1.handoffDeleted
@@ -101,6 +120,7 @@ try {
   # L2
   $l2 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   $report.steps.L2_status = Snap ($l2)
+  Progress 'step' 'L2_status' $report.steps.L2_status
   Check 'L2.status.isolatedFromNewProcess' ($l2.code -eq 0 -and $l2.json.state -eq 'ISOLATED') $l2.json
 
   # L3
@@ -118,9 +138,11 @@ try {
   $cmd = "`"$cmdExe`" /d /s /c `"`"$node`" `"$(Join-Path $kernelDir 'probe-child.cjs')`" `"$specPath`" > `"$log`" 2>&1`""
   $launch = [CompanyOSCpwl]::RunInJob($account, $password, $cmdExe, $cmd, $workspace, 180000)
   $report.steps.L3_launch = Snap ($launch)
-  $C = if (Test-Path $spec.out) { Get-Content $spec.out -Raw | ConvertFrom-Json } else { $null }
+  Progress 'step' 'L3_launch' $report.steps.L3_launch
+  $C = if (Test-Path $spec.out) { [IO.File]::ReadAllText($spec.out) | ConvertFrom-Json } else { $null }
   $report.steps.L3_child = Snap ($C)
-  if (Test-Path $log) { $report.steps.L3_log = Snap (Get-Content $log -Raw) }
+  Progress 'step' 'L3_child' $report.steps.L3_child
+  if (Test-Path $log) { $report.steps.L3_log = Snap ([IO.File]::ReadAllText($log)); Progress 'step' 'L3_log' $report.steps.L3_log }
   $notReached = { param($o) $null -ne $o -and $o.outcome -ne 'REACHED' }
   Check 'L3.launch.inJob' ($launch -match 'inJob=True') $launch
   Check 'L3.identity' ($C -and $C.identity -eq $account) $C.identity
@@ -155,14 +177,18 @@ try {
   $stdOut = Join-Path $pub 'status-std.txt'
   $stdCmd = "`"$cmdExe`" /d /s /c `"`"$ps`" -NoProfile -ExecutionPolicy Bypass -Command `"& '$pub\setup.ps1' -Action status -StatePath '$pub\state.json'; exit `$LASTEXITCODE`" > `"$stdOut`" 2>&1`""
   $report.steps.L4_launch = Snap ([CompanyOSCpwl]::RunInJob($stdUser, $stdPw, $cmdExe, $stdCmd, $pub, 120000))
-  $report.steps.L4_standardUserStatus = if (Test-Path $stdOut) { Snap (Get-Content $stdOut -Raw) } else { $null }
+  Progress 'step' 'L4_launch' $report.steps.L4_launch
+  $report.steps.L4_standardUserStatus = if (Test-Path $stdOut) { Snap ([IO.File]::ReadAllText($stdOut)) } else { $null }
+  Progress 'step' 'L4_standardUserStatus' $report.steps.L4_standardUserStatus
 
   # L5
   [CompanyOSWfp]::Open() | Out-Null
   $report.steps.L5_tamper = Snap (('0x{0:x}' -f [CompanyOSWfp]::DeleteV6ForTamperTest()))
+  Progress 'step' 'L5_tamper' $report.steps.L5_tamper
   [CompanyOSWfp]::Close()
   $l5 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   $report.steps.L5_status = Snap ($l5.json)
+  Progress 'step' 'L5_status' $report.steps.L5_status
   Check 'L5.wfpTamper.degraded' ($l5.code -eq 2 -and $l5.json.state -eq 'ISOLATION_DEGRADED' -and (@($l5.json.problems) -match 'wfp:filterV6:missing').Count -gt 0) $l5.json
 
   # L6
@@ -171,12 +197,14 @@ try {
   Set-Acl -LiteralPath $workspace -AclObject $acl
   $l6 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   $report.steps.L6_status = Snap ($l6.json)
+  Progress 'step' 'L6_status' $report.steps.L6_status
   Check 'L6.aclTamper.degraded' ($l6.code -eq 2 -and (@($l6.json.problems) -match '^acl:missing:Allow:Modify').Count -gt 0) $l6.json
 
   # L7
   $password = New-Password
   $l7 = Install-Isolation $password
   $report.steps.L7_repair = Snap ($l7)
+  Progress 'step' 'L7_repair' $report.steps.L7_repair
   Check 'L7.repair.isolated' ($l7.code -eq 0 -and $l7.json.readBack.state -eq 'ISOLATED' -and $l7.json.sid -eq $sid) $l7.json.readBack
   $report.steps.L7_filterCounts = [ordered]@{ v4 = (Get-WfpFilterCount 'CompanyOS agent v4'); v6 = (Get-WfpFilterCount 'CompanyOS agent v6') }
   Check 'L7.repair.noDuplicates' ($report.steps.L7_filterCounts.v4 -eq 1 -and $report.steps.L7_filterCounts.v6 -eq 1) $report.steps.L7_filterCounts
@@ -184,6 +212,7 @@ try {
   # L8
   $l8 = Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })
   $report.steps.L8_uninstall = Snap ($l8)
+  Progress 'step' 'L8_uninstall' $report.steps.L8_uninstall
   Check 'L8.uninstall.ok' ($l8.code -eq 0 -and $l8.json.ok -eq $true) $l8.json
   $l8s = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   Check 'L8.status.notConfigured' ($l8s.json.state -eq 'NOT_CONFIGURED') $l8s.json
@@ -202,7 +231,10 @@ finally {
   if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 25) { $exit = 1 }
   $report.finishedAt = (Get-Date).ToString('o')
   $report.verdict = if ($exit -eq 0) { 'ISOLATION_LIFECYCLE_PASS' } else { 'ISOLATION_LIFECYCLE_FAIL' }
-  ($report | ConvertTo-Json -Depth 8) | Set-Content -Path (Join-Path $OutDir 'isolation-lifecycle.json') -Encoding utf8
+  if ($report.fatal) { $report.fatal = Snap $report.fatal; Progress 'fatal' 'fatal' $report.fatal }
+  try { $json = $report | ConvertTo-Json -Depth 8 }
+  catch { $json = ([ordered]@{ schema = $report.schema; reportError = Snap ($_ | Out-String); verdict = 'ISOLATION_LIFECYCLE_FAIL'; progress = 'lifecycle-progress.ndjson' } | ConvertTo-Json); $exit = 1; $report.verdict = 'ISOLATION_LIFECYCLE_FAIL' }
+  $json | Set-Content -Path (Join-Path $OutDir 'isolation-lifecycle.json') -Encoding utf8
   Write-Output "verdict $($report.verdict) checks $(@($report.checks | Where-Object { $_.ok }).Count)/$($report.checks.Count)"
   $report.checks | Where-Object { -not $_.ok } | ForEach-Object { Write-Output "FAILED $($_.id): $($_.observed | ConvertTo-Json -Compress -Depth 4)" }
   Write-Output "L4 standard-user status: $($report.steps.L4_standardUserStatus)"
