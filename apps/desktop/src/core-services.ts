@@ -4169,7 +4169,11 @@ export async function composeCoreServices(
         standingAdmissionRefusal: async ({runId}: {readonly companyId: string; readonly runId: string}) => {
           try {
             await executionSafety.budget.check(runId);
-            return null;
+            // H15c-fix10 (hark-live-goal 40300575683): every admitted call of the envelope is
+            // spent — no autonomous step can be admitted again, so this is a standing refusal
+            // (operator budget renewal), not 19 refused supervisor turns ending in a stall.
+            const envelope = await executionSafety.budget.read(runId);
+            return envelope.reservations.length >= envelope.policy.maxCalls ? 'GOAL_BUDGET_EXHAUSTED' : null;
           } catch (error) {
             const reason = error instanceof DomainError ? String(error.details['reason'] ?? '') : '';
             return STANDING_ADMISSION_REFUSALS.includes(reason) ? reason : null;

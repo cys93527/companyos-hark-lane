@@ -31,6 +31,8 @@ jobs:
       COS_MODEL_ID: deepseek-flash
       COS_MODEL_TIMEOUT_MS: '90000'
       COS_MODEL_STRUCTURED_OUTPUT: json_object
+      # H15c-fix10: declared output ceiling; the budget proof prices every call at this bound.
+      COS_MODEL_MAX_OUTPUT_TOKENS: ${{ inputs.mode == 'execute' && '2048' || '8192' }}
       COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: ${{ inputs.mode == 'execute' && '0' || '1' }}
       H15C_WATCHDOG_MS: '900000'
       COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
@@ -58,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           $budget = Join-Path $env:RUNNER_TEMP 'h10-budget'
-          # H15c: 7 calls x worst-case (8k in / 8k out at peak rates) = CNY 0.571 <= cap 0.60 <= what remains of the cumulative CNY 1 (installer/budget/h15c-real-spend-ledger.json: 0.3546 counted, UNKNOWN at worst case).
+          # H15c: 18 calls x worst-case (8k in / 2048 out at peak rates) = CNY 0.583 <= cap 0.59 <= what remains of the cumulative CNY 1 (installer/budget/h15c-real-spend-ledger.json: 0.3906 counted, UNKNOWN at worst case).
           $template = if ('${{ inputs.mode }}' -eq 'execute') { 'installer/budget/deepseek-flash.h15c.approval-template.json' } else { 'installer/budget/deepseek-flash.approval-template.json' }
           node scripts/hark/make-budget-approval.mjs $budget $template | Tee-Object hark-evidence/budget-approval.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

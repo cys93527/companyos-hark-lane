@@ -342,7 +342,7 @@ export interface AutonomyDriverDeps {
 }
 
 /** Durable admission refusals that no autonomous step can clear (operator action required). */
-export const STANDING_ADMISSION_REFUSALS: readonly string[] = ['GOAL_USAGE_UNKNOWN', 'GOAL_DEADLINE_EXCEEDED'];
+export const STANDING_ADMISSION_REFUSALS: readonly string[] = ['GOAL_USAGE_UNKNOWN', 'GOAL_DEADLINE_EXCEEDED', 'GOAL_BUDGET_EXHAUSTED'];
 
 export const createGoalOutcomeAutonomyDriver = (deps: AutonomyDriverDeps) => {
   const defaultBudgets: AutonomyBudget = {...DEFAULT_AUTONOMY_BUDGET, ...(deps.budgets ?? {})};
@@ -493,7 +493,11 @@ export const createGoalOutcomeAutonomyDriver = (deps: AutonomyDriverDeps) => {
           deps.standingAdmissionRefusal!({companyId: input.companyId, runId: input.runId}),
         );
         if (!refusal.ok) return refusal;
-        if (refusal.value !== null && STANDING_ADMISSION_REFUSALS.includes(refusal.value)) {
+        // GOAL_BUDGET_EXHAUSTED (every admitted call spent) only stands once a step made no
+        // progress: remaining work may still be deterministic (validators, handoffs) and need
+        // no model call at all.
+        const exhaustedButProgressing = refusal.ok && refusal.value === 'GOAL_BUDGET_EXHAUSTED' && stallSteps === 0;
+        if (refusal.value !== null && STANDING_ADMISSION_REFUSALS.includes(refusal.value) && !exhaustedButProgressing) {
           externalBlockCount = 1;
           return finish('EXTERNAL_PRECONDITION_BLOCKED', refusal.value, state.value, [refusal.value]);
         }

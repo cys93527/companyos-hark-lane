@@ -68,6 +68,48 @@
       "callId": "kernel-1",
       "status": "UNKNOWN (worst-case bound)",
       "micros": 97536
+    },
+    {
+      "run": "hark-live-goal 40300575683",
+      "callId": "planning-1",
+      "status": "KNOWN",
+      "micros": 7728
+    },
+    {
+      "run": "hark-live-goal 40300575683",
+      "callId": "planning-2",
+      "status": "KNOWN",
+      "micros": 5792
+    },
+    {
+      "run": "hark-live-goal 40300575683",
+      "callId": "kernel-1",
+      "status": "KNOWN",
+      "micros": 4662
+    },
+    {
+      "run": "hark-live-goal 40300575683",
+      "callId": "kernel-2",
+      "status": "KNOWN",
+      "micros": 4020
+    },
+    {
+      "run": "hark-live-goal 40300575683",
+      "callId": "kernel-3",
+      "status": "KNOWN",
+      "micros": 4284
+    },
+    {
+      "run": "hark-live-goal 40300575683",
+      "callId": "kernel-4",
+      "status": "KNOWN",
+      "micros": 4510
+    },
+    {
+      "run": "hark-live-goal 40300575683",
+      "callId": "kernel-5",
+      "status": "KNOWN",
+      "micros": 4942
     }
   ]
 }

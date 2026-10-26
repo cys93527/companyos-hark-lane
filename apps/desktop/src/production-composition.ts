@@ -256,7 +256,7 @@ export const productionModelRouting = (
     // it does not implement tool-calling or streaming today.
     capabilities: new Set(['structured-output'] as const),
     contextWindowTokens: 128_000,
-    maxOutputTokens: 8_192,
+    maxOutputTokens: config.value.maxOutputTokens ?? 8_192,
     supportsTools: false,
     supportsStructuredOutput: true,
     supportsStreaming: false,
@@ -292,7 +292,7 @@ export const productionEmbeddedModelRoute = (
     apiKeyEnv,
     apiKeyResolver: () => env[apiKeyEnv] ?? '',
     contextWindow: 128_000,
-    maxTokens: 8_192,
+    maxTokens: config.value.maxOutputTokens ?? 8_192,
   };
 };
 

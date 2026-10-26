@@ -24,7 +24,12 @@ const ENV = {
 const dirs: string[] = [];
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
 
-describe.each(['installer/budget/deepseek-flash.approval-template.json', 'installer/budget/deepseek-flash.h15c.approval-template.json'])('%s', (template) => {
+// H15c-fix10: the execute-mode workflow declares COS_MODEL_MAX_OUTPUT_TOKENS=2048 (.github/workflows/hark-live-goal.yml).
+const EXECUTE_ENV = { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '2048' };
+describe.each([
+  ['installer/budget/deepseek-flash.approval-template.json', ENV],
+  ['installer/budget/deepseek-flash.h15c.approval-template.json', EXECUTE_ENV],
+] as const)('%s', (template, ENV) => {
   it('admits the production embedded-kernel fallback route exactly as composed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'h15c-budget-')); dirs.push(dir);
     writeBudgetApproval(dir, template, ENV);
@@ -38,5 +43,22 @@ describe.each(['installer/budget/deepseek-flash.approval-template.json', 'instal
     expect(bound).not.toBeNull();
     expect(bound!.outputTokens).toBeGreaterThanOrEqual(route!.maxTokens!);
     expect(bound!.costMicros * deployment!.cap.maxCalls).toBeLessThanOrEqual(deployment!.cap.maxCostMicros);
+  });
+});
+
+describe('H15c-fix10 COS_MODEL_MAX_OUTPUT_TOKENS', () => {
+  it('the declared ceiling reaches the embedded kernel route; absent = 8192; out of range refused', () => {
+    expect(productionEmbeddedModelRoute(EXECUTE_ENV)!.maxTokens).toBe(2048);
+    expect(productionEmbeddedModelRoute(ENV)!.maxTokens).toBe(8192);
+    expect(() => productionEmbeddedModelRoute({ ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '9000' })).toThrow(/COS_MODEL_MAX_OUTPUT_TOKENS/u);
+    expect(() => productionEmbeddedModelRoute({ ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '12.5' })).toThrow(/COS_MODEL_MAX_OUTPUT_TOKENS/u);
+  });
+  it('a route wider than the proof bound is never admitted (8192 route vs 2048 proof)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'h15c-budget-')); dirs.push(dir);
+    writeBudgetApproval(dir, 'installer/budget/deepseek-flash.h15c.approval-template.json', ENV);
+    const deployment = createDeploymentBudgetProofSource(dir);
+    const route = productionEmbeddedModelRoute(ENV)!;
+    const binding = executorFallbackBinding(`${route.providerId}:${route.modelId}`, route);
+    expect(await trustedBudgetBound(deployment!.source, binding, route.maxTokens ?? null, Date.now())).toBeNull();
   });
 });

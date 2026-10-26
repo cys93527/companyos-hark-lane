@@ -7,9 +7,9 @@
     "organization": null
   },
   "cap": {
-    "maxCalls": 7,
-    "maxTokens": 114000,
-    "maxCostMicros": 600000,
+    "maxCalls": 18,
+    "maxTokens": 181000,
+    "maxCostMicros": 590000,
     "durationMs": 900000
   },
   "proof": {
@@ -35,8 +35,8 @@
     },
     "tokens": {
       "inputUpperBound": 8000,
-      "outputUpperBound": 8192,
-      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared maxOutputTokens 8192 for the env profile and the embedded kernel route); input bound 8000 tokens (observed kernel requests ~5 KB, planning ~1.5k tokens); input bound exceeded => settlement UNKNOWN"
+      "outputUpperBound": 2048,
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 2048 for the env profile and the embedded kernel route, set by hark-live-goal execute mode); input bound 8000 tokens (observed live requests <= 2.1k tokens); input bound exceeded => settlement UNKNOWN"
     },
     "validForMs": 604800000
   }

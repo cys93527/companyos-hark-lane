@@ -55,3 +55,45 @@ describe('H15c standing admission refusal ends the Goal as an external block', (
     expect(h.counts().advances).toBe(10);
   });
 });
+
+/*
+ * H15c-fix10 (hark-live-goal 40300575683): the envelope's 7 calls were all spent; the
+ * driver then advanced 19 refused supervisor turns until AUTONOMY_STALLED. Spent calls are
+ * a standing block once a step makes no progress (remaining work may be deterministic).
+ */
+describe('H15c-fix10 spent call envelope', () => {
+  const stuck = (refusal: string | null) => {
+    let advances = 0; let reads = 0;
+    const driver = createGoalOutcomeAutonomyDriver({
+      advanceGoal: async () => { advances += 1; return ok(undefined); },
+      // fingerprint changes on the first two reads, then stays put (no progress)
+      loadGoalState: async () => state(Math.min(reads++, 2)) as never,
+      preflightChecks: async () => [],
+      projectOutcome: async () => ({}) as never,
+      standingAdmissionRefusal: async () => refusal,
+      budgets: { maxAutonomySteps: 10 },
+    });
+    return { driver, advances: () => advances };
+  };
+  it('GOAL_BUDGET_EXHAUSTED blocks at the first no-progress step, typed', async () => {
+    const h = stuck('GOAL_BUDGET_EXHAUSTED');
+    const result = await h.driver.run({ companyId: 'c', runId: 'run_h15c' });
+    expect(result.ok && result.value.terminal).toBe('EXTERNAL_PRECONDITION_BLOCKED');
+    expect(result.ok && result.value.terminalReason).toBe('GOAL_BUDGET_EXHAUSTED');
+    expect(h.advances()).toBe(3);
+  });
+  it('while state still progresses, spent calls do not block (deterministic work may remain)', async () => {
+    let advances = 0; let reads = 0;
+    const driver = createGoalOutcomeAutonomyDriver({
+      advanceGoal: async () => { advances += 1; return ok(undefined); },
+      loadGoalState: async () => state(reads++) as never,
+      preflightChecks: async () => [],
+      projectOutcome: async () => ({}) as never,
+      standingAdmissionRefusal: async () => 'GOAL_BUDGET_EXHAUSTED',
+      budgets: { maxAutonomySteps: 5 },
+    });
+    const result = await driver.run({ companyId: 'c', runId: 'run_h15c' });
+    expect(result.ok && result.value.terminal).toBe('AUTONOMY_BUDGET_EXHAUSTED');
+    expect(advances).toBe(5);
+  });
+});

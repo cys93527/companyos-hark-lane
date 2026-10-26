@@ -46,6 +46,14 @@ export interface OpenAiCompatibleConfig {
   readonly timeoutMs: number;
   readonly apiKeyEnv: string;
   /**
+   * H15c-fix10 — the deployment's declared per-request output ceiling (max_tokens) for
+   * the env profile and the embedded kernel route. Optional env COS_MODEL_MAX_OUTPUT_TOKENS
+   * (integer 256..8192; absent = 8192). The financial admission bound is priced from it,
+   * so an operator with a small budget can declare a smaller ceiling instead of a call
+   * count that cannot finish a real task.
+   */
+  readonly maxOutputTokens?: number;
+  /**
    * H10b — the endpoint's EXPLICIT structured-output contract (deployment value, never
    * guessed from the URL). 'json_schema' (default) sends OpenAI json_schema; 'json_object'
    * is for endpoints that only accept {type:'json_object'} (e.g. DeepSeek): the schema then
@@ -91,6 +99,7 @@ export const MODEL_PROVIDER_ENV = {
   modelId: 'COS_MODEL_ID',
   apiKey: 'COMPANYOS_MODEL_API_KEY',
   timeoutMs: 'COS_MODEL_TIMEOUT_MS',
+  maxOutputTokens: 'COS_MODEL_MAX_OUTPUT_TOKENS',
   routingMode: 'COS_MODEL_ROUTING_MODE',
   authentication: 'COS_MODEL_AUTHENTICATION',
   routingPolicy: 'COS_MODEL_ROUTING_POLICY',
@@ -148,6 +157,15 @@ export const resolveOpenAiCompatibleConfig = (
       );
     }
     timeoutMs = parsed;
+  }
+  const maxOutRaw = env[MODEL_PROVIDER_ENV.maxOutputTokens]?.trim() ?? '';
+  let maxOutputTokens: number | undefined;
+  if (maxOutRaw !== '') {
+    const parsed = Number(maxOutRaw);
+    if (!Number.isInteger(parsed) || parsed < 256 || parsed > 8_192) {
+      return err(domainError('VALIDATION_FAILED', 'COS_MODEL_MAX_OUTPUT_TOKENS must be an integer between 256 and 8192.', { reason: 'MODEL_CONFIG_INVALID' }));
+    }
+    maxOutputTokens = parsed;
   }
   const structuredRaw = env[MODEL_PROVIDER_ENV.structuredOutput]?.trim() ?? '';
   const structuredOutput = structuredRaw === '' ? undefined : oneOf(['json_schema', 'json_object'] as const)(structuredRaw);
@@ -237,6 +255,7 @@ export const resolveOpenAiCompatibleConfig = (
     modelId,
     timeoutMs,
     apiKeyEnv: DEFAULT_API_KEY_ENV,
+    ...(maxOutputTokens === undefined ? {} : {maxOutputTokens}),
     ...(routingMode === undefined ? {} : {routingMode}),
     ...(structuredOutput === undefined ? {} : {structuredOutput}),
     ...(authentication === undefined ? {} : {authentication}),
