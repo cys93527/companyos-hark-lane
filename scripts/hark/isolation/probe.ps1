@@ -148,9 +148,10 @@ function Remove-Aces([string]$path, [string]$sid) {
 
 # Loopback "broker" (allowed port) and "other service" (must be blocked) - runner identity.
 $srvFile = Join-Path $OutDir 'loopback-server.cjs'
-Set-Content -Path $srvFile -Encoding ascii -Value 'const h=require("http");const p=+process.argv[2];h.createServer((q,r)=>{r.end("ok "+p)}).listen({port:p,host:"::",ipv6Only:false});'
-$s1 = Start-Process -FilePath $node -ArgumentList @("`"$srvFile`"", $brokerPort) -PassThru -WindowStyle Hidden
-$s2 = Start-Process -FilePath $node -ArgumentList @("`"$srvFile`"", $otherPort) -PassThru -WindowStyle Hidden
+Set-Content -Path $srvFile -Encoding ascii -Value 'const h=require("http");const p=+process.argv[2];h.createServer((q,r)=>{r.end("ok "+p)}).listen({port:p,host:process.argv[3],ipv6Only:false});'
+# Broker binds IPv4 loopback only (as production does); the "other service" is dual-stack.
+$s1 = Start-Process -FilePath $node -ArgumentList @("`"$srvFile`"", $brokerPort, '127.0.0.1') -PassThru -WindowStyle Hidden
+$s2 = Start-Process -FilePath $node -ArgumentList @("`"$srvFile`"", $otherPort, '::') -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 2
 
 $exit = 0
@@ -196,11 +197,12 @@ try {
     } catch { $report.host.ipv6RuleErrors += @("$($form -join ','): $($_.Exception.Message)") }
   }
   if (-not $report.host.ipv6RuleForm) { throw 'no IPv6 block rule form accepted' }
-  # (b) IPv4 loopback except the fixed broker port (TCP), and all IPv4 loopback UDP.
+  # (b) every TCP port except the fixed broker port, ANY address, and all UDP. Run 4 (40334164826): rules whose
+  # RemoteAddress names loopback (127.0.0.0/8 or an IPv6 range containing ::1) never matched loopback traffic, while
+  # an any-address rule does (identity-proof doc). Combined with (a) the only reachable TCP endpoint is loopback:broker.
   New-NetFirewallRule -DisplayName $ruleB -Direction Outbound -Action Block -LocalUser $sddl -Protocol TCP `
-    -RemoteAddress @('127.0.0.0/8') -RemotePort @("1-$($brokerPort - 1)", "$($brokerPort + 1)-65535") | Out-Null
-  New-NetFirewallRule -DisplayName "$ruleB udp" -Direction Outbound -Action Block -LocalUser $sddl -Protocol UDP `
-    -RemoteAddress @('127.0.0.0/8') | Out-Null
+    -RemotePort @("1-$($brokerPort - 1)", "$($brokerPort + 1)-65535") | Out-Null
+  New-NetFirewallRule -DisplayName "$ruleB udp" -Direction Outbound -Action Block -LocalUser $sddl -Protocol UDP | Out-Null
   Start-Sleep -Seconds 2
 
   # Pass C - isolated.
@@ -220,7 +222,7 @@ try {
   Check 'C.job.assigned' ($L.jobAssign -eq $true -and $L.inJob -eq $true) @{ assign = $L.jobAssign; inJob = $L.inJob; err = $L.jobAssignError }
   Check 'C.job.noSurvivors' ($L.survivors.Count -eq 0) $L.survivors
   Check 'C.net.brokerLoopback.reached' ($C -and $C.net.brokerLoopback.outcome -eq 'REACHED') $C.net.brokerLoopback
-  Check 'C.net.brokerLoopbackV6.blocked' ($C -and (& $notReached $C.net.brokerLoopbackV6)) $C.net.brokerLoopbackV6
+  Check 'C.net.otherLoopbackV6.blocked' ($C -and (& $notReached $C.net.otherLoopbackV6)) $C.net.otherLoopbackV6
   Check 'C.net.otherLoopback.blocked' ($C -and (& $notReached $C.net.otherLoopback)) $C.net.otherLoopback
   Check 'C.net.tcp_1_1_1_1_443.blocked' ($C -and (& $notReached $C.net.tcp_1_1_1_1_443)) $C.net.tcp_1_1_1_1_443
   Check 'C.net.https_deepseek.blocked' ($C -and (& $notReached $C.net.https_deepseek)) $C.net.https_deepseek

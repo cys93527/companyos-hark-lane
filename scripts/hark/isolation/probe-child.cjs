@@ -41,7 +41,7 @@ const run = (cmd, args) => {
 (async () => {
   result.net.brokerLoopback = await get(http, `http://127.0.0.1:${spec.brokerPort}/probe`);
   result.net.otherLoopback = await get(http, `http://127.0.0.1:${spec.otherPort}/probe`);
-  result.net.brokerLoopbackV6 = await tcp('::1', spec.brokerPort);
+  result.net.otherLoopbackV6 = await tcp('::1', spec.otherPort);
   result.net.tcp_1_1_1_1_443 = await tcp('1.1.1.1', 443);
   result.net.https_deepseek = await get(https, 'https://api.deepseek.com/');
   result.net.https_github = await get(https, 'https://github.com/');
