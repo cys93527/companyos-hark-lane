@@ -40,3 +40,27 @@ jobs:
           name: hark-isolation-evidence
           path: hark-evidence/
           if-no-files-found: warn
+
+  # H16b: the PRODUCTION helper (scripts/hark/isolation/setup.ps1) end to end - install, persistent status,
+  # isolated agent child, standard-user status, WFP/ACL tamper -> ISOLATION_DEGRADED, repair, uninstall read-back.
+  isolation-lifecycle:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: isolation lifecycle (setup.ps1 install/status/tamper/repair/uninstall)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path hark-evidence | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/hark/isolation/lifecycle.ps1 -OutDir "$PWD\hark-evidence" *> hark-evidence/lifecycle.log
+          $code = $LASTEXITCODE
+          Get-Content hark-evidence/lifecycle.log
+          exit $code
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hark-isolation-lifecycle-evidence
+          path: hark-evidence/
+          if-no-files-found: warn
