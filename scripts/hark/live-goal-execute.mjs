@@ -131,6 +131,15 @@ try {
     try { const p = JSON.parse(r.payload); usage.calls += 1; usage.inputTokens += p.usage?.inputTokens ?? p.inputTokens ?? 0; usage.outputTokens += p.usage?.outputTokens ?? p.outputTokens ?? 0; } catch { /* ignore */ }
   }
   out.usageFromEvents = usage;
+  // H15d-fix2: provider.invoked events cover only CompanyOS-side agent calls, not the
+  // kernel's brokered calls; the durable Goal budget envelope is the authoritative count.
+  const reservations = Array.isArray(out.budget?.reservations) ? out.budget.reservations : [];
+  out.spend = {
+    calls: reservations.length,
+    known: reservations.filter((r) => r.status === 'KNOWN').length,
+    unknown: reservations.filter((r) => r.status !== 'KNOWN').length,
+    micros: reservations.reduce((m, r) => m + (r.status === 'KNOWN' ? (r.usage?.costMicros ?? 0) : (r.bound?.costMicros ?? 0)), 0),
+  };
   const rows = (sql) => { try { return q(sql).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 400) : v]))); } catch (e) { return { error: String(e?.message ?? e) }; } };
   out.artifacts = rows('SELECT * FROM artifacts ORDER BY rowid');
   out.validations = rows('SELECT validation_id, task_id, validator_id, status, blocking, evidence_refs_json FROM validations ORDER BY rowid');
@@ -174,10 +183,10 @@ try {
     cas: casFiles.length > 0,
     validationPass: Array.isArray(out.validations) && out.validations.some((v) => v.status === 'pass'),
     handoff: n(out.handoffs) > 0,
-    withinCap: usage.calls <= deployment.cap.maxCalls,
+    withinCap: out.spend.calls <= deployment.cap.maxCalls && out.spend.micros <= deployment.cap.maxCostMicros,
   };
   out.result = Object.values(out.checks).every(Boolean) ? 'EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF' : 'INCOMPLETE';
-  out.estimatedCostCny = Number(((usage.inputTokens * 2 + usage.outputTokens * 8) / 1e6).toFixed(5));
+  out.spendCny = Number((out.spend.micros / 1e6).toFixed(6));
   finish(out.result === 'EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF' ? 0 : 20);
 } catch (e) {
   out.result = 'HARNESS_ERROR';

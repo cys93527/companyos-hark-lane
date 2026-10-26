@@ -999,11 +999,6 @@ export const startModelBroker = (input: {
     };
 
     const server = createServer((req, res) => {
-      const socket = res.socket;
-      if (socket !== null) {
-        sockets.add(socket);
-        socket.on('close', () => sockets.delete(socket));
-      }
       // CALLER AUTHENTICATION: the capability nonce rides the PATH (the upstream
       // SDKs concatenate baseURL + '/chat/completions', which would corrupt a
       // query parameter — a path segment survives every naive concatenation).
@@ -1205,6 +1200,13 @@ export const startModelBroker = (input: {
           }),
         ),
       );
+    });
+    // Track each connection ONCE: a keep-alive socket carries many exchanges, and a
+    // per-request 'close' listener leaked one listener per exchange (H15d run 2:
+    // MaxListenersExceededWarning after 11 kernel calls on one socket).
+    server.on('connection', (socket: Socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
     });
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();

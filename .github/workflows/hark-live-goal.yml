@@ -37,7 +37,7 @@ jobs:
       COS_MODEL_MAX_OUTPUT_TOKENS: ${{ inputs.mode == 'planning' && '8192' || inputs.mode == 'acceptance' && '4096' || '2048' }}
       COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: ${{ inputs.mode == 'planning' && '1' || '0' }}
       H15_SCENARIO: ${{ inputs.mode == 'acceptance' && 'acceptance' || 'smoke' }}
-      H15C_WATCHDOG_MS: ${{ inputs.mode == 'acceptance' && '1900000' || '900000' }}
+      H15C_WATCHDOG_MS: ${{ inputs.mode == 'acceptance' && '2500000' || '900000' }}
       COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
       H10_WATCHDOG_MS: '300000'
     steps:

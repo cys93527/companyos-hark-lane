@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const template = JSON.parse(readFileSync('installer/budget/deepseek-flash.h15c.approval-template.json', 'utf8')) as {
-  cap: { maxCalls: number; maxTokens: number; maxCostMicros: number };
+  cap: { maxCalls: number; maxTokens: number; maxCostMicros: number; durationMs: number };
   proof: { identity: { modelId: string }; pricing: { inputRate: number; outputRate: number; currency: string }; tokens: { inputUpperBound: number; outputUpperBound: number } };
 };
 
@@ -52,9 +52,20 @@ describe('H15d realistic acceptance run budget', () => {
     expect(ledger.capMicros).toBe(5_000_000);
     const spent = ledger.entries.reduce((n, e) => n + e.micros, 0);
     expect(t.cap.maxCostMicros).toBeLessThanOrEqual(ledger.capMicros - spent);
-    expect(perCall * t.cap.maxCalls).toBeLessThanOrEqual(t.cap.maxCostMicros);
+    // H15d-fix2: the money limit is maxCostMicros, enforced per admission by the durable
+    // authority (settled KNOWN cost + every in-flight bound + the new bound <= cap; an
+    // UNKNOWN stops all further calls). maxCalls is only a runaway guard: sizing it as
+    // cap / worst-case-bound ended run 2 (40313767341) at 37 calls with 0.71 of CNY 4.8 spent.
+    expect(perCall).toBeLessThanOrEqual(t.cap.maxCostMicros);
+    expect(t.cap.maxCalls).toBeLessThanOrEqual(1000);
     expect(t.cap.maxCalls * (t.proof.tokens.inputUpperBound + t.proof.tokens.outputUpperBound)).toBeLessThanOrEqual(t.cap.maxTokens);
     expect(t.proof.tokens.outputUpperBound).toBe(4096);
+    const wf = readFileSync('.github/workflows/hark-live-goal.yml', 'utf8');
+    const jobMinutes = Number(/timeout-minutes:\s*(\d+)/u.exec(wf)?.[1] ?? 0);
+    expect(t.cap.durationMs + 8 * 60_000).toBeLessThanOrEqual(jobMinutes * 60_000);
+    const watchdog = Number(/H15C_WATCHDOG_MS: \$\{\{ inputs\.mode == 'acceptance' && '(\d+)'/u.exec(wf)?.[1] ?? 0);
+    expect(watchdog).toBeGreaterThan(t.cap.durationMs);
+    expect(watchdog + 5 * 60_000).toBeLessThanOrEqual(jobMinutes * 60_000);
   });
   it('the acceptance scenario seeds the fixture and checks the result independently of the model', () => {
     const harness = readFileSync('scripts/hark/live-goal-execute.mjs', 'utf8');

@@ -107,3 +107,22 @@ describe('RC5 static settlement adjudication (deterministic, no provider)', () =
     expect(f.db.db.prepare('SELECT state FROM runs WHERE id = ?').get('goal')).toMatchObject({ state: 'IDLE' });
   });
 });
+
+describe('H15d-fix2: the cost ceiling is the hard money limit, independent of the call count', () => {
+  it('with a large call guard, worst-case spend never exceeds maxCostMicros (KNOWN usage, in-flight bounds, UNKNOWN stops)', async () => {
+    const f = fixture(); await f.authority.initialize('goal', { ...policy, maxCalls: 1000, maxTokens: 1_000_000, maxCostMicros: 100 });
+    let n = 0;
+    for (;;) {
+      try { await f.admit(String(n)); } catch (e) { expect(e).toMatchObject({ details: { reason: 'GOAL_BUDGET_EXHAUSTED' } }); break; }
+      await f.authority.settle('goal', String(n), { tokens: 10, costMicros: 10 }); n += 1;
+      const state = await f.authority.read('goal');
+      expect(state.reservations.reduce((c, r) => c + (r.usage?.costMicros ?? r.bound.costMicros), 0)).toBeLessThanOrEqual(100);
+    }
+    // 100 - 6 x 10 = 40 = one more bound; 7 x 10 = 70 leaves 30 < 40 => refused. Far more than cap/bound = 2 calls.
+    expect(n).toBe(7);
+    const g = fixture(); await g.authority.initialize('goal', { ...policy, maxCalls: 1000, maxTokens: 1_000_000, maxCostMicros: 100 });
+    await g.admit('a'); await g.authority.settle('goal', 'a', null);
+    await expect(g.admit('b')).rejects.toMatchObject({ details: { reason: 'GOAL_USAGE_UNKNOWN' } });
+    expect((await g.authority.read('goal')).reservations.reduce((c, r) => c + (r.usage?.costMicros ?? r.bound.costMicros), 0)).toBeLessThanOrEqual(100);
+  });
+});
