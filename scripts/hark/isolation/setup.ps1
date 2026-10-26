@@ -36,6 +36,23 @@ $HIDE_KEY = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Special
 
 function Out-Result($obj, [int]$code) { ($obj | ConvertTo-Json -Compress -Depth 6) | Write-Output; exit $code }
 function Load-Wfp { if (-not ('CompanyOSWfp' -as [type])) { Add-Type -TypeDefinition (Get-Content (Join-Path $PSScriptRoot 'wfp-persistent.cs') -Raw) } }
+# Agent profile (lifecycle run 7, 40347340358): the launcher loads the account's own profile (LOGON_WITH_PROFILE) and
+# points HOME/TEMP/APPDATA at it, so install creates it up front (elevated) and status/uninstall track it.
+$PROFILE_CS = @'
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class CompanyOSProfile {
+  [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int CreateProfile(string sid, string user, StringBuilder path, uint size);
+  [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DeleteProfileW(string sid, string path, string machine);
+  public static int Create(string sid, string user) { var sb = new StringBuilder(260); return CreateProfile(sid, user, sb, 260); }
+  public static int Delete(string sid) { return DeleteProfileW(sid, null, null) ? 0 : Marshal.GetLastWin32Error(); }
+}
+'@
+function Load-Profile { if (-not ('CompanyOSProfile' -as [type])) { Add-Type -TypeDefinition $PROFILE_CS } }
+function Get-ProfilePath([string]$sid) {
+  $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+  $v = (Get-ItemProperty -LiteralPath $k -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
+  if ($v) { [Environment]::ExpandEnvironmentVariables($v) } else { $null }
+}
 function Test-Elevated { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 function Sid-Of($identity) { try { $identity.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $identity.Value } }
 
@@ -70,6 +87,9 @@ function Get-Status {
     if (-not $user.Enabled) { $problems.Add('account:disabled') | Out-Null }
   }
   foreach ($g in @($st.grants) + @($st.ancestorGrants)) { if ($g) { $p = Test-Grant $g $st.sid; if ($p) { $problems.Add($p) | Out-Null } } }
+  $prof = Get-ProfilePath $st.sid
+  if (-not $prof -or -not (Test-Path -LiteralPath $prof)) { $problems.Add('profile:missing') | Out-Null }
+  elseif ($st.profilePath -and $prof -ne $st.profilePath) { $problems.Add('profile:moved') | Out-Null }
   try {
     Load-Wfp
     $rc = [CompanyOSWfp]::Open()
@@ -134,6 +154,15 @@ switch ($Action) {
       }
     }
 
+    Load-Profile
+    $hr = [CompanyOSProfile]::Create($sid, $AccountName)
+    # 0x800700B7 = ERROR_ALREADY_EXISTS (re-install / repair keeps the existing profile).
+    if ($hr -ne 0 -and ('{0:x8}' -f $hr) -ne '800700b7') { Out-Result ([ordered]@{ ok = $false; error = ('PROFILE_CREATE_FAILED 0x{0:x8}' -f $hr) }) 1 }
+    $profilePath = Get-ProfilePath $sid
+    if (-not $profilePath -or -not (Test-Path -LiteralPath $profilePath)) { Out-Result ([ordered]@{ ok = $false; error = 'PROFILE_NOT_REGISTERED' }) 1 }
+    # TEMP/APPDATA the launcher points at must exist; they inherit the profile ACL (the agent owns its profile).
+    foreach ($sub in @('AppData\Local\Temp', 'AppData\Roaming')) { New-Item -ItemType Directory -Force -Path (Join-Path $profilePath $sub) | Out-Null }
+
     Load-Wfp
     $rc = [CompanyOSWfp]::Open()
     $reader = if ($ReaderSid) { $ReaderSid } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
@@ -144,7 +173,7 @@ switch ($Action) {
     if ($rc -ne 0) { Out-Result ([ordered]@{ ok = $false; error = ('WFP_INSTALL_FAILED 0x{0:x}' -f $rc); wfpLog = $wfpLog }) 1 }
 
     $state = [ordered]@{
-      schema = $SCHEMA; account = $AccountName; sid = $sid; brokerPort = $BrokerPort; installedAt = (Get-Date).ToString('o')
+      schema = $SCHEMA; account = $AccountName; sid = $sid; profilePath = $profilePath; brokerPort = $BrokerPort; installedAt = (Get-Date).ToString('o')
       grants = @($grants); ancestorGrants = @($ancestorGrants)
       wfp = [ordered]@{ provider = [CompanyOSWfp]::PROVIDER_KEY.ToString(); sublayer = [CompanyOSWfp]::SUBLAYER_KEY.ToString(); v4 = [CompanyOSWfp]::FILTER_V4_KEY.ToString(); v6 = [CompanyOSWfp]::FILTER_V6_KEY.ToString() }
     }
@@ -169,12 +198,16 @@ switch ($Action) {
       $acesLeft = 0
       foreach ($g in @($st.grants) + @($st.ancestorGrants)) { if ($g) { $acesLeft += (Remove-AllAces $g.path $st.sid) } }
       $r.acesLeft = $acesLeft
+      Load-Profile
+      $prof = Get-ProfilePath $st.sid
+      if ($prof) { $r.profileDelete = [CompanyOSProfile]::Delete($st.sid) }
+      $r.profileLeft = [bool]((Get-ProfilePath $st.sid) -or ($prof -and (Test-Path -LiteralPath $prof)))
       Remove-LocalUser -Name $st.account -ErrorAction SilentlyContinue
       Remove-ItemProperty -Path $HIDE_KEY -Name $st.account -ErrorAction SilentlyContinue
       $r.accountLeft = [bool](Get-LocalUser -Name $st.account -ErrorAction SilentlyContinue)
       Remove-Item -LiteralPath $StatePath -Force
-    } else { $r.acesLeft = 0; $r.accountLeft = $false }
-    if ($rc -ne 0 -or $r.wfpObjectsLeft -ne 0 -or $r.acesLeft -ne 0 -or $r.accountLeft) { $r.ok = $false }
+    } else { $r.acesLeft = 0; $r.accountLeft = $false; $r.profileLeft = $false }
+    if ($rc -ne 0 -or $r.wfpObjectsLeft -ne 0 -or $r.acesLeft -ne 0 -or $r.accountLeft -or $r.profileLeft) { $r.ok = $false }
     Out-Result $r ($(if ($r.ok) { 0 } else { 1 }))
   }
 }

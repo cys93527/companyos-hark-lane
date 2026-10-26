@@ -4,18 +4,27 @@
 //
 //   companyos-isolated-launch.exe --account <name> --credential <file.dpapi> --cwd <dir> -- <app> [args...]
 //
-// Sequence (proved by hark-isolation 40334964921 / lifecycle 40346061564): CreateProcessWithLogonW(logon flags 0,
+// Sequence (proved by hark-isolation 40334964921 / lifecycle 40346061564): CreateProcessWithLogonW(LOGON_WITH_PROFILE,
 // CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, STARTF_USESTDHANDLES with THIS process's std
 // handles - seclogon duplicates them into the child) -> Job Object KILL_ON_JOB_CLOSE (+ DIE_ON_UNHANDLED_EXCEPTION)
 // -> assign -> verify IsProcessInJob -> resume -> wait -> exit with the child's code.
 // Fail closed: any step that fails exits 120..126 with one typed line on stderr and the child (if any) is killed:
 //   120 ISOLATED_LAUNCH_USAGE  121 ISOLATED_LAUNCH_CREDENTIAL_UNREADABLE  122 ISOLATED_LAUNCH_LOGON_FAILED
-//   123 ISOLATED_LAUNCH_JOB_FAILED  124 ISOLATED_LAUNCH_NOT_IN_JOB
+//   123 ISOLATED_LAUNCH_JOB_FAILED  124 ISOLATED_LAUNCH_NOT_IN_JOB  125 ISOLATED_LAUNCH_PROFILE_MISSING
+// Profile (lifecycle run 7, 40347340358): with logon flags 0 the agent's profile is never loaded, so anything that
+// asks Windows for the account's profile (Node os.userInfo -> GetUserProfileDirectoryW, git, pwsh) fails, and the
+// inherited environment pointed HOME/TEMP/APPDATA into the INSTALLING user's profile, which the agent cannot use.
+// Now: setup.ps1 creates the agent profile (elevated, CreateProfile); the launcher loads it (LOGON_WITH_PROFILE) and
+// rewrites every identity-bound variable (USERPROFILE, HOMEDRIVE/HOMEPATH, APPDATA, LOCALAPPDATA, TEMP/TMP, USERNAME,
+// USERDOMAIN; OneDrive* removed) to the agent profile; a missing profile fails closed with 125.
 // The launcher's own death (the app kills it on timeout/abort) closes the only Job handle -> the agent tree dies.
 // The password is the DPAPI (CurrentUser) blob the app wrote when it handed the password to the elevated setup helper;
 // it is never on a command line and never in the child's environment.
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using Microsoft.Win32;
+using System.Security.Principal;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -64,13 +73,43 @@ public static class CompanyOSIsolatedLaunch {
     return sb.Append('"').ToString();
   }
 
-  static IntPtr EnvBlock() {
-    var keys = new System.Collections.Generic.List<string>();
-    var env = Environment.GetEnvironmentVariables();
-    foreach (DictionaryEntry e in env) keys.Add((string)e.Key);
-    keys.Sort(StringComparer.OrdinalIgnoreCase);
+  static readonly string[] IdentityKeys = { "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
+    "USERNAME", "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE", "ONEDRIVE", "ONEDRIVECONSUMER", "ONEDRIVECOMMERCIAL" };
+
+  // The agent account's profile directory as Windows registered it (ProfileList is readable by every user).
+  public static string ProfileOf(string account, out string sid) {
+    sid = null;
+    try { sid = new NTAccount(Environment.MachineName, account).Translate(typeof(SecurityIdentifier)).Value; } catch { return null; }
+    using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + sid)) {
+      var v = k == null ? null : k.GetValue("ProfileImagePath") as string;
+      if (string.IsNullOrEmpty(v)) return null;
+      v = Environment.ExpandEnvironmentVariables(v);
+      return Directory.Exists(v) ? v : null;
+    }
+  }
+
+  public static SortedDictionary<string, string> AgentEnvironment(IDictionary inherited, string account, string profile) {
+    var env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (DictionaryEntry e in inherited) {
+      var k = (string)e.Key;
+      if (Array.IndexOf(IdentityKeys, k.ToUpperInvariant()) >= 0) continue;
+      env[k] = (string)e.Value;
+    }
+    string full = Path.GetFullPath(profile);
+    env["USERPROFILE"] = full;
+    env["HOMEDRIVE"] = full.Substring(0, 2);
+    env["HOMEPATH"] = full.Substring(2);
+    env["APPDATA"] = Path.Combine(full, @"AppData\Roaming");
+    env["LOCALAPPDATA"] = Path.Combine(full, @"AppData\Local");
+    env["TEMP"] = env["TMP"] = Path.Combine(full, @"AppData\Local\Temp");
+    env["USERNAME"] = account;
+    env["USERDOMAIN"] = Environment.MachineName;
+    return env;
+  }
+
+  static IntPtr EnvBlock(SortedDictionary<string, string> env) {
     var sb = new StringBuilder();
-    foreach (var k in keys) sb.Append(k).Append('=').Append((string)env[k]).Append('\0');
+    foreach (var kv in env) sb.Append(kv.Key).Append('=').Append(kv.Value).Append('\0');
     sb.Append('\0');
     return Marshal.StringToHGlobalUni(sb.ToString());
   }
@@ -97,9 +136,11 @@ public static class CompanyOSIsolatedLaunch {
     var si = new STARTUPINFOW(); si.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFOW));
     si.dwFlags = 0x100; // STARTF_USESTDHANDLES
     si.hStdInput = GetStdHandle(-10); si.hStdOutput = GetStdHandle(-11); si.hStdError = GetStdHandle(-12);
-    IntPtr env = EnvBlock();
+    string agentSid; string profile = ProfileOf(account, out agentSid);
+    if (profile == null) { password = null; return Fail(125, "ISOLATED_LAUNCH_PROFILE_MISSING", "sid=" + (agentSid ?? "unresolved")); }
+    IntPtr env = EnvBlock(AgentEnvironment(Environment.GetEnvironmentVariables(), account, profile));
     PROCESS_INFORMATION pi;
-    bool ok = CreateProcessWithLogonW(account, ".", password, 0, app, cmd, 0x08000404, env, cwd, ref si, out pi);
+    bool ok = CreateProcessWithLogonW(account, ".", password, 1 /* LOGON_WITH_PROFILE */, app, cmd, 0x08000404, env, cwd, ref si, out pi);
     int err = ok ? 0 : Marshal.GetLastWin32Error();
     password = null; Marshal.FreeHGlobal(env);
     if (!ok) return Fail(122, "ISOLATED_LAUNCH_LOGON_FAILED", "win32=" + err);

@@ -51,6 +51,16 @@ function alive(pid) {
   const t5 = await run([nodeExe, '-e', "require('https').get('https://api.deepseek.com', r => { console.log('REACHED ' + r.statusCode); process.exit(0) }).on('error', e => { console.log('BLOCKED ' + e.code); process.exit(0) })"]);
   check('L3b.internetBlockedThroughLauncher', t5.stdout.includes('BLOCKED') && !t5.stdout.includes('REACHED'), t5.stdout);
 
+  // Agent profile (lifecycle run 7, 40347340358: os.userInfo() threw ENOMEM because the profile was never loaded and
+  // HOME/TEMP pointed into the installing user's profile). The child must see ITS OWN profile and be able to use TEMP.
+  const t6 = await run([nodeExe, '-e', "const os=require('os'),fs=require('fs'),path=require('path'); const u=os.userInfo(); let tmp='FAIL'; try { const f=path.join(os.tmpdir(),'cos-h16-'+process.pid+'.txt'); fs.writeFileSync(f,'x'); fs.unlinkSync(f); tmp='OK' } catch (e) { tmp='FAIL '+e.code } console.log(JSON.stringify({user:u.username,userHome:u.homedir,home:os.homedir(),tmpdir:os.tmpdir(),appdata:process.env.APPDATA,tmp}))"]);
+  let p6 = null; try { p6 = JSON.parse(t6.stdout.trim().split(/\r?\n/).pop()); } catch { p6 = null; }
+  const installer = (process.env.USERPROFILE || '').toLowerCase();
+  const inProfile = (v) => p6 && typeof v === 'string' && v.toLowerCase().startsWith(p6.userHome.toLowerCase() + '\\');
+  check('L3b.agentProfileEnv', Boolean(p6 && p6.user === account && p6.home === p6.userHome && p6.userHome.toLowerCase() !== installer
+    && inProfile(p6.tmpdir) && inProfile(p6.appdata)), p6 ?? t6);
+  check('L3b.tempWritable', Boolean(p6 && p6.tmp === 'OK'), p6 ?? t6);
+
   fs.writeFileSync(outPath, JSON.stringify({ schema: 'companyos/h16-isolated-launch-smoke/1', checks }, null, 2));
   console.log(`launch-smoke ${checks.filter((c) => c.ok).length}/${checks.length}`);
 })().catch((e) => { fs.writeFileSync(outPath, JSON.stringify({ fatal: String(e && e.stack || e) })); process.exit(1); });

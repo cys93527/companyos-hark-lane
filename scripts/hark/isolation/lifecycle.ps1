@@ -182,7 +182,7 @@ try {
   $report.steps.L3b_smoke = Snap $smokeLog
   Progress 'step' 'L3b_smoke' $report.steps.L3b_smoke
   $smoke = if (Test-Path -LiteralPath $smokeOut) { [IO.File]::ReadAllText($smokeOut) | ConvertFrom-Json } else { $null }
-  $expected = @('L3b.identity', 'L3b.argvVerbatim', 'L3b.stderrPiped', 'L3b.exitCodePropagated', 'L3b.stdinPiped', 'L3b.killLauncherReapsTree', 'L3b.badCredentialFailsClosed', 'L3b.internetBlockedThroughLauncher')
+  $expected = @('L3b.identity', 'L3b.argvVerbatim', 'L3b.stderrPiped', 'L3b.exitCodePropagated', 'L3b.stdinPiped', 'L3b.killLauncherReapsTree', 'L3b.badCredentialFailsClosed', 'L3b.internetBlockedThroughLauncher', 'L3b.agentProfileEnv', 'L3b.tempWritable')
   foreach ($id in $expected) {
     $c = if ($smoke -and $smoke.checks) { @($smoke.checks | Where-Object { $_.id -eq $id }) | Select-Object -First 1 } else { $null }
     Check $id ($null -ne $c -and $c.ok -eq $true) $(if ($c) { $c.observed } else { $smokeLog })
@@ -266,6 +266,8 @@ try {
   $left = Get-WfpFilterCount 'CompanyOS agent'
   Check 'L8.wfp.noneLeft' ($left -eq 0) $left
   Check 'L8.account.gone' (-not (Get-LocalUser -Name $account -ErrorAction SilentlyContinue)) $account
+  $profKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+  Check 'L8.profile.gone' (-not (Test-Path -LiteralPath $profKey) -and -not (Test-Path -LiteralPath (Join-Path $env:SystemDrive "Users\$account"))) ([ordered]@{ key = (Test-Path -LiteralPath $profKey); profileLeft = $l8.json.profileLeft; profileDelete = $l8.json.profileDelete })
 }
 catch {
   $report.fatal = ($_ | Out-String)
@@ -275,7 +277,7 @@ finally {
   if (Test-Path -LiteralPath $statePath) { $report.finalCleanup = Snap ((Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })).json) }
   Remove-LocalUser -Name $stdUser -ErrorAction SilentlyContinue
   foreach ($p in @($s1, $s2)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 40) { $exit = 1 }
+  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 43) { $exit = 1 }
   $report.finishedAt = (Get-Date).ToString('o')
   $report.verdict = if ($exit -eq 0) { 'ISOLATION_LIFECYCLE_PASS' } else { 'ISOLATION_LIFECYCLE_FAIL' }
   if ($report.fatal) { $report.fatal = Snap $report.fatal; Progress 'fatal' 'fatal' $report.fatal }
