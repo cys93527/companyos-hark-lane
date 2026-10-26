@@ -110,7 +110,7 @@ const runPong = async (runtime) => {
       } catch (e) { hangDiag.processTree = `failed: ${String(e?.message ?? e)}`; }
       if (wsUrl === null) return;
       await new Promise((resolveWs) => {
-        const ws = new WebSocket(wsUrl);
+        const ws = new globalThis.WebSocket(wsUrl);
         const done = setTimeout(() => { try { ws.close(); } catch { /* */ } resolveWs(); }, 20_000);
         ws.onopen = () => { ws.send(JSON.stringify({ id: 1, method: 'Debugger.enable' })); ws.send(JSON.stringify({ id: 2, method: 'Debugger.pause' })); };
         ws.onmessage = (m) => {
