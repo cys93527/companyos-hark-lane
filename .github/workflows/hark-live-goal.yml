@@ -12,6 +12,10 @@ on:
       installer_run_id:
         description: hark-installer run whose installer artifact to use
         required: true
+      mode:
+        description: "planning (H10 plan-only preview) | execute (H15c: packaged agent kernel executes the plan; Artifact/CAS/Validation/Handoff)"
+        required: false
+        default: planning
 
 permissions:
   contents: read
@@ -20,14 +24,15 @@ permissions:
 jobs:
   live-goal:
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       COS_MODEL_PROVIDER_ID: model.deepseek
       COS_MODEL_BASE_URL: https://api.deepseek.com
       COS_MODEL_ID: deepseek-flash
       COS_MODEL_TIMEOUT_MS: '90000'
       COS_MODEL_STRUCTURED_OUTPUT: json_object
-      COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: '1'
+      COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: ${{ inputs.mode == 'execute' && '0' || '1' }}
+      H15C_WATCHDOG_MS: '900000'
       COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
       H10_WATCHDOG_MS: '300000'
     steps:
@@ -53,15 +58,18 @@ jobs:
         shell: pwsh
         run: |
           $budget = Join-Path $env:RUNNER_TEMP 'h10-budget'
-          node scripts/hark/make-budget-approval.mjs $budget installer/budget/deepseek-flash.approval-template.json | Tee-Object hark-evidence/budget-approval.json
+          # H15c: 8 calls x worst-case (24k in / 8k out at peak rates) = CNY 0.896 <= the CNY 1 cap.
+          $template = if ('${{ inputs.mode }}' -eq 'execute') { 'installer/budget/deepseek-flash.h15c.approval-template.json' } else { 'installer/budget/deepseek-flash.approval-template.json' }
+          node scripts/hark/make-budget-approval.mjs $budget $template | Tee-Object hark-evidence/budget-approval.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "BUDGETDIR=$budget" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - name: One tiny Goal (planning) through the installed production composition
+      - name: One small Goal (planning, or H15c execute) through the installed production composition
         shell: pwsh
         run: |
           $env:ELECTRON_RUN_AS_NODE = '1'
           # CompanyOS.exe is a GUI-subsystem binary: '&' does NOT wait for it, so wait explicitly.
-          $argv = @('scripts/hark/live-goal-planning.mjs', "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"")
+          $script = if ('${{ inputs.mode }}' -eq 'execute') { 'scripts/hark/live-goal-execute.mjs' } else { 'scripts/hark/live-goal-planning.mjs' }
+          $argv = @($script, "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"")
           $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
           $code = $p.ExitCode
           Get-Content hark-evidence\harness-stdout.txt -ErrorAction SilentlyContinue | Select-Object -Last 80
