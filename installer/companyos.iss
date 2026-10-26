@@ -1,4 +1,4 @@
-; Hark lane H8 — CompanyOS per-user Windows installer (Inno Setup 6).
+﻿; Hark lane H8 — CompanyOS per-user Windows installer (Inno Setup 6).
 ; Per-user (no admin, no UAC), x64 only, unsigned. No services, no ACL/firewall changes.
 ; Build: ISCC /DStageDir=<staged app> /DAppVersion=<ver> /DOutDir=<dir> installer\companyos.iss
 #ifndef StageDir
@@ -9,6 +9,12 @@
 #endif
 #ifndef OutDir
   #define OutDir "out"
+#endif
+; H15: longest file path inside StageDir, relative to {app} (the workflow measures it).
+; Windows MAX_PATH is 260 (incl. NUL); an install dir longer than 259 - MaxRelPath - 1
+; would make Setup abort mid-copy (hark-installer 40257828899), so it is refused up front.
+#ifndef MaxRelPath
+  #error MaxRelPath is required (longest path below StageDir, measured by the workflow)
 #endif
 ; H12c: Simplified Chinese wizard, always. The workflow passes /DZhCnMessages=<path> when the
 ; runner's Inno Setup ships Languages\ChineseSimplified.isl; otherwise the in-repo
@@ -62,3 +68,25 @@ Name: "{autodesktop}\CompanyOS"; Filename: "{app}\CompanyOS.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\CompanyOS.exe"; Description: "{cm:LaunchProgram,CompanyOS}"; Flags: nowait postinstall skipifsilent
+
+[CustomMessages]
+chs.InstallDirTooLong=安装路径太长（%1 个字符）。CompanyOS 自带的文件最深 {#MaxRelPath} 个字符，Windows 路径上限为 260，请选择不超过 %2 个字符的安装位置（例如默认位置）。
+
+[Code]
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Dir: String;
+  Limit: Integer;
+begin
+  Result := True;
+  if CurPageID = wpSelectDir then
+  begin
+    Dir := RemoveBackslashUnlessRoot(WizardDirValue);
+    Limit := 259 - {#MaxRelPath} - 1;
+    if Length(Dir) > Limit then
+    begin
+      SuppressibleMsgBox(FmtMessage(CustomMessage('InstallDirTooLong'), [IntToStr(Length(Dir)), IntToStr(Limit)]), mbError, MB_OK, IDOK);
+      Result := False;
+    end;
+  end;
+end;

@@ -64,7 +64,9 @@ try {
   if (existsSync(artifact)) {
     const body = readFileSync(artifact);
     const inv = JSON.parse(body.toString('utf8'));
-    const structured = outcome.structured ?? (outcome.stdoutText ? JSON.parse(outcome.stdoutText) : null);
+    // The provider contract wraps the operation's stdout object: { schema: 'companyos/native-result/1', value }.
+    check('structured-result-schema', outcome.structured?.schema === 'companyos/native-result/1', outcome.structured?.schema);
+    const structured = outcome.structured?.value;
     check('artifact-sha256-matches-structured-result', structured?.sha256 === sha(body), { artifact: sha(body), structured: structured?.sha256 });
     const readme = inv.files.find((f) => f.path === 'README.md');
     const plan = inv.files.find((f) => f.path === 'docs/plan.txt');

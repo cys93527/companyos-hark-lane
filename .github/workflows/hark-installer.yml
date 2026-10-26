@@ -158,7 +158,10 @@ jobs:
           $langDir = Join-Path (Split-Path $iscc) 'Languages'
           Get-ChildItem $langDir -Recurse -Filter *.isl -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($langDir.Length + 1) } | Out-File -Encoding utf8 hark-evidence/iscc-languages.txt
           $zh = Get-ChildItem $langDir -Recurse -Filter 'ChineseSimplified.isl' -ErrorAction SilentlyContinue | Select-Object -First 1
-          $isccArgs = @("/DStageDir=$env:RUNNER_TEMP\companyos-stage\app", "/DAppVersion=$ver", "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer")
+          # H15: MAX_PATH gate — longest staged path (relative to {app}) feeds the installer's install-dir check.
+          $maxRel = node scripts/hark/measure-stage-paths.mjs "$env:RUNNER_TEMP\companyos-stage\app" hark-evidence/stage-paths.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $isccArgs = @("/DStageDir=$env:RUNNER_TEMP\companyos-stage\app", "/DAppVersion=$ver", "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer", "/DMaxRelPath=$maxRel")
           if ($zh) { $isccArgs += "/DZhCnMessages=$($zh.FullName)" }
           & $iscc @isccArgs installer\companyos.iss 2>&1 | Tee-Object hark-evidence/iscc.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -187,7 +190,9 @@ jobs:
           }
           $langDir = Join-Path (Split-Path $iscc) 'Languages'
           $zh = Get-ChildItem $langDir -Recurse -Filter 'ChineseSimplified.isl' -ErrorAction SilentlyContinue | Select-Object -First 1
-          $isccArgs = @("/DStageDir=$next", "/DAppVersion=$nextVer", "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer-next")
+          $maxRelNext = node scripts/hark/measure-stage-paths.mjs "$next" hark-evidence/stage-paths-next.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $isccArgs = @("/DStageDir=$next", "/DAppVersion=$nextVer", "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer-next", "/DMaxRelPath=$maxRelNext")
           if ($zh) { $isccArgs += "/DZhCnMessages=$($zh.FullName)" }
           & $iscc @isccArgs installer\companyos.iss 2>&1 | Out-File -Encoding utf8 hark-evidence/iscc-next.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

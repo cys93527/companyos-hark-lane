@@ -22,6 +22,16 @@
  *     licenses/*.md|LICENSE    upstream root LICENSE, THIRD_PARTY_NOTICES, SAFETY
  *     (every package-level LICENSE/NOTICE file is kept beside its package)
  *
+ * Path budget (Windows MAX_PATH = 260 for the installer and every un-prefixed Win32
+ * API): pnpm's virtual-store directory names (`node_modules/.pnpm/<name@ver_patch_hash=…_peerhash>`)
+ * reach 150+ characters, which pushed installed paths past 260 and made Inno Setup abort
+ * the per-user install (hark-installer 40257828899). Every `.pnpm/<store-dir>` segment is
+ * therefore renamed to a short, deterministic id (sorted store names -> base36 index) in
+ * the closure files, the junction links and the licence copies; the original name is kept
+ * in closure-manifest.json derivation.pnpmStoreRemap (traceability). The rename is purely
+ * structural: pnpm resolution only follows sibling junctions inside the same store dir.
+ * Refuses when any packaged relative path exceeds KERNEL_RELATIVE_PATH_BUDGET.
+ *
  * Refuses (exit != 0): unpinned/dirty source, a denylisted (worldview/account/
  * telemetry) package in the shipped closure, a node binary whose sha256 is not
  * the official one, a closure file missing from the managed root.
@@ -33,10 +43,27 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 export const AGENT_KERNEL_VERSION_DIR = 'dsh-v0.2.0-rc.2';
 export const PINNED_SHA = '639ed015397290b3745d163aafe02ffee4aa3f84';
 export const PINNED_TAG = 'dsh-v0.2.0-rc.2';
+
+/**
+ * Longest packaged path allowed below resources/agent-kernel/<version>/ (and below the
+ * per-generation stage dir in userData). 260 - 1 (NUL) - this budget = the longest
+ * install/state prefix the kernel tolerates (installer/companyos.iss enforces it).
+ */
+export const KERNEL_RELATIVE_PATH_BUDGET = 150;
+
+/** Deterministic short ids for pnpm virtual-store directory names. */
+export const pnpmStoreRemap = (relativePaths) => {
+  const STORE = /(^|\/)node_modules\/\.pnpm\/([^/]+)/u;
+  const names = [...new Set(relativePaths.map((p) => STORE.exec(p)?.[2]).filter((n) => n !== undefined && n !== 'node_modules'))].sort();
+  const toShort = new Map(names.map((name, index) => [name, index.toString(36)]));
+  const shorten = (p) => p.replace(/(^|\/)node_modules\/\.pnpm\/([^/]+)/gu, (all, lead, name) => (toShort.has(name) ? `${lead}node_modules/.pnpm/${toShort.get(name)}` : all));
+  return { shorten, table: Object.fromEntries([...toShort.entries()].map(([name, id]) => [id, name])) };
+};
 
 import { KERNEL_DENYLIST } from '../lib/runtime-execution-closure.mjs';
 
@@ -106,12 +133,17 @@ const main = () => {
   const denied = [...packages.values()].filter((p) => DENYLIST.some((re) => re.test(p.name)));
   if (denied.length > 0) die('DENYLIST', `worldview/account packages in the shipped closure: ${[...new Set(denied.map((p) => p.name))].sort().join(', ')}`);
 
+  /* ---- 1a. path budget: short pnpm store ids ---- */
+  const links = closure.links ?? [];
+  const remap = pnpmStoreRemap([...Object.keys(closure.files), ...links.flatMap((l) => [l.link, l.target]), ...packages.keys()]);
+  const short = remap.shorten;
+
   /* ---- 1. closure files only ---- */
   for (const relative of Object.keys(closure.files)) {
     const source = join(managed, ...relative.split('/'));
     if (!existsSync(source)) die('CLOSURE_FILE_MISSING', relative);
     if (sha256(source) !== closure.files[relative].sha256) die('CLOSURE_FILE_DRIFT', relative);
-    const target = join(vdir, ...relative.split('/'));
+    const target = join(vdir, ...short(relative).split('/'));
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(source, target);
   }
@@ -124,14 +156,14 @@ const main = () => {
     const abs = join(managed, ...relDir.split('/'));
     const files = readdirSync(abs).filter((name) => LICENSE_FILE.test(name) && statSync(join(abs, name)).isFile());
     for (const name of files) {
-      const target = join(vdir, ...relDir.split('/'), name);
+      const target = join(vdir, ...short(relDir).split('/'), name);
       mkdirSync(dirname(target), { recursive: true });
       copyFileSync(join(abs, name), target);
     }
     const workspacePkg = relDir.startsWith(`${runtimeRel}/`) && !relDir.includes('node_modules');
     index.push({
-      name: pkg.name, version: pkg.version, license: pkg.license, path: relDir,
-      licenseFiles: files.map((f) => `${relDir}/${f}`),
+      name: pkg.name, version: pkg.version, license: pkg.license, path: short(relDir),
+      licenseFiles: files.map((f) => `${short(relDir)}/${f}`),
       // Upstream workspace packages are covered by the repository root MIT LICENSE.
       coveredBy: files.length === 0 && workspacePkg ? 'licenses/LICENSE (deepseek-harness root, MIT)' : null,
     });
@@ -168,7 +200,11 @@ const main = () => {
   if (existsSync(nodeLicense)) copyFileSync(nodeLicense, join(vdir, 'node', 'LICENSE'));
 
   /* ---- 6. closure rewrite (relative to the new root; + node) ---- */
-  const files = { ...closure.files, [nodeRel]: { class: 'NATIVE_CRITICAL', sha256: nodeSha } };
+  const files = { ...Object.fromEntries(Object.entries(closure.files).map(([k, v]) => [short(k), v])), [nodeRel]: { class: 'NATIVE_CRITICAL', sha256: nodeSha } };
+  const packedLinks = links.map((l) => ({ link: short(l.link), target: short(l.target) }));
+  const overBudget = [...Object.keys(files), ...packedLinks.map((l) => l.link)].filter((p) => p.length > KERNEL_RELATIVE_PATH_BUDGET);
+  if (overBudget.length > 0) die('PATH_BUDGET', `${overBudget.length} packaged path(s) exceed ${KERNEL_RELATIVE_PATH_BUDGET} chars, e.g. ${overBudget[0]}`);
+  const longestRelativePath = Math.max(...Object.keys(files).map((p) => p.length), ...packedLinks.map((l) => l.link.length));
   const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)));
   const counts = { EXECUTABLE_CRITICAL: 0, CONFIG_CRITICAL: 0, NATIVE_CRITICAL: 0 };
   for (const entry of Object.values(sorted)) counts[entry.class] += 1;
@@ -176,9 +212,10 @@ const main = () => {
   const packedClosure = {
     ...closure,
     generation,
-    derivation: { ...closure.derivation, packagedBy: 'scripts/hark/pack-agent-kernel.mjs', nodeRuntimeAdded: nodeRel },
+    derivation: { ...closure.derivation, packagedBy: 'scripts/hark/pack-agent-kernel.mjs', nodeRuntimeAdded: nodeRel, pathBudget: KERNEL_RELATIVE_PATH_BUDGET, longestRelativePath, pnpmStoreRemap: remap.table },
     counts: { ...counts, totalCritical: counts.EXECUTABLE_CRITICAL + counts.CONFIG_CRITICAL + counts.NATIVE_CRITICAL, samplingUsed: false },
     files: sorted,
+    links: packedLinks,
   };
   const closureText = JSON.stringify(packedClosure);
   writeFileSync(join(vdir, 'closure-manifest.json'), closureText, 'utf8');
@@ -222,9 +259,10 @@ const main = () => {
   walk(vdir);
   console.log(JSON.stringify({
     packed: vdir, kernelVersion, upstreamSha: PINNED_SHA, packages: packages.size, components: components.length,
-    closureFiles: Object.keys(sorted).length, links: (closure.links ?? []).length, node: { version: nodeVersion, sha256: nodeSha, official: nodeOfficial },
+    closureFiles: Object.keys(sorted).length, links: packedLinks.length, longestRelativePath, pnpmStores: Object.keys(remap.table).length, node: { version: nodeVersion, sha256: nodeSha, official: nodeOfficial },
     packagesWithoutLicenseFile: uncovered.length, bytes, generation, basename: basename(vdir),
   }, null, 2));
 };
 
-main();
+// Run only as a CLI (tests import the pure helpers).
+if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) main();

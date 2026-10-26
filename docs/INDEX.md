@@ -276,4 +276,5 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
   [hark-lane/H12C_HYGIENE_RECONCILIATION.md](./hark-lane/H12C_HYGIENE_RECONCILIATION.md) ·
   [hark-lane/H13_UPGRADE_RETENTION.md](./hark-lane/H13_UPGRADE_RETENTION.md) ·
   [hark-lane/H14_UBUNTU_GATE.md](./hark-lane/H14_UBUNTU_GATE.md) ·
+  [hark-lane/H15_AGENT_KERNEL_NATIVE_JOB.md](./hark-lane/H15_AGENT_KERNEL_NATIVE_JOB.md) ·
   [hark-lane/ROADMAP.md](./hark-lane/ROADMAP.md)
