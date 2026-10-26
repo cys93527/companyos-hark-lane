@@ -30,6 +30,7 @@ import {
   createRepoTestCheckRecord,
 } from '@companyos/engine';
 import { runRepoTestContract } from './repo-test-process.js';
+import type { KernelHealthReport } from './executor/kernel-health.js';
 import {
   REPOSITORY_GIT_TOOL_SPEC,
   REPOSITORY_VALIDATION_EVIDENCE_SPEC,
@@ -326,6 +327,8 @@ const projectWorkEnvelope = (
  * second event store; ADR-0021 D10 / Task-14-02 §30/§31).
  */
 export interface CoreServices {
+  /** H15: the packaged agent kernel's first-start health report (null when no packaged kernel was checked). */
+  readonly kernelHealth?: () => KernelHealthReport | null;
   readonly database: DurableDatabase;
   readonly clock: SystemClock;
   readonly ids: UlidFactory;
@@ -538,6 +541,12 @@ export interface ComposeCoreServicesOptions {
    * explicitly unavailable (never a cwd-inferred substitute).
    */
   readonly embeddedDshRuntimeRoot?: string;
+  /**
+   * H15: the WRITABLE per-user location for the kernel's verified stages and
+   * disposable homes (userData). The packaged kernel itself is an immutable install
+   * resource. Absent = the managed root (dev materialization layout).
+   */
+  readonly embeddedDshStateRoot?: string;
   readonly embeddedDshModelRoute?: {
     readonly providerId: string;
     readonly modelId: string;
@@ -1265,6 +1274,8 @@ export async function composeCoreServices(
      * model-controlled.
      */
     const executorConfigsHolder = new Map<string, TypedExecutorConfig>();
+    // H15: the packaged kernel's first-start health report (null = not packaged / not checked).
+    const kernelHealthHolder: { report: KernelHealthReport | null } = { report: null };
     const providerRouteTable: Readonly<Record<string, string>> = options.providerRoutes ?? {};
     let sprint13ArtifactServiceHolder: ReturnType<
       typeof composeSprint13Application
@@ -3708,8 +3719,25 @@ export async function composeCoreServices(
     );
     const embeddedManagedRoot = options.embeddedDshRuntimeRoot;
     const embeddedRuntime =
-      embeddedManagedRoot === undefined ? null : resolveEmbeddedDshRuntime({ managedRoot: embeddedManagedRoot });
-    if (embeddedRuntime !== null && embeddedRuntime.ok && options.embeddedDshModelRoute !== undefined) {
+      embeddedManagedRoot === undefined ? null : resolveEmbeddedDshRuntime({ managedRoot: embeddedManagedRoot, ...(options.embeddedDshStateRoot === undefined ? {} : { stateRoot: options.embeddedDshStateRoot }) });
+    /*
+     * H15 — FIRST-START HEALTH CHECK for the PACKAGED kernel (layoutVersion 2,
+     * Distribution spec §3): spawn the staged, closure-verified CLI on the staged
+     * pinned Node and read the version back; a mismatch or failure REFUSES the
+     * kernel (it is not registered) with a typed, logged diagnostic.
+     */
+    let embeddedKernelHealthy = embeddedRuntime !== null && embeddedRuntime.ok;
+    if (embeddedRuntime !== null && embeddedRuntime.ok && embeddedRuntime.value.manifest.layoutVersion === 2) {
+      const { checkEmbeddedKernelHealth } = await import('./executor/kernel-health.js');
+      const health = await checkEmbeddedKernelHealth(embeddedRuntime.value);
+      kernelHealthHolder.report = health;
+      embeddedKernelHealthy = health.status === 'HEALTHY';
+      if (embeddedKernelHealthy) activeLogger.info('embedded kernel health', { status: health.status, version: health.observedVersion, upstreamSha: health.upstreamSha, elapsedMs: health.elapsedMs });
+      else activeLogger.warn('embedded kernel REFUSED by the first-start health check', { reasonCode: health.reasonCode, detail: health.detail, declared: health.declaredVersion, observed: health.observedVersion });
+    } else if (embeddedRuntime !== null && !embeddedRuntime.ok) {
+      activeLogger.warn('embedded kernel unavailable', { reason: embeddedRuntime.error.message });
+    }
+    if (embeddedRuntime !== null && embeddedRuntime.ok && embeddedKernelHealthy && options.embeddedDshModelRoute !== undefined) {
       const route = options.embeddedDshModelRoute;
       const routeValue = route.apiKeyResolver?.() ?? route.apiKeyValue ?? '';
       const embeddedTypedConfig = resolveExecutorConfig({
@@ -4362,6 +4390,7 @@ export async function composeCoreServices(
     const autonomyDriver = createGoalOutcomeAutonomyDriver(autonomyDriverDeps);
 
     return {
+      kernelHealth: () => kernelHealthHolder.report,
       database,
       compositionError,
       repositoryRuntime,

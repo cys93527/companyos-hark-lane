@@ -5,8 +5,10 @@ name: hark-installer
 # binary is downloaded by electron's own install.js, which checks it against the
 # package's bundled SHA-256 checksums), packages a PER-USER Inno Setup installer
 # (preinstalled on the runner; nothing new is downloaded for it), then runs an
-# install -> launch -> uninstall smoke. No new npm dependencies, no signing, no
-# secrets, no Provider/DSH, no release/tag, no machine-wide/ACL/firewall changes.
+# install -> launch -> uninstall smoke. No signing, no secrets, no release/tag, no
+# machine-wide/ACL/firewall changes. H15 (user approval 2026-10-26): the installer also
+# ships the exact-pinned DSH agent kernel (deepseek-harness 639ed015, MIT) + pinned
+# official Node v24.19.0 under resources/agent-kernel/dsh-v0.2.0-rc.2/.
 on:
   workflow_dispatch:
   push:
@@ -24,7 +26,7 @@ jobs:
   installer:
     name: build + per-user install smoke (windows x64)
     runs-on: windows-2022
-    timeout-minutes: 40
+    timeout-minutes: 75
     env:
       COMPANYOS_TEST_MODE: OFFLINE
     steps:
@@ -54,6 +56,43 @@ jobs:
         shell: pwsh
         run: pnpm run build 2>&1 | Tee-Object hark-evidence/build.log; exit $LASTEXITCODE
 
+      - name: Agent kernel source cache (pinned deepseek-harness pnpm store)
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/pnpm/store
+          key: dsh-pnpm-store-639ed015397290b3745d163aafe02ffee4aa3f84-win-x64
+
+      - name: Agent kernel (H15) - official deepseek-harness @ pinned SHA, frozen install, unmodified host build, closure
+        shell: pwsh
+        run: |
+          # User approval 2026-10-26: deepseek-ai/deepseek-harness 639ed015 (dsh-v0.2.0-rc.2, MIT), exact pin only.
+          node scripts/materialize-embedded-dsh.mjs --target "$env:RUNNER_TEMP\dsh-managed" 2>&1 | Tee-Object hark-evidence/kernel-materialize.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:RUNNER_TEMP\dsh-managed\manifest.json" hark-evidence/kernel-materialized-manifest.json
+
+      - name: Agent kernel - pinned Node runtime (official nodejs.org v24.19.0 win-x64, SHASUMS256-verified)
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'kernel-node'; New-Item -ItemType Directory -Force $d | Out-Null
+          Invoke-WebRequest -UseBasicParsing https://nodejs.org/dist/v24.19.0/SHASUMS256.txt -OutFile "$d\SHASUMS256.txt"
+          Invoke-WebRequest -UseBasicParsing https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip -OutFile "$d\node.zip"
+          $want = ((Get-Content "$d\SHASUMS256.txt") | Where-Object { $_ -match '  node-v24\.19\.0-win-x64\.zip$' }).Split(' ')[0]
+          $got = (Get-FileHash "$d\node.zip" -Algorithm SHA256).Hash.ToLower()
+          "zip want=$want got=$got" | Tee-Object hark-evidence/kernel-node-sha.txt
+          if ($want -ne $got) { Write-Error 'node zip sha256 mismatch'; exit 1 }
+          Expand-Archive "$d\node.zip" -DestinationPath $d -Force
+          Copy-Item hark-evidence/kernel-node-sha.txt "$d\node-v24.19.0-win-x64\" -Force
+
+      - name: Agent kernel - pack resources/agent-kernel (relocatable manifest, SBOM, licences, denylist)
+        shell: pwsh
+        run: |
+          node scripts/hark/pack-agent-kernel.mjs --managed "$env:RUNNER_TEMP\dsh-managed" --out "$env:RUNNER_TEMP\agent-kernel" --node "$env:RUNNER_TEMP\kernel-node\node-v24.19.0-win-x64\node.exe" --node-shasums "$env:RUNNER_TEMP\kernel-node\SHASUMS256.txt" --node-dist-name win-x64/node.exe 2>&1 | Tee-Object hark-evidence/kernel-pack.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $k = "$env:RUNNER_TEMP\agent-kernel\dsh-v0.2.0-rc.2"
+          Copy-Item "$k\manifest.json", "$k\sbom.cdx.json", "$k\packages.txt", "$k\licenses\INDEX.json" hark-evidence/ -Force
+          node scripts/hark/kernel-health-smoke.mjs $k "$env:RUNNER_TEMP\kernel-state" hark-evidence/kernel-health.json --pong
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Electron runtime (locked version, checksum-verified by electron/install.js)
         shell: pwsh
         working-directory: apps/desktop
@@ -67,7 +106,7 @@ jobs:
 
       - name: Stage app
         shell: pwsh
-        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
+        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" "$env:RUNNER_TEMP/agent-kernel" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
 
       - name: Package installer (Inno Setup preinstalled on the runner)
         shell: pwsh

@@ -916,7 +916,9 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         // Electron binary. ELECTRON_RUN_AS_NODE=1 makes it a plain Node runtime for the
         // kernel CLI (Electron's Node satisfies the manifest nodeRange) — without it the
         // child boots as a GUI Electron app and exits with a Windows status code.
-        const childExecutable = embedded.nodeExecutable ?? resolveEmbeddedChildNode();
+        // H15: the packaged kernel ships its pinned Node runtime (staged + verified);
+        // the user's PATH node is consulted only for a dev materialization without one.
+        const childExecutable = embedded.nodeExecutable ?? stage.value.nodeExecutablePath ?? resolveEmbeddedChildNode();
         const childIsElectron = childExecutable === process.execPath;
         const provider = createProcessExecutorProvider({
           providerKey: DSH_PROVIDER_KEY,

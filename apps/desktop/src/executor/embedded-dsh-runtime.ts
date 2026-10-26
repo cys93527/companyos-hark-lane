@@ -25,7 +25,7 @@ import { createServer, request as httpRequest, type ClientRequest, type ServerRe
 import { request as httpsRequest } from 'node:https';
 import type { Socket } from 'node:net';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { basename, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { ExecutorExecutionRequest } from '@companyos/engine';
 import { domainError, type DomainError, type InvocationResult, err, ok, type Result } from '@companyos/core';
@@ -52,6 +52,22 @@ export interface EmbeddedDshRuntimeManifest {
   /** STAGE 5B: sha256 of closure-manifest.json bytes — recorded by materialize AFTER the closure is written. */
   readonly closureGeneration?: string;
   readonly createdAt: string;
+  /**
+   * H15 (packaged distribution, layoutVersion 2): the upstream CLI version the
+   * first-start health check reads back (`--version`); a mismatch refuses the kernel.
+   */
+  readonly kernelVersion?: string;
+  /** H15: 2 = relocatable packaged resource (paths are managed-root-relative). */
+  readonly layoutVersion?: number;
+  /**
+   * H15: the pinned Node runtime shipped WITH the kernel (Distribution spec §3).
+   * `path` is managed-root-relative and is itself a NATIVE_CRITICAL closure file, so
+   * the staged copy the child runs is covered by the same 100% integrity gate.
+   */
+  readonly nodeRuntime?: { readonly path: string; readonly version: string; readonly sha256: string };
+  /** H15: SBOM + licence bundle locations (managed-root-relative). */
+  readonly sbom?: string;
+  readonly licenses?: string;
 }
 
 /** One classified closure file entry (STAGE 5B execution closure). */
@@ -95,6 +111,8 @@ export interface EmbeddedDshAttemptStage {
   readonly stageRoot: string;
   /** The staged CLI entry (node script) the managed child runs. */
   readonly cliEntryPath: string;
+  /** H15: the STAGED pinned Node runtime (null when the manifest ships none — dev materialization). */
+  readonly nodeExecutablePath: string | null;
   /** Render one disposable DSH_HOME from the STAGED (verified) templates. */
   readonly newDshHome: (input: {
     readonly attemptId: string;
@@ -417,7 +435,15 @@ const armExitSweep = (): void => {
  */
 export const resolveEmbeddedDshRuntime = (input: {
   readonly managedRoot: string;
+  /**
+   * H15: where the WRITABLE per-generation stages and disposable DSH homes live.
+   * The packaged kernel is an immutable install resource (replaced whole on every
+   * install), so production passes a userData path; absent = the managed root
+   * (the dev materialization layout).
+   */
+  readonly stateRoot?: string;
 }): Result<EmbeddedDshRuntime, DomainError> => {
+  const stateRoot = input.stateRoot ?? input.managedRoot;
   const manifestPath = join(input.managedRoot, 'manifest.json');
   if (!existsSync(manifestPath)) {
     return fail(
@@ -447,7 +473,26 @@ export const resolveEmbeddedDshRuntime = (input: {
       );
     }
   }
-  const m = manifest as EmbeddedDshRuntimeManifest;
+  /*
+   * H15: a packaged (layoutVersion 2) manifest is RELOCATABLE — its paths are
+   * managed-root-relative, so the installed resource works wherever the user
+   * installed CompanyOS. Absolute paths (dev materialization) pass through.
+   */
+  const underRoot = (p: string): string => (isAbsolute(p) ? p : join(input.managedRoot, ...p.split('/')));
+  const raw = manifest as EmbeddedDshRuntimeManifest;
+  const m: EmbeddedDshRuntimeManifest = {
+    ...raw,
+    runtimeRoot: underRoot(raw.runtimeRoot),
+    dshHomeTemplateDir: underRoot(raw.dshHomeTemplateDir),
+    profilePatchTemplate: underRoot(raw.profilePatchTemplate),
+    ...(raw.shellGuardScript === undefined ? {} : { shellGuardScript: underRoot(raw.shellGuardScript) }),
+  };
+  if (m.nodeRuntime !== undefined) {
+    const nodeRel = m.nodeRuntime.path;
+    if (isAbsolute(nodeRel) || nodeRel.includes('..')) {
+      return fail('EXECUTOR_EMBEDDED_RUNTIME_MANIFEST_INCOMPLETE', 'The embedded DSH manifest nodeRuntime.path must be managed-root-relative.');
+    }
+  }
   // Exact-pin identity rules: a branch/tag-only manifest is not an identity.
   if (!/^[0-9a-f]{40}$/u.test(m.upstreamSha)) {
     return fail(
@@ -477,6 +522,17 @@ export const resolveEmbeddedDshRuntime = (input: {
   }
   const closure = loadExecutionClosure(input.managedRoot, m);
   if (!closure.ok) return closure;
+  // H15: the shipped Node runtime is only trusted as a closure member — the staged
+  // copy the child executes is then re-hashed by every verifyStaged gate.
+  if (m.nodeRuntime !== undefined) {
+    const nodeEntry = closure.value.files[m.nodeRuntime.path];
+    if (nodeEntry === undefined || nodeEntry.sha256 !== m.nodeRuntime.sha256) {
+      return fail(
+        'EXECUTOR_EMBEDDED_RUNTIME_NODE_UNVERIFIED',
+        `The shipped Node runtime "${m.nodeRuntime.path}" is not a verified execution-closure member with the manifest sha256.`,
+      );
+    }
+  }
 
   const BS = String.fromCharCode(92); // one literal backslash — escape-proof doubling below
   /*
@@ -514,7 +570,7 @@ export const resolveEmbeddedDshRuntime = (input: {
        * loud at the next attempt — never verify-once/trust-forever.
        */
       const cacheKey = `${input.managedRoot}::${closure.value.generation}`;
-      const canonicalStage = join(input.managedRoot, '.dsh-stages', `stage-${closure.value.generation.slice(0, 12)}`);
+      const canonicalStage = join(stateRoot, '.dsh-stages', `stage-${closure.value.generation.slice(0, 12)}`);
       let stageRoot = sharedStages.get(cacheKey);
       if (stageRoot === undefined) {
         if (existsSync(canonicalStage)) {
@@ -531,7 +587,7 @@ export const resolveEmbeddedDshRuntime = (input: {
            * concurrent racer that wins the rename leaves the canonical tree for us
            * (and our temp is dropped). No process can ever spawn from a partial tree.
            */
-          const tmpStage = join(input.managedRoot, '.dsh-stages', `.tmp-stage-${closure.value.generation.slice(0, 12)}-p${String(process.pid)}-${randomBytes(6).toString('hex')}`);
+          const tmpStage = join(stateRoot, '.dsh-stages', `.tmp-stage-${closure.value.generation.slice(0, 12)}-p${String(process.pid)}-${randomBytes(6).toString('hex')}`);
           stageRoot = tmpStage;
           try {
             // Copy EVERY closure file (junction-resolved content) into the stage.
@@ -645,13 +701,14 @@ export const resolveEmbeddedDshRuntime = (input: {
         : join(stagePath, ...relative(input.managedRoot, m.shellGuardScript).split('\\')).replaceAll('\\', '/');
       return ok({
         stageRoot: stagePath,
-        cliEntryPath: join(stagePath, ...`runtime/${m.cliEntry}`.split('/')),
+        cliEntryPath: join(stagePath, ...relative(input.managedRoot, m.runtimeRoot).split('\\').join('/').split('/').filter((x) => x !== ''), ...m.cliEntry.split('/')),
+        nodeExecutablePath: m.nodeRuntime === undefined ? null : join(stagePath, ...m.nodeRuntime.path.split('/')),
         newDshHome: ({ attemptId: homeAttempt, workspaceRoot, route, sandboxMode = 'workspace-write' }) => {
           const safeHome = homeAttempt.replace(/[^a-zA-Z0-9_-]/g, '');
           // The pid marker is the ACTIVE-OWNER proof the startup scavenger reads
           // (RUNTIME-STORAGE-FIX-01 §13): a live pid keeps its home, anything else is
           // reclaimed — never by age alone.
-          const dshHome = join(input.managedRoot, '.dsh-homes', `attempt-${safeHome}-p${String(process.pid)}-${Date.now()}`);
+          const dshHome = join(stateRoot, '.dsh-homes', `attempt-${safeHome}-p${String(process.pid)}-${Date.now()}`);
           try {
             mkdirSync(dshHome, { recursive: true });
             cpSync(join(stageTemplatesDir, 'profiles'), join(dshHome, 'profiles'), { recursive: true });
@@ -696,7 +753,7 @@ export const resolveEmbeddedDshRuntime = (input: {
    * entry are untouched; unknown shapes are never deleted; canonical truth never
    * lives here, so reclamation can never corrupt run/attempt evidence.
    */
-  reclaimInertStageStorage({managedRoot: input.managedRoot, currentGeneration: closure.value.generation});
+  reclaimInertStageStorage({managedRoot: stateRoot, currentGeneration: closure.value.generation});
   return ok(runtime);
 };
 

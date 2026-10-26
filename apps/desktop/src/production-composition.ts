@@ -20,6 +20,8 @@
  *   - a missing or unknown adapter fails LOUD at dispatch (typed, fail-closed) —
  *     never a silent mock, never fake execution.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { TrustedBudgetProofSource } from './trusted-budget-proof.js';
 import type { DeploymentBudgetCap } from './deployment-budget-proof.js';
@@ -43,8 +45,19 @@ export const DEFAULT_EXECUTOR_PROVIDER_KEY = 'dsh-headless';
  * this one seam at its resources directory and keeps the identical manifest
  * contract (no packaging system is implemented or assumed here).
  */
-export const productionEmbeddedDshRuntimeRoot = (): string =>
-  fileURLToPath(new URL('../../../.companyos-embedded/dsh-runtime', import.meta.url));
+/** H15: the exact-pinned packaged kernel version directory (DSH_KERNEL_DISTRIBUTION_UPDATE_SPEC §3/§5). */
+export const AGENT_KERNEL_VERSION_DIR = 'dsh-v0.2.0-rc.2';
+
+export const productionEmbeddedDshRuntimeRoot = (): string => {
+  // H15: the INSTALLED build ships the kernel as an immutable install resource at
+  // `<install>/resources/agent-kernel/<AGENT_KERNEL_VERSION_DIR>/` (the staged app
+  // module lives at `<install>/resources/app/apps/desktop/dist/`, four levels below
+  // `resources/`). Exact pin: one version directory, never "latest".
+  const packaged = fileURLToPath(new URL(`../../../../agent-kernel/${AGENT_KERNEL_VERSION_DIR}`, import.meta.url));
+  if (existsSync(join(packaged, 'manifest.json'))) return packaged;
+  return fileURLToPath(new URL('../../../.companyos-embedded/dsh-runtime', import.meta.url));
+};
+
 
 /**
  * The executor kinds of the production deployment: the planning kind (its task is

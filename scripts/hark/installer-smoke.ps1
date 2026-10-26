@@ -12,6 +12,9 @@ Check 'install-exit-0' ($p.ExitCode -eq 0) $p.ExitCode
 $exe = Join-Path $dir 'CompanyOS.exe'
 Check 'exe-installed' (Test-Path $exe) $exe
 Check 'app-payload' (Test-Path (Join-Path $dir 'resources\app\apps\desktop\dist\main.js')) 'resources/app main.js'
+# H15: the exact-pinned agent kernel ships as an install resource (manifest + SBOM + licences + pinned node).
+$kdir = Join-Path $dir 'resources\agent-kernel\dsh-v0.2.0-rc.2'
+Check 'agent-kernel-installed' ((Test-Path (Join-Path $kdir 'manifest.json')) -and (Test-Path (Join-Path $kdir 'sbom.cdx.json')) -and (Test-Path (Join-Path $kdir 'licenses\LICENSE')) -and (Test-Path (Join-Path $kdir 'node\node.exe'))) $kdir
 Check 'uninstaller-present' (Test-Path (Join-Path $dir 'unins000.exe')) 'unins000.exe'
 $uninstKey = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'CompanyOS' }
 Check 'hkcu-uninstall-entry' ($null -ne $uninstKey) ($uninstKey.PSChildName)
@@ -33,6 +36,11 @@ $errLines = @($logs | ForEach-Object { Get-Content $_.FullName } | Where-Object 
 Check 'no-error-log-lines' ($errLines.Count -eq 0) (($errLines | Select-Object -First 3) -join ' | ')
 $dbReady = @($logs | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_ -match 'database bootstrap failed' })
 Check 'database-bootstrapped' ($dbReady.Count -eq 0) "bootstrap-failures=$($dbReady.Count)"
+# H15: the app's own first-start health check read the kernel version back from the installed resource.
+$health = @($logs | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_ -match 'embedded kernel' })
+$health | Out-File -Encoding utf8 (Join-Path $Evidence 'kernel-health-log.txt')
+$healthy = @($health | Where-Object { $_ -match 'embedded kernel health' -and $_ -match '"status":"HEALTHY"' })
+Check 'kernel-first-start-health' ($healthy.Count -ge 1) (($health | Select-Object -First 2) -join ' | ')
 $data = Get-ChildItem (Join-Path $userData 'data') -Recurse -File -ErrorAction SilentlyContinue
 Check 'userdata-data-created' ($data.Count -gt 0) (($data | ForEach-Object Name) -join ',')
 $windows = Get-Process -Id $app.Id -ErrorAction SilentlyContinue | Select-Object -ExpandProperty MainWindowTitle

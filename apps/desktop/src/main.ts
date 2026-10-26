@@ -229,6 +229,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
             // adapter fails loud at dispatch, never a silent mock.
             ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
             usageReconciliationDir: join(app.getPath('userData'), 'budget'),
+      embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
           });
     if (core === null) return null;
     coreServices = core;
@@ -870,6 +871,7 @@ async function main(): Promise<void> {
       // carry the same wiring.
       ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
       usageReconciliationDir: join(app.getPath('userData'), 'budget'),
+      embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
     });
     if (core === null) {
       // Composition failure keeps the frozen Sprint 5/6 shell rule: the window may

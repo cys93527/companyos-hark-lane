@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Hark lane H8: assemble the portable CompanyOS desktop app (no new dependencies).
-// Usage: node scripts/hark/stage-desktop.mjs <electronDistDir> <outDir>
+// Usage: node scripts/hark/stage-desktop.mjs <electronDistDir> <outDir> [<agentKernelDir>]
+//   H15: <agentKernelDir> = the packed resources/agent-kernel tree (scripts/hark/pack-agent-kernel.mjs);
+//   it is copied verbatim to <out>/resources/agent-kernel (immutable install resource).
 // Requires `pnpm run build` first. Layout:
 //   <out>/CompanyOS.exe (renamed electron.exe) + Electron runtime files
 //   <out>/resources/app/{package.json, apps/desktop/{dist,preload,package.json}, apps/renderer/dist,
@@ -12,7 +14,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const [electronDist, out] = process.argv.slice(2);
+const [electronDist, out, agentKernel] = process.argv.slice(2);
 if (!electronDist || !out) { console.error('usage: stage-desktop.mjs <electronDistDir> <outDir>'); process.exit(2); }
 const must = (p) => { if (!existsSync(p)) { console.error(`missing: ${p}`); process.exit(3); } return p; };
 
@@ -23,6 +25,10 @@ rmSync(join(out, 'resources', 'default_app.asar'), { force: true });
 renameSync(must(join(out, 'electron.exe')), join(out, 'CompanyOS.exe'));
 
 const app = join(out, 'resources', 'app');
+if (agentKernel) {
+  cpSync(must(agentKernel), join(out, 'resources', 'agent-kernel'), { recursive: true });
+  console.log(`staged agent kernel from ${agentKernel}`);
+}
 const desktopPkg = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'));
 mkdirSync(app, { recursive: true });
 writeFileSync(join(app, 'package.json'), JSON.stringify({

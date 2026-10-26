@@ -131,6 +131,98 @@ const compositionPackageNames = (texts) => {
   return names;
 };
 
+/**
+ * H15: worldview / account / telemetry / product-surface packages that must never be
+ * shipped or traversed (DSH_DEFAULT_KERNEL_PROFILE_SPEC §3.4; update gate item 5).
+ * dsh-plugin-manager is REQUIRED by the headless transport (§3.1 G) — only its
+ * auto-discovery/market surface is excluded (§6), so it is not listed.
+ */
+export const KERNEL_DENYLIST = [
+  /^@deepseek-ai\/dsh-goal(-.*)?$/u, /^@deepseek-ai\/dsh-tool-goal$/u, /^@deepseek-ai\/dsh-command-goal$/u,
+  /^@deepseek-ai\/dsh-plan(-.*)?$/u, /^@deepseek-ai\/dsh-workflow(-.*)?$/u, /^@deepseek-ai\/dsh-tool-workflow$/u,
+  /^@deepseek-ai\/dsh-experimental-agent-team.*$/u, /^@deepseek-ai\/dsh-tool-subagent.*$/u,
+  /^@deepseek-ai\/dsh-api(-.*)?$/u, /^@deepseek-ai\/dsh-web(-.*)?$/u, /^@deepseek-ai\/dsh-desktop.*$/u,
+  /^@deepseek-ai\/dsh-settings.*$/u, /^@deepseek-ai\/dsh-telemetry.*$/u, /^@deepseek-ai\/dsh-anonymous-user-id$/u,
+  /^@deepseek-ai\/dsh-llm-deepseek-account$/u, /^@deepseek-ai\/dsh-deepseek-account-platform$/u,
+  /^@deepseek-ai\/dsh-authorization$/u, /^@deepseek-ai\/dsh-session-log-deepseek$/u,
+  /^@deepseek-ai\/dsh-plugin-package-inventory-deepseek$/u, /^@deepseek-ai\/dsh-agent-presets$/u,
+];
+/** Product-function packages never used as resolution anchors (§3.4 "产品功能面"). */
+const ANCHOR_AVOID = new Set(['@deepseek-ai/dsh-schedule', '@deepseek-ai/dsh-attachment', '@deepseek-ai/dsh-feedback', '@deepseek-ai/dsh-deliverables', '@deepseek-ai/dsh-commands']);
+export const isKernelDenylisted = (name) => KERNEL_DENYLIST.some((re) => re.test(name));
+
+/**
+ * H15: shortest declarer chains from the CLI manifest over the installation-scope graph
+ * (dependencies + peerDependencies, resolved Node-style from each declarer). Edges into a
+ * composition seed cost 0, others 1; denylisted/avoided packages are never traversed.
+ * @returns Map name -> { dir, chain: [{name, dir}] (declarers, nearest first, CLI excluded) }
+ */
+export const installationScopeChains = (runtimeRoot, seedNames) => {
+  const start = realpathSync(join(runtimeRoot, 'apps', 'cli'));
+  const runtimeRootReal = realpathSync(runtimeRoot);
+  const dist = new Map([[start, 0]]);
+  const parent = new Map([[start, null]]);
+  const nameOf = new Map([[start, '@deepseek-ai/dsh']]);
+  const queue = [[0, start]];
+  while (queue.length > 0) {
+    queue.sort((a, b) => a[0] - b[0]);
+    const [cost, dir] = queue.shift();
+    if (cost > (dist.get(dir) ?? Infinity)) continue;
+    let manifest;
+    try { manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); } catch { continue; }
+    for (const dep of [...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]) {
+      if (isKernelDenylisted(dep) || ANCHOR_AVOID.has(dep)) continue;
+      const target = resolveBare(dep, dir, runtimeRootReal);
+      if (target === null || !existsSync(join(target, 'package.json'))) continue;
+      const next = cost + (seedNames.has(dep) ? 0 : 1);
+      if (next < (dist.get(target) ?? Infinity)) {
+        dist.set(target, next);
+        parent.set(target, dir);
+        nameOf.set(target, dep);
+        queue.push([next, target]);
+      }
+    }
+  }
+  const out = new Map();
+  for (const [dir, name] of nameOf) {
+    if (dir === start || out.has(name)) continue;
+    const chain = [];
+    for (let up = parent.get(dir); up !== null && up !== start && up !== undefined; up = parent.get(up)) chain.push({ name: nameOf.get(up), dir: up });
+    out.set(name, { dir, chain });
+  }
+  return out;
+};
+
+/**
+ * H15: row ids the CompanyOS profile patch DISABLES (`- id: X` followed by `disabled: true`).
+ * A disabled row is never loaded, so its package is not a composition seed.
+ */
+export const disabledRowIds = (patchText) => {
+  const ids = new Set();
+  for (const match of patchText.matchAll(/^-\s+id:\s*([A-Za-z0-9_-]+)\s*\r?\n\s+disabled:\s*true\s*$/gmu)) ids.add(match[1]);
+  return ids;
+};
+
+/** H15: remove the bundle patch rows (`- id: X` blocks) whose id the profile disables. */
+export const dropDisabledRows = (bundleText, disabled) => {
+  const lines = bundleText.split(/\r?\n/u);
+  const out = [];
+  let skipIndent = null;
+  for (const line of lines) {
+    const row = /^(\s*)-\s+id:\s*([A-Za-z0-9_-]+)\s*$/u.exec(line);
+    if (row !== null) {
+      skipIndent = disabled.has(row[2]) ? row[1].length : null;
+      if (skipIndent !== null) continue;
+    } else if (skipIndent !== null) {
+      const indent = /^(\s*)/u.exec(line)[1].length;
+      if (line.trim() === '' || indent > skipIndent) continue;
+      skipIndent = null;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+};
+
 /** Build-output dirs of a package (existing among lib/dist/build/bin). */
 const buildOutputDirs = (pkgDir) =>
   DIST_DIRS.map((d) => join(pkgDir, d)).filter((d) => existsSync(d) && statSync(d).isDirectory());
@@ -158,11 +250,16 @@ export const deriveRuntimeExecutionClosure = (input) => {
   const runtimeRootReal = realpathSync(runtimeRoot);
   const managedRootReal = realpathSync(managedRoot);
   /* ---- 1. seeds ---- */
-  const compositionTexts = [readFileSync(manifest.profilePatchTemplate, 'utf8')];
+  const patchTemplateText = readFileSync(manifest.profilePatchTemplate, 'utf8');
+  const compositionTexts = [patchTemplateText];
   const bundlePatch = join(runtimeRoot, 'packages', 'bundle', 'sdk-minimal', 'cordis.patch.yml');
-  if (existsSync(bundlePatch)) compositionTexts.push(readFileSync(bundlePatch, 'utf8'));
-  const cliPkgJsonPath = join(runtimeRoot, 'apps', 'cli', 'package.json');
-  if (existsSync(cliPkgJsonPath)) compositionTexts.push(readFileSync(cliPkgJsonPath, 'utf8'));
+  if (existsSync(bundlePatch)) compositionTexts.push(dropDisabledRows(readFileSync(bundlePatch, 'utf8'), disabledRowIds(patchTemplateText)));
+  // H15: the CLI package.json is NOT a composition text. It declares the whole
+  // product universe (dsh-base, goal/workflow/web/api/settings/account...) and seeding
+  // from it dragged every worldview package into the shipped closure (709 packages,
+  // refused by the pack denylist — evidence lane/evidence/H15-gates). The CLI's
+  // EXECUTED code is still traced from its build output below; the composition seeds
+  // are exactly the packages the CompanyOS profile names.
   const homeTemplateSeen = new Set();
   const homeTemplateFiles = existsSync(manifest.dshHomeTemplateDir) ? walkReal(manifest.dshHomeTemplateDir, homeTemplateSeen) : [];
   for (const file of homeTemplateFiles) {
@@ -182,7 +279,30 @@ export const deriveRuntimeExecutionClosure = (input) => {
     pending.push(real);
     return true;
   };
-  for (const name of seedPackages) addPackage(join(cliNodeModules, ...name.split('/')), name);
+  /*
+   * H15 — seeds resolve through the official CLI's INSTALLATION SCOPE (app-boot
+   * collectInstallationScopePackages: the dependency/peerDependency graph from the CLI
+   * manifest, missing packages skipped). A plugin is loadable only when that graph
+   * reaches it, and the loader resolves it FROM its declarer — so every declarer on the
+   * chosen path ships too (an "anchor"). Paths prefer composition seeds, never traverse
+   * a denylisted or avoided package; the minimal-bundle-free upstream graph reaches
+   * dsh-llm-pi-ai / dsh-fs-sandbox only through dsh-base, an EMPTY bundle
+   * (lib/index.js = `export {};`) that ships as a resolution anchor and is never
+   * composed (the profile bundles = sdk-minimal only).
+   */
+  const scope = installationScopeChains(runtimeRoot, seedPackages);
+  const anchors = [];
+  for (const name of seedPackages) {
+    const hit = scope.get(name);
+    if (hit === undefined) {
+      addPackage(join(cliNodeModules, ...name.split('/')), name);
+      continue;
+    }
+    addPackage(hit.dir, name);
+    for (const ancestor of hit.chain) {
+      if (!seedPackages.has(ancestor.name) && addPackage(ancestor.dir, ancestor.name)) anchors.push(ancestor.name);
+    }
+  }
   // The CLI package itself: its compiled chunks are the trace root AND closure code.
   addPackage(join(runtimeRoot, 'apps', 'cli'), 'apps/cli');
 
@@ -243,14 +363,41 @@ export const deriveRuntimeExecutionClosure = (input) => {
    * surface: the runtime resolves the package's deps THROUGH them. Every
    * junction target becomes a closure package too (iterated to fixpoint), so
    * a staged tree never carries a link whose target has no verified files. */
+  // H15: only RUNTIME dependency links (dependencies / optionalDependencies /
+  // peerDependencies) are part of the resolution surface. pnpm also links a workspace
+  // package's devDependencies into its node_modules; following those pulled build/test
+  // tooling and unrelated product packages into the shipped closure.
+  const runtimeDepNames = (pkgDir) => {
+    try {
+      const pkgJson = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+      return new Set([pkgJson.dependencies, pkgJson.optionalDependencies, pkgJson.peerDependencies].flatMap((section) => Object.keys(section ?? {})));
+    } catch {
+      return null; // no readable identity: keep the conservative (all links) behaviour
+    }
+  };
   for (;;) {
     const before = packageDirs.size;
     for (const pkgDir of [...packageDirs.keys()]) {
       const nmDir = join(pkgDir, 'node_modules');
       if (!existsSync(nmDir)) continue;
-      const visit = (nm) => {
+      const allowed = runtimeDepNames(pkgDir);
+      let optional = null;
+      try { optional = new Set(Object.keys(JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).optionalDependencies ?? {})); } catch { optional = null; }
+      const visit = (nm, scope) => {
         for (const child of readdirSync(nm)) {
           const childPath = join(nm, child);
+          const depName = scope === '' ? child : `${scope}/${child}`;
+          if (allowed !== null && !child.startsWith('@') && !allowed.has(depName)) continue;
+          // H15: upstream WORKSPACE packages (@deepseek-ai/*) join the closure only when
+          // the composition names them or executed build output imports them. A merely
+          // DECLARED workspace dependency (the CLI declares the whole product universe;
+          // dsh-llm-pi-ai declares dsh-authorization) is not loaded by this profile; a
+          // dynamic load outside the closure fails loud at kernel startup and the
+          // packaged PONG smoke (scripts/hark/kernel-health-smoke.mjs --pong) proves the
+          // closure sufficient for a real headless turn.
+          // Platform addon packages (optionalDependencies, e.g. node-addon-system-<os>-<arch>)
+          // are loaded by constructed name and stay in.
+          if (scope === '@deepseek-ai' && !(optional?.has(depName) ?? false)) continue;
           let st;
           try {
             st = lstatSync(childPath);
@@ -266,11 +413,11 @@ export const deriveRuntimeExecutionClosure = (input) => {
             }
             if (statSync(target).isDirectory()) addPackage(target, child);
           } else if (st.isDirectory() && child.startsWith('@')) {
-            visit(childPath);
+            visit(childPath, child);
           }
         }
       };
-      visit(nmDir);
+      visit(nmDir, '');
     }
     if (packageDirs.size === before) break;
   }
@@ -455,6 +602,7 @@ export const deriveRuntimeExecutionClosure = (input) => {
       method: 'composition-declared packages + static import trace over build output; per-package conservative union (dist JS + configs + native scan)',
       cliEntry: manifest.cliEntry,
       compositionSeedPackages: [...seedPackages].sort(),
+      resolutionAnchors: anchors.sort(),
       resolvedClosurePackages: packageDirs.size,
       junctionLinksRecreated: links.length,
       nonExecutionAssetsExcluded: 'docs/licenses/maps/ts-source/tests (never hashed, never verified)',
