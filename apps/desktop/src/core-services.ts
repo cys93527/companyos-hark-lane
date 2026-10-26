@@ -89,6 +89,7 @@ import {
   MOCK_TOOL_SPECS,
   createHandoffService,
   executionRunIdOf,
+  goalEnvelopeExhausted,
 } from '@companyos/engine';
 import { createGoalUsageService } from './efficiency/goal-usage-projection.js';
 import { createDurableUsageReader } from './efficiency/durable-usage-reader.js';
@@ -4179,8 +4180,10 @@ export async function composeCoreServices(
             // H15c-fix10 (hark-live-goal 40300575683): every admitted call of the envelope is
             // spent — no autonomous step can be admitted again, so this is a standing refusal
             // (operator budget renewal), not 19 refused supervisor turns ending in a stall.
+            // H15d-fix5 (hark-live-goal 40359081704): the money/token cap counts too — no bound
+            // this Goal has reserved still fits — not only the call-slot count.
             const envelope = await executionSafety.budget.read(runId);
-            return envelope.reservations.length >= envelope.policy.maxCalls ? 'GOAL_BUDGET_EXHAUSTED' : null;
+            return goalEnvelopeExhausted(envelope) ? 'GOAL_BUDGET_EXHAUSTED' : null;
           } catch (error) {
             const reason = error instanceof DomainError ? String(error.details['reason'] ?? '') : '';
             return STANDING_ADMISSION_REFUSALS.includes(reason) ? reason : null;

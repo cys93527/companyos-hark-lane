@@ -168,6 +168,91 @@ export const createEvidenceGroundingRecord = (
 
 const decode = (bytes: Uint8Array): string => new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 
+/** `src/a.js:42`, `src/a.js:42:7`, `src/a.js#L10` → `src/a.js` (a location inside a cited file). */
+export const stripLocationSuffix = (token: string): string =>
+  token.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?)$/, '');
+
+const FILE_EXTENSION = /\.[A-Za-z0-9]{1,8}$/;
+const CODE_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+export type PathClaim =
+  | { readonly kind: 'not-a-path' }
+  | { readonly kind: 'grounded'; readonly path: string }
+  | { readonly kind: 'unsupported' };
+
+/**
+ * Decides whether a backtick-quoted token is a WORKSPACE PATH CLAIM and, if so, whether the workspace
+ * supports it. The validator only fails on claims that are provably unsupported (safe direction), so an
+ * ambiguous token is a path claim only when it cannot be read as anything else.
+ *
+ * H15d acceptance runs 4 and 5 (hark-live-goal 40345609717, 40359081704): correct work artifacts were
+ * failed because `node:assert/strict` (module specifier) and `Inventory.removeItem` /
+ * `Inventory.totalValue` (code member references) were treated as file names; each false verdict forced
+ * corrective rework until the runaway guard / stall detector ended the goal. The root defect was the
+ * classifier ("contains '/' or '.' ⇒ path"), not any one token:
+ *   - scheme-qualified specifiers / URIs (`node:fs`, `npm:x`, `https://…`) are never workspace paths
+ *     (a one-letter scheme is a Windows drive and stays a path claim);
+ *   - a token WITHOUT a separator is a file-name claim only if it exists as a file anywhere in the
+ *     workspace (by relative path or basename); otherwise, when every dotted segment is a code
+ *     identifier (`Inventory.removeItem`, `items.length`, `assert.deepStrictEqual()`), it is a code
+ *     reference — grounded when each identifier occurs in the workspace text, unsupported otherwise
+ *     (a member reference that the workspace never mentions is still a provably unsupported claim);
+ *   - a token WITH a separator is a path claim when it ends in a file extension, ends with '/',
+ *     starts with './' or a drive, or its first segment is an existing workspace directory; anything
+ *     else (`R2/R3`, `and/or`, `input/output`) is prose.
+ */
+export const classifyPathClaim = (
+  rawToken: string,
+  root: string,
+  workspaceFiles: readonly string[],
+  workspaceText: string,
+): PathClaim => {
+  if (/\s/.test(rawToken)) return { kind: 'not-a-path' };
+  const token = stripLocationSuffix(rawToken);
+  if (token === '' || token.includes('..') || token.includes('\\n')) return { kind: 'not-a-path' };
+  if (/^[A-Za-z][A-Za-z0-9+.-]+:/.test(token)) return { kind: 'not-a-path' };
+  const exists = (relativePath: string): boolean => {
+    try {
+      statSync(join(root, ...relativePath.split('/').filter((part) => part !== '')));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const normalized = token.replace(/\\/g, '/');
+  const drive = /^[A-Za-z]:\//.test(normalized);
+  const relativeCandidate = normalized.replace(/^\.\//, '');
+  if (relativeCandidate === 'report.md' || relativeCandidate.endsWith('/report.md')) return { kind: 'not-a-path' };
+
+  if (!normalized.includes('/')) {
+    if (!normalized.includes('.')) return { kind: 'not-a-path' };
+    if (exists(relativeCandidate) || workspaceFiles.some((file) => file === relativeCandidate || file.endsWith(`/${relativeCandidate}`))) {
+      return { kind: 'grounded', path: relativeCandidate };
+    }
+    const reference = normalized.replace(/\(\)$/, '');
+    const segments = reference.split('.');
+    if (segments.every((segment) => CODE_IDENTIFIER.test(segment))) {
+      // A missing `README.md` is also identifier-shaped; it is supported only if the workspace
+      // mentions both parts, otherwise it stays unsupported either way.
+      const mentioned = segments.every((segment) => new RegExp(`(^|[^A-Za-z0-9_$])${segment.replace(/\$/g, '\\$')}($|[^A-Za-z0-9_$])`).test(workspaceText));
+      if (mentioned) return { kind: 'grounded', path: reference };
+      return { kind: 'unsupported' };
+    }
+    return { kind: 'unsupported' };
+  }
+
+  const firstSegment = relativeCandidate.split('/')[0] ?? '';
+  const pathShaped =
+    drive ||
+    normalized.startsWith('./') ||
+    normalized.startsWith('/') ||
+    normalized.endsWith('/') ||
+    FILE_EXTENSION.test(normalized) ||
+    (firstSegment !== '' && exists(firstSegment));
+  if (!pathShaped) return { kind: 'not-a-path' };
+  return exists(relativeCandidate) ? { kind: 'grounded', path: relativeCandidate } : { kind: 'unsupported' };
+};
+
 /** Bounded recursive text inventory of the opened workspace. */
 const workspaceTexts = (root: string): readonly { readonly relative: string; readonly text: string }[] => {
   const out: { relative: string; text: string }[] = [];
@@ -277,28 +362,17 @@ export const createEvidenceGroundingPort = (
         const token = match[1] ?? '';
         if (!/[0-9]/.test(token) || token.length < 3 || /\s/.test(token)) continue;
         if (allSourceText.includes(token)) continue;
+        // A path citation with a line suffix (`src/a.js:42`) is a PATH claim, judged below.
+        if (stripLocationSuffix(token) !== token) continue;
         unsupported.push(`cited identifier not supported by workspace: ${token}`);
       }
       const pathMatches = [...artifactText.matchAll(BACKTICK_TOKEN_PATTERN)].map((m) => m[1] ?? '');
+      const workspaceFiles = sources.map((source) => source.relative);
       for (const candidate of pathMatches) {
-        if (candidate === '' || candidate.includes('..') || candidate.includes('://')) continue;
-        // A scheme-qualified specifier (`node:assert/strict`, `npm:pkg`, `data:…`) names a module or
-        // URI, not a workspace-relative path (H15d acceptance run 4, hark-live-goal 40345609717: two
-        // false `fail` verdicts on `node:assert/strict` forced corrective rework). A one-letter
-        // "scheme" is a Windows drive and stays checked.
-        if (/^[A-Za-z][A-Za-z0-9+.-]+:/.test(candidate)) continue;
-        if (/\s/.test(candidate)) continue;
-        // Skip non-path tokens (ids, commands, single words without an extension/separator).
-        if (!candidate.includes('/') && !candidate.includes('.')) continue;
-        const relativeCandidate = candidate.replace(/^\.\//, '');
-        if (relativeCandidate === 'report.md' || relativeCandidate.endsWith('/report.md')) continue;
+        const claim = classifyPathClaim(candidate, workspace.canonicalRoot, workspaceFiles, allSourceText);
+        if (claim.kind === 'not-a-path') continue;
         checkedPaths += 1;
-        try {
-          const full = join(workspace.canonicalRoot, ...relativeCandidate.split('/'));
-          statSync(full);
-        } catch {
-          unsupported.push(`named path not found in workspace: ${candidate}`);
-        }
+        if (claim.kind === 'unsupported') unsupported.push(`named path not found in workspace: ${candidate}`);
       }
 
       // 2. RECORD GROUNDING — every CSV-shaped factual row quoted in the artifact must

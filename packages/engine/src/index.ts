@@ -787,4 +787,4 @@ export {
   type TypedExecutorConfig,
   type WorkspaceFsSeams,
 } from './executor/execution-safety.js';
-export { createGoalExecutionBudget } from './runtime/goal-execution-budget.js';
+export { createGoalExecutionBudget, goalEnvelopeExhausted } from './runtime/goal-execution-budget.js';

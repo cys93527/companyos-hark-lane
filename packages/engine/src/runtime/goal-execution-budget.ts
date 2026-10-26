@@ -4,6 +4,24 @@ const refuse = (reason: string): never => { throw domainError('POLICY_DENIED', '
 const integer = (n: number): boolean => Number.isSafeInteger(n) && n >= 0;
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
+/**
+ * H15d-fix5 (acceptance run 5, hark-live-goal 40359081704): the envelope can no longer admit any call
+ * this Goal has been making. True when every call slot is spent, OR when no bound the Goal has ever
+ * reserved (its routes' admission bounds) still fits: settled cost/tokens + every in-flight bound + that
+ * bound > cap. Run 5 spent 2 981 170 of 3 200 000; each further 224 768-micro bound was refused, but the
+ * standing check only knew `reservations >= maxCalls`, so 13 refused supervisor turns ended as
+ * AUTONOMY_STALLED instead of the typed GOAL_BUDGET_EXHAUSTED operator block. Uses the same arithmetic
+ * as `reserve`, so it can never disagree with an admission decision on a seen bound.
+ */
+export function goalEnvelopeExhausted(state: GoalExecutionBudget): boolean {
+  if (state.reservations.length >= state.policy.maxCalls) return true;
+  if (state.reservations.length === 0) return false;
+  const tokens = state.reservations.reduce((n, r) => n + (r.usage?.tokens ?? r.bound.inputTokens + r.bound.outputTokens), 0);
+  const cost = state.reservations.reduce((n, r) => n + (r.usage?.costMicros ?? r.bound.costMicros), 0);
+  return state.reservations.every(({ bound }) =>
+    tokens + bound.inputTokens + bound.outputTokens > state.policy.maxTokens || cost + bound.costMicros > state.policy.maxCostMicros);
+}
+
 /** ADR-A: the existing durable admission authority extended to a Goal-wide envelope. */
 export function createGoalExecutionBudget(store: ExecutionBudgetStore, now: () => number) {
   const readRequired = async (runId: string): Promise<GoalExecutionBudget> => {

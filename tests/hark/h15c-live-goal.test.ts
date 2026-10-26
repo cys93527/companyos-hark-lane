@@ -48,8 +48,12 @@ describe('H15d realistic acceptance run budget', () => {
   const t = JSON.parse(readFileSync('installer/budget/deepseek-flash.h15d.approval-template.json', 'utf8')) as typeof template;
   it('every worst-case call fits the separate CNY 5 ledger; input bound is the enforced body-byte bound', () => {
     const perCall = Math.ceil((t.proof.tokens.inputUpperBound * t.proof.pricing.inputRate + t.proof.tokens.outputUpperBound * t.proof.pricing.outputRate) / 1e6);
-    const ledger = JSON.parse(readFileSync('installer/budget/h15d-acceptance-ledger.json', 'utf8')) as { capMicros: number; entries: { micros: number }[] };
-    expect(ledger.capMicros).toBe(5_000_000);
+    // User 2026-10-26 22:47 CST: the CNY 5 ledger is closed; every further acceptance run is paid from
+    // the cumulative CNY 10 pool (UNKNOWN at worst case) and its cap must fit what the pool has left.
+    const closed = JSON.parse(readFileSync('installer/budget/h15d-acceptance-ledger.json', 'utf8')) as { capMicros: number };
+    expect(closed.capMicros).toBe(5_000_000);
+    const ledger = JSON.parse(readFileSync('installer/budget/pool-cny10-ledger.json', 'utf8')) as { capMicros: number; entries: { micros: number }[] };
+    expect(ledger.capMicros).toBe(10_000_000);
     const spent = ledger.entries.reduce((n, e) => n + e.micros, 0);
     expect(t.cap.maxCostMicros).toBeLessThanOrEqual(ledger.capMicros - spent);
     // H15d-fix2: the money limit is maxCostMicros, enforced per admission by the durable

@@ -9,7 +9,7 @@
   "cap": {
     "maxCalls": 160,
     "maxTokens": 16015360,
-    "maxCostMicros": 3200000,
+    "maxCostMicros": 4000000,
     "durationMs": 2400000
   },
   "proof": {
@@ -36,7 +36,7 @@
     "tokens": {
       "inputUpperBound": 96000,
       "outputUpperBound": 4096,
-      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 4096 (2048 truncated the planner JSON in hark-live-goal 40308697073), set by hark-live-goal acceptance mode); input bound 96000 tokens, ENFORCED: the admission refuses a kernel request body larger than 96000 bytes (a byte-level BPE token covers >= 1 byte), so an UNKNOWN settlement at the bound never undercounts; the kernel's working window is derived from it (96000/4 = 24000 tokens, compaction mounted) and an oversize body is answered as context_length_exceeded so the kernel compacts (H15d-fix3 after hark-live-goal 40320541076). Cap 3200000 <= CNY 10 pool remainder 7162754 (installer/budget/pool-cny10-ledger.json). maxCalls is the runaway guard only (160 = run 4 legitimate work 111 calls + margin; run 4 hit 120 after a false grounding failure on `node:assert/strict`); money is bounded by maxCostMicros."
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 4096 (2048 truncated the planner JSON in hark-live-goal 40308697073), set by hark-live-goal acceptance mode); input bound 96000 tokens, ENFORCED: the admission refuses a kernel request body larger than 96000 bytes (a byte-level BPE token covers >= 1 byte), so an UNKNOWN settlement at the bound never undercounts; the kernel's working window is derived from it (96000/4 = 24000 tokens, compaction mounted) and an oversize body is answered as context_length_exceeded so the kernel compacts (H15d-fix3 after hark-live-goal 40320541076). Cap 4000000 <= CNY 10 pool remainder 4181584 (installer/budget/pool-cny10-ledger.json; run 5 spent 2981170 at cap 3200000). maxCalls is the runaway guard only (160 = run 4 legitimate work 111 calls + margin; run 4 hit 120 after a false grounding failure on `node:assert/strict`); money is bounded by maxCostMicros."
     },
     "validForMs": 604800000
   }
