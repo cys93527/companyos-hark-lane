@@ -9,7 +9,7 @@ import { registerOfflineFixture, registerOfflineSpawnFailure } from '../support/
  * is needed to prove the execution model.
  */
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -159,6 +159,14 @@ interface MakeOptions {
   readonly safeEnvAdditions?: Readonly<Record<string, string>>;
   /** Which fixture script a trusted slot runs (a sleeping "tests" slot for timeout tests). */
   readonly slotScripts?: Readonly<Record<string, string>>;
+  /**
+   * Arm every deadline only once the fixture has published this file in scriptDir. A
+   * timeout test must prove the kill of a process that RAN; on a loaded host Node can
+   * take longer than the test deadline to reach its first line, which killed the child
+   * before it ever wrote its pid (hark-ubuntu 40264045800). The deadline is still the
+   * production timer path — only its start is anchored to the child's readiness.
+   */
+  readonly armTimersAfter?: string;
 }
 
 const make = async (options: MakeOptions = {}): Promise<Fixture> => {
@@ -185,12 +193,32 @@ const make = async (options: MakeOptions = {}): Promise<Fixture> => {
   if (!bootstrap.ok) throw new Error(bootstrap.error.message);
 
   const manager = createWorkspaceManager();
-  const runner = createRepositoryProcessRunner({
-    clock,
-    timer: (ms, onTimeout) => {
+  const readinessFile = options.armTimersAfter === undefined ? null : join(scriptDir, options.armTimersAfter);
+  const armTimer = (ms: number, onTimeout: () => void): (() => void) => {
+    if (readinessFile === null) {
       const handle = setTimeout(onTimeout, ms);
       return () => clearTimeout(handle);
-    },
+    }
+    let handle: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    const readyBy = Date.now() + 30_000;
+    const poll = (): void => {
+      if (cancelled) return;
+      if (existsSync(readinessFile) || Date.now() > readyBy) {
+        handle = setTimeout(onTimeout, ms);
+        return;
+      }
+      handle = setTimeout(poll, 10);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (handle !== null) clearTimeout(handle);
+    };
+  };
+  const runner = createRepositoryProcessRunner({
+    clock,
+    timer: armTimer,
     contentStore: createFilesystemArtifactContentStore({ casRoot }),
     // The registry hands `cancel` an invocation id; ToolRequest only exposed the execution
     // id, so this read-only lookup is what lets a cancellation find its process.
@@ -218,10 +246,7 @@ const make = async (options: MakeOptions = {}): Promise<Fixture> => {
     secrets: async () => [],
     ...(db.toolInvocationClaims === null ? {} : { claims: db.toolInvocationClaims }),
     ...(db.toolInvocationIndex === null ? {} : { invocationIndex: db.toolInvocationIndex }),
-    timer: (ms, onTimeout) => {
-      const handle = setTimeout(onTimeout, ms);
-      return () => clearTimeout(handle);
-    },
+    timer: armTimer,
   });
   for (const spec of REPOSITORY_PROCESS_TOOL_SPECS) {
     const record =
@@ -775,7 +800,7 @@ describe('repository process tools on the real registry', () => {
   it('terminates a timed-out command and leaves no process behind', async () => {
     const root = tempDir();
     const slots = { tests: 'tagged-sleep.js' };
-    const f = await make({ timeoutMs: 700, slotScripts: slots });
+    const f = await make({ timeoutMs: 700, slotScripts: slots, armTimersAfter: 'self.pid' });
     await openWorkspaceWithScripts(f, root, { slotScripts: slots });
     const outcome = await f.invoke('repo.test-runner', {});
     expect(outcome.ok).toBe(false);

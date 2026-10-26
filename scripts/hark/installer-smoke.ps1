@@ -31,6 +31,20 @@ $app = Start-Process -FilePath $exe -PassThru
 Start-Sleep -Seconds 25
 $alive = -not $app.HasExited
 Check 'app-alive-after-25s' $alive ("hasExited=" + $app.HasExited + $(if ($app.HasExited) { " exit=" + $app.ExitCode } else { '' }))
+# H15c: first start stages + re-hashes the 4.8k-file kernel closure before the window
+# opens (quiescent startup), which took 22.3 s on a runner (hark-installer 40264045794)
+# and overran a fixed 25 s sample (40263388350). Wait for the app's OWN startup verdict
+# ('window ready', or a startup failure / exit) instead of sampling a fixed instant.
+$startupDeadline = (Get-Date).AddSeconds(180)
+$startupSeen = $false
+while ((Get-Date) -lt $startupDeadline -and -not $app.HasExited) {
+  $probe = @(Get-ChildItem (Join-Path $userData 'logs') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -ErrorAction SilentlyContinue })
+  if (@($probe | Where-Object { $_ -match '"msg":"(window ready|startup failed[^"]*)"' }).Count -gt 0) { $startupSeen = $true; break }
+  Start-Sleep -Seconds 2
+}
+$startupSeconds = [math]::Round(((Get-Date) - $app.StartTime).TotalSeconds, 1)
+Check 'startup-completed' ($startupSeen -and -not $app.HasExited) "window-ready-after=${startupSeconds}s"
+$result.startupSeconds = $startupSeconds
 $logs = Get-ChildItem (Join-Path $userData 'logs') -File -ErrorAction SilentlyContinue
 Check 'userdata-logs-written' ($logs.Count -gt 0) (($logs | ForEach-Object Name) -join ',')
 if ($logs) { $logs | ForEach-Object { Copy-Item $_.FullName (Join-Path $Evidence ("app-" + $_.Name)) } }

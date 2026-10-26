@@ -3762,7 +3762,7 @@ export async function composeCoreServices(
       const health = await checkEmbeddedKernelHealth(embeddedRuntime.value);
       kernelHealthHolder.report = health;
       embeddedKernelHealthy = health.status === 'HEALTHY';
-      if (embeddedKernelHealthy) activeLogger.info('embedded kernel health', { status: health.status, version: health.observedVersion, upstreamSha: health.upstreamSha, elapsedMs: health.elapsedMs });
+      if (embeddedKernelHealthy) activeLogger.info('embedded kernel health', { status: health.status, version: health.observedVersion, upstreamSha: health.upstreamSha, elapsedMs: health.elapsedMs, phases: health.phases });
       else activeLogger.warn('embedded kernel REFUSED by the first-start health check', { reasonCode: health.reasonCode, detail: health.detail, declared: health.declaredVersion, observed: health.observedVersion });
     } else if (embeddedRuntime !== null && !embeddedRuntime.ok) {
       activeLogger.warn('embedded kernel unavailable', { reason: embeddedRuntime.error.message });

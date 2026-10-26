@@ -34,6 +34,8 @@ export interface KernelHealthReport {
   readonly nodeRuntime: string | null;
   readonly closureGeneration: string;
   readonly elapsedMs: number;
+  /** Where first-start time goes (stage copy + closure re-hash, kernel spawn, post-spawn re-hash). */
+  readonly phases?: { readonly stageMs: number; readonly spawnMs: number; readonly verifyMs: number };
   readonly checkedAt: string;
 }
 
@@ -69,7 +71,9 @@ export const checkEmbeddedKernelHealth = async (
     elapsedMs: Date.now() - started, checkedAt: now().toISOString(),
   });
   if (declared === null) return refuse('KERNEL_VERSION_UNDECLARED', 'The kernel manifest declares no version to read back.', null, null);
+  const stageStarted = Date.now();
   const stage = runtime.prepareAttemptStage({ attemptId: 'kernel-health' });
+  const stageMs = Date.now() - stageStarted;
   if (!stage.ok) return refuse('KERNEL_STAGE_REFUSED', stage.error.message, null, null);
   const node = stage.value.nodeExecutablePath ?? process.execPath;
   const runAsNode = stage.value.nodeExecutablePath === null && process.versions.electron !== undefined;
@@ -81,6 +85,7 @@ export const checkEmbeddedKernelHealth = async (
   }
   if (runAsNode) env['ELECTRON_RUN_AS_NODE'] = '1';
   try {
+    const spawnStarted = Date.now();
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean; spawnError: string | null }>((resolvePromise) => {
       let stdout = '';
       let stderr = '';
@@ -106,6 +111,7 @@ export const checkEmbeddedKernelHealth = async (
         resolvePromise({ code, stdout, stderr, timedOut, spawnError: null });
       });
     });
+    const spawnMs = Date.now() - spawnStarted;
     if (result.spawnError !== null) return refuse('KERNEL_SPAWN_FAILED', result.spawnError, null, node);
     if (result.timedOut) return refuse('KERNEL_HEALTH_TIMEOUT', 'The kernel did not answer --version in time.', null, node);
     const observed = result.stdout.trim().split(/\r?\n/u).pop()?.trim() ?? '';
@@ -113,10 +119,12 @@ export const checkEmbeddedKernelHealth = async (
     if (observed !== declared) {
       return refuse('KERNEL_VERSION_MISMATCH', `The kernel reported "${observed}" but the manifest declares "${declared}".`, observed, node);
     }
+    const verifyStarted = Date.now();
     const post = stage.value.verifyStaged();
+    const verifyMs = Date.now() - verifyStarted;
     if (!post.ok) return refuse('KERNEL_STAGE_REFUSED', post.error.message, observed, node);
     return { ...base, status: 'HEALTHY', reasonCode: null, detail: 'version readback matches the manifest', observedVersion: observed, nodeRuntime: node,
-      elapsedMs: Date.now() - started, checkedAt: now().toISOString() };
+      elapsedMs: Date.now() - started, phases: { stageMs, spawnMs, verifyMs }, checkedAt: now().toISOString() };
   } finally {
     try { rmSync(home, { recursive: true, force: true }); } catch { /* best-effort scratch cleanup */ }
   }
