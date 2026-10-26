@@ -164,6 +164,30 @@ try {
   Check 'L3.file.userDataWrite.denied' ($C -and $C.files.'write:userData'.outcome -eq 'DENIED') $C.files.'write:userData'
   $report.residuals = [ordered]@{ dns = (Snap $C.net.dns) }
 
+  # L3b - PRODUCTION launcher (isolated-launch.cs -> companyos-isolated-launch.exe, built with the csc that ships with
+  # .NET Framework 4 on every Windows), spawned from Node with stdio pipes exactly like the app spawns the kernel.
+  $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+  $launcherExe = Join-Path $OutDir 'companyos-isolated-launch.exe'
+  $ErrorActionPreference = 'Continue'  # native stderr must stay data, not a terminating error (run 1)
+  $cscOut = & $csc /nologo /target:exe /optimize+ "/out:$launcherExe" /r:System.Security.dll (Join-Path $PSScriptRoot 'isolated-launch.cs') 2>&1 | Out-String
+  $report.steps.L3b_build = Snap ([ordered]@{ exit = $LASTEXITCODE; out = $cscOut })
+  Progress 'step' 'L3b_build' $report.steps.L3b_build
+  Check 'L3b.build' (Test-Path -LiteralPath $launcherExe) $cscOut
+  Add-Type -AssemblyName System.Security
+  $credFile = Join-Path $userData 'isolation\agent-credential.dpapi'
+  [IO.File]::WriteAllBytes($credFile, [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($password), $null, 'CurrentUser'))
+  $smokeOut = Join-Path $OutDir 'launch-smoke.json'
+  $smokeLog = & $node (Join-Path $PSScriptRoot 'launch-smoke.cjs') $launcherExe $credFile $account $workspace $node $smokeOut 2>&1 | Out-String
+  $ErrorActionPreference = 'Stop'
+  $report.steps.L3b_smoke = Snap $smokeLog
+  Progress 'step' 'L3b_smoke' $report.steps.L3b_smoke
+  $smoke = if (Test-Path -LiteralPath $smokeOut) { [IO.File]::ReadAllText($smokeOut) | ConvertFrom-Json } else { $null }
+  $expected = @('L3b.identity', 'L3b.argvVerbatim', 'L3b.stderrPiped', 'L3b.exitCodePropagated', 'L3b.stdinPiped', 'L3b.killLauncherReapsTree', 'L3b.badCredentialFailsClosed', 'L3b.internetBlockedThroughLauncher')
+  foreach ($id in $expected) {
+    $c = if ($smoke -and $smoke.checks) { @($smoke.checks | Where-Object { $_.id -eq $id }) | Select-Object -First 1 } else { $null }
+    Check $id ($null -ne $c -and $c.ok -eq $true) $(if ($c) { $c.observed } else { $smokeLog })
+  }
+
   # L4 - observation only (decides whether the start check needs a readable WFP SD or an elevated broker).
   $pub = Join-Path $env:ProgramData "cos-h16l-$tag"
   New-Item -ItemType Directory -Force -Path $pub | Out-Null
@@ -201,6 +225,8 @@ try {
     adminDenyOnly = if (Test-Path "$pub\l4b-groups.txt") { [bool]((Get-Content -LiteralPath "$pub\l4b-groups.txt" | Out-String) -match 'BUILTIN\\Administrators.*Group used for deny only') } else { $null }
   }
   Progress 'step' 'L4b_sameUserUnelevated' $report.steps.L4b_sameUserUnelevated
+  $l4bJson = $null; if ($report.steps.L4b_sameUserUnelevated.status) { try { $l4bJson = ($report.steps.L4b_sameUserUnelevated.status -split "`n" | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json } catch {} }
+  Check 'L4b.sameUserUnelevated.isolated' ($l4bJson -and $l4bJson.state -eq 'ISOLATED' -and $report.steps.L4b_sameUserUnelevated.adminDenyOnly -eq $true) $report.steps.L4b_sameUserUnelevated
 
   # L5
   [CompanyOSWfp]::Open() | Out-Null
@@ -249,7 +275,7 @@ finally {
   if (Test-Path -LiteralPath $statePath) { $report.finalCleanup = Snap ((Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })).json) }
   Remove-LocalUser -Name $stdUser -ErrorAction SilentlyContinue
   foreach ($p in @($s1, $s2)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 25) { $exit = 1 }
+  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 40) { $exit = 1 }
   $report.finishedAt = (Get-Date).ToString('o')
   $report.verdict = if ($exit -eq 0) { 'ISOLATION_LIFECYCLE_PASS' } else { 'ISOLATION_LIFECYCLE_FAIL' }
   if ($report.fatal) { $report.fatal = Snap $report.fatal; Progress 'fatal' 'fatal' $report.fatal }

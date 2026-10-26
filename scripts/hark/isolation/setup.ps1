@@ -21,7 +21,10 @@ param(
   [string[]]$StateDirs = @(),
   [string[]]$KernelDirs = @(),
   [string[]]$DenyDirs = @(),
-  [string]$AccountName
+  [string]$AccountName,
+  # The user whose UNELEVATED app checks status (default: the identity running setup = the installing user under UAC
+  # same-user elevation; the app passes its own SID explicitly for over-the-shoulder elevation).
+  [string]$ReaderSid
 )
 
 $ErrorActionPreference = 'Stop'
@@ -133,7 +136,9 @@ switch ($Action) {
 
     Load-Wfp
     $rc = [CompanyOSWfp]::Open()
-    if ($rc -eq 0) { $rc = [CompanyOSWfp]::Install($sid, [uint16]$BrokerPort) }
+    $reader = if ($ReaderSid) { $ReaderSid } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+    if ($reader -notmatch '^S-1-5-21-[0-9-]+$') { Out-Result ([ordered]@{ ok = $false; error = 'READER_SID_INVALID' }) 1 }
+    if ($rc -eq 0) { $rc = [CompanyOSWfp]::Install($sid, [uint16]$BrokerPort, $reader) }
     $wfpLog = @([CompanyOSWfp]::Log)
     [CompanyOSWfp]::Close()
     if ($rc -ne 0) { Out-Result ([ordered]@{ ok = $false; error = ('WFP_INSTALL_FAILED 0x{0:x}' -f $rc); wfpLog = $wfpLog }) 1 }

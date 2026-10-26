@@ -97,7 +97,17 @@ public static class CompanyOSWfp {
     return 0;
   }
 
-  static uint AddBlock(Guid key, Guid layer, string sid, ushort allowPort, string name) {
+  // Lifecycle run 6 (40346676658, L4b): the installing user's UNELEVATED status check got 0x5 (ACCESS_DENIED) on
+  // provider/sublayer/both filters - the default WFP object SD only lets administrators read. Every object is now added
+  // with an explicit SD: administrators + SYSTEM full control, the installing (reader) user GENERIC_READ, nobody else.
+  static IntPtr ObjectSd(string readerSid) {
+    IntPtr sd; uint size;
+    string sddl = "O:BAG:BAD:(A;;GA;;;BA)(A;;GA;;;SY)" + (string.IsNullOrEmpty(readerSid) ? "" : "(A;;GR;;;" + readerSid + ")");
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, out sd, out size)) return IntPtr.Zero;
+    return sd;
+  }
+
+  static uint AddBlock(Guid key, Guid layer, string sid, ushort allowPort, string name, IntPtr objSd) {
     IntPtr sd; uint sdSize;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("O:LSD:(A;;CC;;;" + sid + ")", 1, out sd, out sdSize))
       return (uint)Marshal.GetLastWin32Error();
@@ -117,29 +127,35 @@ public static class CompanyOSWfp {
       f.providerKey = GuidPtr(PROVIDER_KEY);
       f.layerKey = layer; f.subLayerKey = SUBLAYER_KEY; f.weight.type = FWP_UINT8; f.weight.value = (IntPtr)15;
       f.numFilterConditions = (uint)n; f.filterCondition = conds; f.action.type = ACTION_BLOCK;
-      ulong id; uint rc = FwpmFilterAdd0(engine, ref f, IntPtr.Zero, out id);
+      ulong id; uint rc = FwpmFilterAdd0(engine, ref f, objSd, out id);
       Log.Add("add " + name + " rc=" + Hex(rc) + " id=" + id);
       return rc;
     } finally { LocalFree(sd); }
   }
 
   // Idempotent (re)install in ONE transaction: stale objects with our keys are replaced, never duplicated.
-  public static uint Install(string sid, ushort brokerPort) {
+  public static uint Install(string sid, ushort brokerPort, string readerSid) {
     if (brokerPort == 0) return 0x80070057;
+    IntPtr objSd = ObjectSd(readerSid);
+    if (objSd == IntPtr.Zero) return (uint)Marshal.GetLastWin32Error();
+    try { return InstallWith(sid, brokerPort, objSd); } finally { LocalFree(objSd); }
+  }
+
+  static uint InstallWith(string sid, ushort brokerPort, IntPtr objSd) {
     uint rc = FwpmTransactionBegin0(engine, 0);
     if (rc != 0) return rc;
     rc = DeleteObjects();
     if (rc == 0) {
       var p = new PROVIDER(); p.providerKey = PROVIDER_KEY; p.displayData.name = Str("CompanyOS agent isolation"); p.flags = PROVIDER_FLAG_PERSISTENT;
-      rc = FwpmProviderAdd0(engine, ref p, IntPtr.Zero); Log.Add("add provider rc=" + Hex(rc));
+      rc = FwpmProviderAdd0(engine, ref p, objSd); Log.Add("add provider rc=" + Hex(rc));
     }
     if (rc == 0) {
       var sl = new SUBLAYER(); sl.subLayerKey = SUBLAYER_KEY; sl.displayData.name = Str("CompanyOS agent isolation"); sl.flags = SUBLAYER_FLAG_PERSISTENT;
       sl.providerKey = GuidPtr(PROVIDER_KEY); sl.weight = 0xFFFF;
-      rc = FwpmSubLayerAdd0(engine, ref sl, IntPtr.Zero); Log.Add("add sublayer rc=" + Hex(rc));
+      rc = FwpmSubLayerAdd0(engine, ref sl, objSd); Log.Add("add sublayer rc=" + Hex(rc));
     }
-    if (rc == 0) rc = AddBlock(FILTER_V4_KEY, LAYER_CONNECT_V4, sid, brokerPort, "CompanyOS agent v4: block all except broker port " + brokerPort);
-    if (rc == 0) rc = AddBlock(FILTER_V6_KEY, LAYER_CONNECT_V6, sid, 0, "CompanyOS agent v6: block all");
+    if (rc == 0) rc = AddBlock(FILTER_V4_KEY, LAYER_CONNECT_V4, sid, brokerPort, "CompanyOS agent v4: block all except broker port " + brokerPort, objSd);
+    if (rc == 0) rc = AddBlock(FILTER_V6_KEY, LAYER_CONNECT_V6, sid, 0, "CompanyOS agent v6: block all", objSd);
     if (rc == 0) { rc = FwpmTransactionCommit0(engine); Log.Add("commit rc=" + Hex(rc)); }
     else { FwpmTransactionAbort0(engine); Log.Add("abort after rc=" + Hex(rc)); }
     return rc;
