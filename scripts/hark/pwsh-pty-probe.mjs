@@ -47,12 +47,23 @@ try {
     { name: 'production-guard', args: ['-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (guard ?? '').split('\\').join('/')] },
     { name: 'upstream-default', args: ['-NoLogo', '-NoProfile'] },
   ];
+  // (c)/(d) the kernel's workspace-write confinement: on win32 the terminal argv is wrapped by
+  // the windows-acl runner ([node, runner.js, --workspace, --temp, --mode, --, argv...]) and the
+  // shell runs under the WRITE_RESTRICTED Low-integrity token (sandbox-local windowsAclRunnerInvocation).
+  const runnerJs = join(runtimeRoot, 'packages', 'sandbox', 'sandbox-windows-acl', 'lib', 'runner.js');
+  const nodeExe = stage.value.nodeExecutablePath ?? process.execPath;
+  const tempRoot = mkdtempSync(join(tmpdir(), 'companyos-pty-probe-temp-'));
+  report.runner = { runnerJs, nodeExe };
+  const wrap = (argv) => ({ file: nodeExe, args: [runnerJs, '--workspace', ws, '--temp', tempRoot, '--mode', 'workspace-write', '--', ...argv] });
+  cases.push({ name: 'runner-cmd-echo', ...wrap([join(process.env.SystemRoot ?? 'C:/Windows', 'System32', 'cmd.exe'), '/c', 'echo RUNNER-OK']) });
+  cases.push({ name: 'runner-pwsh-production', ...wrap(['pwsh.exe', ...cases[0].args]) });
+  cases.push({ name: 'runner-pwsh-default', ...wrap(['pwsh.exe', '-NoLogo', '-NoProfile']) });
   for (const c of cases) {
-    const rec = { name: c.name, args: c.args, timeline: [], markerSeen: false, promptSeen: false, commandOutputSeen: false };
+    const rec = { name: c.name, file: c.file ?? 'pwsh.exe', args: c.args, timeline: [], markerSeen: false, promptSeen: false, commandOutputSeen: false };
     let out = '';
     const t0 = Date.now();
     try {
-      const p = pty.spawn('pwsh.exe', c.args, { name: 'xterm-256color', cols: 160, rows: 40, cwd: ws, env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' } });
+      const p = pty.spawn(c.file ?? 'pwsh.exe', c.args, { name: 'xterm-256color', cols: 160, rows: 40, cwd: ws, env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' } });
       p.onData((d) => { out += d; rec.timeline.push({ ms: Date.now() - t0, bytes: d.length }); });
       let exited = null;
       p.onExit((e) => { exited = e; });
