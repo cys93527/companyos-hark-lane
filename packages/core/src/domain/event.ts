@@ -105,6 +105,9 @@ export const CORE_DOMAIN_EVENT_TYPES = [
   // V1 EFFICIENCY E1-B: bounded observational in-attempt activity (coalesced
   // kernel stdout windows; ACTIVITY_IS_NOT_PROGRESS; read by nothing in execution)
   'executor.attempt_activity',
+  // Hark H15c: one evidence row per loopback model-broker exchange (status, sizes,
+  // usage disposition) — explains a budget reservation left UNKNOWN; never content.
+  'executor.model_exchange_observed',
   // model router audit (Sprint 10A: contract only - no emitter until 10B)
   'router.requested',
   'router.candidates_built',
@@ -265,6 +268,7 @@ export const CORE_EVENT_EMITTERS: Readonly<Record<CoreDomainEventType, string>> 
   'executor.dispatch_settled': 'desktop:provider-dispatch',
   'executor.tool_invocation_requested': 'desktop:embedded-executor',
   'executor.attempt_activity': 'desktop:embedded-executor',
+  'executor.model_exchange_observed': 'desktop:embedded-executor',
   'router.requested': 'model-router:S10',
   'router.candidates_built': 'model-router:S10',
   'router.recommendation_created': 'model-router:S10',

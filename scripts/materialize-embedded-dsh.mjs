@@ -179,6 +179,7 @@ const materialize = () => {
       '            apiKeyEnv: "{{ROUTE_API_KEY_ENV}}"',
       '            api: openai-completions',
       '            baseURL: "{{ROUTE_BASE_URL}}"',
+      '            {{ROUTE_COMPAT}}',
       '            models:',
       '              - id: "{{ROUTE_MODEL}}"',
       '                name: CompanyOS selected model',

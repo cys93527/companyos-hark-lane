@@ -41,12 +41,18 @@ const runPong = async (runtime) => {
   const workspace = mkdtempSync(join(tmpdir(), 'companyos-kernel-pong-ws-'));
   scenario[0].tool_call.arguments.file_path = join(workspace, 'pong.txt');
   let calls = 0;
+  const requestBytes = [];
+  const capFields = [];
   const sse = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || !req.url?.includes('/chat/completions')) { res.writeHead(404).end(); return; }
-    req.resume();
+    const bodyChunks = [];
+    req.on('data', (c) => bodyChunks.push(c));
     req.on('end', () => {
       calls += 1;
+      requestBytes.push(Buffer.concat(bodyChunks).length);
+      try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); capFields.push({ max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null }); } catch { capFields.push(null); }
+      if (process.env.KERNEL_PONG_DUMP) writeFileSync(`${process.env.KERNEL_PONG_DUMP}-${calls}.json`, Buffer.concat(bodyChunks));
       const step = scenario[Math.min(calls - 1, scenario.length - 1)];
       const id = `pong-${calls}`;
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -67,7 +73,10 @@ const runPong = async (runtime) => {
   try {
     const stage = runtime.prepareAttemptStage({ attemptId: 'pong' });
     if (!stage.ok) return { ok: false, reason: 'STAGE', detail: stage.error.message };
-    const route = { providerId: 'companyos-loopback', modelId: 'loopback-model', baseURL: `http://127.0.0.1:${port}/v1`, apiKeyEnv: 'COMPANYOS_LOOPBACK_KEY', apiKeyValue: 'loopback', contextWindow: 128000, maxTokens: 4096 };
+    const route = { providerId: 'companyos-loopback', modelId: 'loopback-model', baseURL: `http://127.0.0.1:${port}/v1`, apiKeyEnv: 'COMPANYOS_LOOPBACK_KEY', apiKeyValue: 'loopback', contextWindow: 128000, maxTokens: 4096,
+      // H15c: render the DeepSeek wire compat exactly as a real DeepSeek route does (the kernel must parse it
+      // and cap output with max_tokens) while every byte still goes to this local fake upstream.
+      upstreamBaseURL: 'https://api.deepseek.com' };
     const home = stage.value.newDshHome({ attemptId: 'pong', workspaceRoot: workspace, route });
     if (!home.ok) return { ok: false, reason: 'HOME', detail: home.error.message };
     const env = { DSH_HOME: home.value.dshHome, HOME: home.value.dshHome, USERPROFILE: home.value.dshHome, APPDATA: join(home.value.dshHome, 'appdata'), COMPANYOS_LOOPBACK_KEY: 'loopback', NO_COLOR: '1' };
@@ -91,8 +100,9 @@ const runPong = async (runtime) => {
     const fileText = existsSync(join(workspace, 'pong.txt')) ? readFileSync(join(workspace, 'pong.txt'), 'utf8') : null;
     const finalLine = out.stdout.split(/\r?\n/u).filter((l) => l.includes('"type":"final"') || l.includes('"type": "final"')).pop() ?? null;
     const post = stage.value.verifyStaged();
-    const ok = out.code === 0 && fileText === 'PONG' && finalLine !== null && finalLine.includes('PONG') && calls >= 2 && post.ok;
-    return { ok, exitCode: out.code, modelCalls: calls, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 ? {} : { startupLog }) };
+    const ok = out.code === 0 && fileText === 'PONG' && finalLine !== null && finalLine.includes('PONG') && calls >= 2 && post.ok
+      && capFields.length >= 1 && capFields.every((c) => c !== null && c.max_tokens === 4096 && c.max_completion_tokens === null && c.store === null);
+    return { ok, exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 ? {} : { startupLog }) };
   } finally {
     server.close();
   }

@@ -1,3 +1,4 @@
+import { routeWireCompat } from './models/route-wire-compat.js';
 import { domainError, type CostAdmissionBound, type InvocationResult } from '@companyos/core';
 import { createGoalExecutionBudget } from '@companyos/engine';
 import type { SelectedModelRoute } from '@companyos/engine';
@@ -116,7 +117,9 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
         ...lease,
         async admitBody(bytes: Uint8Array) {
           const body = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
-          const requestedMax = body['max_completion_tokens'] ?? body['max_tokens'];
+          // H15c: bound by the cap field the REAL upstream honours (DeepSeek: max_tokens only).
+          const wire = binding.endpoint === undefined ? null : routeWireCompat(binding.endpoint);
+          const requestedMax = wire?.maxTokensField === 'max_tokens' ? body['max_tokens'] : body['max_completion_tokens'] ?? body['max_tokens'];
           if (body['model'] !== modelId || typeof requestedMax !== 'number' || !Number.isSafeInteger(requestedMax) || requestedMax < 1 || requestedMax > maxOutputTokens) throw domainError('POLICY_DENIED', 'Kernel request violates the pinned model/token bound.', { reason: 'GOAL_KERNEL_REQUEST_BOUND_MISMATCH', retryable: false });
           return coordinator.admit({ runId: input.runId, executionId: input.attemptId, modelKey, networkAttempt: ++networkAttempt, maxOutputTokens: requestedMax, binding });
         },

@@ -37,6 +37,7 @@ import {existsSync} from 'node:fs';
 
 import {
   startModelBroker,
+  type ModelBrokerExchangeObservation,
   type DshSandboxMode,
   type EmbeddedDshModelRoute,
   type EmbeddedDshRuntime,
@@ -811,9 +812,23 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
       // both ways, and dies with the invocation (in-process; never a child process,
       // never a port held past the attempt, never a secret in kernel-visible config
       // or env — the Sprint24 §35 secret law holds literally).
+      const exchangeAudit = embedded.toolInvocationAudit;
       const broker = await startModelBroker({
         upstreamBaseURL: modelRoute.baseURL,
         bearer: modelRoute.apiKeyValue,
+        ...(exchangeAudit === undefined ? {} : {
+          observe: (observation: ModelBrokerExchangeObservation) => {
+            const at = new Date().toISOString();
+            void exchangeAudit.append([
+              createCoreDomainEvent(
+                'executor.model_exchange_observed',
+                {type: 'ExecutionAttempt', id: String(request.attemptId)},
+                {attemptId: String(request.attemptId), taskId: String(request.taskId), runId: String(request.runId), ...observation, at},
+                {traceId: `trace_attempt_${String(request.attemptId)}`, actorId: 'system:dsh-executor', now: at, ids: exchangeAudit.ids},
+              ),
+            ]).catch((error: unknown) => exchangeAudit.onFailure(error));
+          },
+        }),
         ...(request.modelCallAdmission === undefined ? {} : { admission: request.modelCallAdmission }),
       });
       if (!broker.ok) {
@@ -842,6 +857,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         sandboxMode: dshSandboxModeOf(request.work.goalStructured),
         route: {
           ...modelRoute,
+          upstreamBaseURL: modelRoute.baseURL,
           baseURL: broker.value.url,
           apiKeyEnv: 'COMPANYOS_MODEL_ROUTE_ACCESS',
           apiKeyValue: 'companyos-model-broker',

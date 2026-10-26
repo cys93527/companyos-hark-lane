@@ -23,6 +23,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, request as httpRequest, type ClientRequest, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { routeWireCompatYamlLine } from '../models/route-wire-compat.js';
 import type { Socket } from 'node:net';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
@@ -103,6 +104,8 @@ export interface EmbeddedDshModelRoute {
   readonly apiKeyValue: string;
   readonly contextWindow: number;
   readonly maxTokens: number;
+  /** H15c: the REAL upstream behind the broker (wire compat is judged from it, never the loopback URL). */
+  readonly upstreamBaseURL?: string;
 }
 
 /** One verified staged attempt: immutable-in-practice execution copy with pre/post-spawn gates. */
@@ -550,6 +553,7 @@ export const resolveEmbeddedDshRuntime = (input: {
       .replaceAll('{{DSH_SHELL_GUARD}}', stagedGuardScript)
       .replaceAll('{{ROUTE_PROVIDER}}', route.providerId)
       .replaceAll('{{ROUTE_MODEL}}', route.modelId)
+      .replaceAll('{{ROUTE_COMPAT}}', routeWireCompatYamlLine(route.upstreamBaseURL ?? route.baseURL))
       .replaceAll('{{ROUTE_BASE_URL}}', route.baseURL)
       .replaceAll('{{ROUTE_API_KEY_ENV}}', route.apiKeyEnv)
       .replaceAll('{{ROUTE_CONTEXT_WINDOW}}', String(route.contextWindow))
@@ -802,6 +806,19 @@ export interface ModelBrokerHandle {
   readonly close: () => void;
 }
 
+export interface ModelBrokerExchangeObservation {
+  readonly sequence: number;
+  /** How the exchange ended (upstream-end is the only path that can carry usage). */
+  readonly endedBy: string;
+  readonly upstreamStatus: number | null;
+  readonly requestBytes: number;
+  readonly responseBytes: number;
+  /** observed | absent | conflicting | invalid | oversize | http-error | not-reached */
+  readonly usageDisposition: string;
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
+  readonly durationMs: number;
+}
+
 const BROKER_MAX_BODY_BYTES = 8 * 1024 * 1024; // 8 MiB per model request
 const BROKER_MAX_CONCURRENCY = 4; // one kernel drives at most a handful of streams
 const BROKER_UPSTREAM_TIMEOUT_MS = 600_000; // generous: reasoning models stream long
@@ -812,6 +829,12 @@ export const startModelBroker = (input: {
   readonly bearer: string;
   /** Trusted-caller override of the upstream deadline (tests only; default 600s). */
   readonly upstreamTimeoutMs?: number;
+  /**
+   * H15c: one OBSERVATION per settled exchange (evidence only — never a secret, never
+   * request/response content). Lets an UNKNOWN budget reservation be explained from
+   * durable evidence (hark-live-goal 40266877047 left one unexplained).
+   */
+  readonly observe?: (observation: ModelBrokerExchangeObservation) => void;
 }): Promise<Result<ModelBrokerHandle, DomainError>> =>
   new Promise((resolve) => {
     let upstream: URL;
@@ -849,6 +872,7 @@ export const startModelBroker = (input: {
     const upstreamRequest = upstream.protocol === 'https:' ? httpsRequest : httpRequest;
     const routeSecret = randomBytes(24).toString('base64url');
     let inFlight = 0;
+    let exchangeSequence = 0;
     const sockets = new Set<Socket>();
 
     const refuse = (res: ServerResponse, status: number, reason: string): void => {
@@ -886,6 +910,12 @@ export const startModelBroker = (input: {
       // Reserve synchronously, including body receipt. This is a local transport
       // slot, NOT evidence that a remote charge has been cancelled or refunded.
       inFlight += 1;
+      exchangeSequence += 1;
+      const sequence = exchangeSequence;
+      const exchangeStarted = Date.now();
+      let upstreamStatus: number | null = null;
+      let responseBytes = 0;
+      let usageDisposition = 'not-reached';
       let settled = false;
       let proxied: ClientRequest | null = null;
       let admission: Awaited<ReturnType<NonNullable<typeof input.admission>>> | undefined;
@@ -895,11 +925,18 @@ export const startModelBroker = (input: {
         if (!res.headersSent) refuse(res, status, reason);
         else res.end();
       };
-      const settle = (usage: InvocationResult['usage'] | null = null): void => {
+      const settle = (usage: InvocationResult['usage'] | null = null, endedBy = 'unspecified'): void => {
         if (settled) return;
         settled = true;
         clearTimeout(deadline);
         inFlight -= 1;
+        try {
+          input.observe?.({
+            sequence, endedBy, upstreamStatus, requestBytes: size, responseBytes, usageDisposition,
+            usage: usage === null ? null : { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
+            durationMs: Date.now() - exchangeStarted,
+          });
+        } catch { /* observation is evidence only; it never changes the exchange */ }
         if (admission !== undefined) {
           if (abortListener !== undefined) admission.signal.removeEventListener('abort', abortListener);
           void admission.settle(usage).catch(() => { proxied?.destroy(); respond(502, 'budget settlement unavailable'); }).finally(() => admission?.release());
@@ -908,11 +945,11 @@ export const startModelBroker = (input: {
       const deadline = setTimeout(() => {
         proxied?.destroy();
         respond(504, 'upstream timeout');
-        settle();
+        settle(null, 'timeout');
       }, input.upstreamTimeoutMs ?? BROKER_UPSTREAM_TIMEOUT_MS);
-      req.on('aborted', () => { proxied?.destroy(); settle(); });
-      req.on('error', () => { proxied?.destroy(); respond(502, 'request failed'); settle(); });
-      res.on('close', () => { proxied?.destroy(); settle(); });
+      req.on('aborted', () => { proxied?.destroy(); settle(null, 'request-aborted'); });
+      req.on('error', () => { proxied?.destroy(); respond(502, 'request failed'); settle(null, 'request-error'); });
+      res.on('close', () => { proxied?.destroy(); settle(null, 'client-close'); });
       // BODY SIZE cap: read (and forward) at most BROKER_MAX_BODY_BYTES.
       const chunks: Buffer[] = [];
       let size = 0;
@@ -923,7 +960,7 @@ export const startModelBroker = (input: {
         if (size > BROKER_MAX_BODY_BYTES) {
           refused = true;
           refuse(res, 413, 'payload too large');
-          settle();
+          settle(null, 'payload-too-large');
           return;
         }
         chunks.push(chunk);
@@ -932,12 +969,12 @@ export const startModelBroker = (input: {
         if (refused || settled || res.writableEnded) return;
         if (input.admission !== undefined) {
           try { admission = await input.admission(Buffer.concat(chunks)); }
-          catch { respond(403, 'budget admission refused'); settle(); return; }
+          catch { respond(403, 'budget admission refused'); settle(null, 'admission-refused'); return; }
           if (settled || admission.signal.aborted) {
             await admission.settle(null); admission.release();
-            respond(403, 'execution stopped'); settle(); return;
+            respond(403, 'execution stopped'); settle(null, 'stopped'); return;
           }
-          abortListener = () => { proxied?.destroy(); respond(403, 'execution stopped'); settle(); };
+          abortListener = () => { proxied?.destroy(); respond(403, 'execution stopped'); settle(null, 'stopped'); };
           admission.signal.addEventListener('abort', abortListener, { once: true });
           if (admission.signal.aborted) { abortListener(); return; }
         }
@@ -960,7 +997,7 @@ export const startModelBroker = (input: {
         if (input.bearer !== '') {
           if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(input.bearer)) {
             refuse(res, 500, 'credential pointer refused');
-            settle();
+            settle(null, 'credential-refused');
             return;
           }
           headers['authorization'] = `Bearer ${input.bearer}`;
@@ -991,6 +1028,7 @@ export const startModelBroker = (input: {
                 if (lower === 'authorization' || lower === 'set-cookie') continue;
                 outHeaders[name] = value as string | number;
               }
+              upstreamStatus = upstreamResponse.statusCode ?? null;
               res.writeHead(upstreamResponse.statusCode ?? 502, outHeaders);
               // MID-STREAM upstream failure: end this exchange (a truncated stream the
               // kernel sees as a clear failure) — pipe() forwards no errors by itself.
@@ -1003,6 +1041,7 @@ export const startModelBroker = (input: {
               let observedBytes = 0;
               upstreamResponse.on('data', (chunk: Buffer) => {
                 observedBytes += chunk.length;
+                responseBytes = observedBytes;
                 if (observedBytes <= 1_048_576) usageChunks.push(chunk);
               });
               upstreamResponse.on('end', () => {
@@ -1023,28 +1062,29 @@ export const startModelBroker = (input: {
                     } catch { /* SSE terminator or malformed payload is not usage evidence. */ }
                   }
                 }
-                settle(conflictingUsage ? null : usage);
+                usageDisposition = observedBytes > 1_048_576 ? 'oversize' : (upstreamResponse.statusCode ?? 500) >= 400 ? 'http-error' : conflictingUsage ? 'conflicting' : usage === null ? 'absent' : 'observed';
+                settle(conflictingUsage ? null : usage, 'upstream-end');
               });
               upstreamResponse.pipe(res);
             },
           );
           proxied.on('error', () => {
-            settle();
+            settle(null, 'upstream-error');
             respond(502, 'upstream unavailable');
           });
           // The kernel side ending (completion, cancel or abort) releases the upstream
           // request too — destroying a settled request is a no-op, so no orphans remain.
-          proxied.on('close', () => settle());
+          proxied.on('close', () => settle(null, 'upstream-close'));
           proxied.end(Buffer.concat(chunks));
         } catch {
           // SYNCHRONOUS transport failure containment (the live-smoke P1): a request()
           // that throws (or any bug in this block) settles, destroys and answers 502
           // instead of unwinding into the host process.
-          settle();
+          settle(null, 'transport-throw');
           proxied?.destroy();
           respond(502, 'upstream unavailable');
         }
-      })().catch(() => { respond(502, 'broker admission unavailable'); settle(); }); });
+      })().catch(() => { respond(502, 'broker admission unavailable'); settle(null, 'broker-error'); }); });
     });
     server.on('error', (error) => {
       resolve(
