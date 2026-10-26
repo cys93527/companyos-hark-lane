@@ -66,6 +66,8 @@ export default tseslint.config(
       '.companyos-embedded/**',
       // Owned offline-test outputs include deliberately invalid negative fixtures.
       '.tmp/offline-gates/**',
+      // H15d: the acceptance goal's INPUT project (deliberately defective CommonJS fixture).
+      'scripts/hark/acceptance-fixture/**',
       // DRA-01 historical diagnostic entrypoints, preserved byte-for-byte.
       // Exclude only these two files; other tmp-e2e and product files stay linted.
       'tmp-e2e/minimal-app/main.js',

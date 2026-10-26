@@ -29,6 +29,7 @@ const EXECUTE_ENV = { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '2048' };
 describe.each([
   ['installer/budget/deepseek-flash.approval-template.json', ENV],
   ['installer/budget/deepseek-flash.h15c.approval-template.json', EXECUTE_ENV],
+  ['installer/budget/deepseek-flash.h15d.approval-template.json', EXECUTE_ENV],
 ] as const)('%s', (template, ENV) => {
   it('admits the production embedded-kernel fallback route exactly as composed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'h15c-budget-')); dirs.push(dir);

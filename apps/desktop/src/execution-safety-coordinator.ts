@@ -121,6 +121,11 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
           const wire = binding.endpoint === undefined ? null : routeWireCompat(binding.endpoint);
           const requestedMax = wire?.maxTokensField === 'max_tokens' ? body['max_tokens'] : body['max_completion_tokens'] ?? body['max_tokens'];
           if (body['model'] !== modelId || typeof requestedMax !== 'number' || !Number.isSafeInteger(requestedMax) || requestedMax < 1 || requestedMax > maxOutputTokens) throw domainError('POLICY_DENIED', 'Kernel request violates the pinned model/token bound.', { reason: 'GOAL_KERNEL_REQUEST_BOUND_MISMATCH', retryable: false });
+          // H15d: a byte-level BPE token covers at least one byte of the request, so a body no
+          // larger than the proof's input bound cannot bill more input tokens than the bound —
+          // an UNKNOWN settlement counted at the bound is then a true upper bound, never an
+          // undercount. A larger body is refused before any upstream HTTP.
+          if (bytes.byteLength > proof.inputTokens) throw domainError('POLICY_DENIED', 'Kernel request is larger than the proven input bound.', { reason: 'GOAL_KERNEL_REQUEST_INPUT_UNBOUNDED', retryable: false, requestBytes: bytes.byteLength, inputUpperBound: proof.inputTokens });
           return coordinator.admit({ runId: input.runId, executionId: input.attemptId, modelKey, networkAttempt: ++networkAttempt, maxOutputTokens: requestedMax, binding });
         },
       };

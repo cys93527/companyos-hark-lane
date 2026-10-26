@@ -1,0 +1,9 @@
+{
+  "name": "shop-inventory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Small inventory module used by the CompanyOS H15d acceptance goal",
+  "scripts": {
+    "test": "node --test"
+  }
+}

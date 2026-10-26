@@ -10,8 +10,9 @@
 // The API key is resolved in-process from env and never printed or written.
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const [appDir, evidence, budgetDir] = process.argv.slice(2);
 mkdirSync(evidence, { recursive: true });
@@ -19,7 +20,12 @@ const imp = (rel) => import(pathToFileURL(join(appDir, rel)).href);
 const COMPANY = 'company_default';
 const MODEL_KEY = 'h15c.live';
 const WATCHDOG_MS = Number(process.env.H15C_WATCHDOG_MS ?? 600_000);
-const out = { startedAt: new Date().toISOString(), runtime: { node: process.versions.node, electron: process.versions.electron ?? null } };
+// H15d: 'acceptance' = the user-approved realistic acceptance goal (separate CNY 5 budget):
+// a small Node project (scripts/hark/acceptance-fixture) with two real defects, a long
+// business-rules document and a new feature to implement + test + document.
+const SCENARIO = process.env.H15_SCENARIO === 'acceptance' ? 'acceptance' : 'smoke';
+const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'acceptance-fixture');
+const out = { scenario: SCENARIO, startedAt: new Date().toISOString(), runtime: { node: process.versions.node, electron: process.versions.electron ?? null } };
 let db = null;
 let dataDir = null;
 let finishing = false;
@@ -79,7 +85,8 @@ try {
   // realpath: the kernel/workspace policy refuses 8.3 short-name aliases (RUNNER~1).
   const ws = realpathSync.native(mkdtempSync(join(tmpdir(), 'h15c-ws-')));
   out.workspace = ws;
-  writeFileSync(join(ws, 'README.md'), '# hello-companyos\n\nA tiny workspace for the H15c live execution smoke.\n');
+  if (SCENARIO === 'acceptance') cpSync(FIXTURE, ws, { recursive: true });
+  else writeFileSync(join(ws, 'README.md'), '# hello-companyos\n\nA tiny workspace for the H15c live execution smoke.\n');
   const opened = await core.repositoryRuntime.openWorkspace({ root: ws, commandProfile: {} });
   if (!opened.ok) { out.result = 'WORKSPACE_OPEN_FAILED'; out.error = opened.error.message; finish(7); }
 
@@ -90,7 +97,9 @@ try {
 
   const created = await core.controlPlane.handle({ operation: 'goal.create', payload: {
     companyId: COMPANY,
-    objective: '这是一个极小任务，计划恰好两个步骤，第二步依赖第一步：第 1 步在工作区根目录新建 hello.txt，内容为一行 "Hello CompanyOS"；第 2 步读取 hello.txt，在工作区根目录新建 summary.md，写一句话说明 hello.txt 的内容。',
+    objective: SCENARIO === 'acceptance'
+      ? '工作区根目录是一个小型 Node.js 库存模块（shop-inventory，无第三方依赖），业务规则全部写在 docs/DOMAIN.md。请按顺序完成：1）阅读 docs/DOMAIN.md 和现有代码，修复 src/inventory.js 中导致 npm test 失败的缺陷（以规则 R2、R3 为准）；2）按规则 R4/R5 在 src/inventory.js 新增并导出 reorderPlan(items)，并新建 test/reorder.test.js，至少 3 个测试（覆盖文档中的示例、等于补货点不补、已下架不补）；3）运行 npm test 确认全部通过；4）新建 docs/CHANGES.md，用中文说明修复了哪些缺陷、reorderPlan 的规则和最终测试结果。不要引入任何第三方依赖，不要修改 docs/DOMAIN.md。'
+      : '这是一个极小任务，计划恰好两个步骤，第二步依赖第一步：第 1 步在工作区根目录新建 hello.txt，内容为一行 "Hello CompanyOS"；第 2 步读取 hello.txt，在工作区根目录新建 summary.md，写一句话说明 hello.txt 的内容。',
     commandId: `h15c-${String(Date.now())}`,
   } });
   if (!created.ok) { out.result = 'GOAL_CREATE_FAILED'; out.error = JSON.stringify(created.error).slice(0, 1000); finish(9); }
@@ -132,12 +141,35 @@ try {
   try { walkCas(`${dataDir}-cas`); } catch { /* none */ }
   out.casFiles = casFiles;
   const read = (name) => { const p = join(ws, name); return existsSync(p) ? readFileSync(p, 'utf8').slice(0, 2000) : null; };
-  out.workspaceFiles = { 'hello.txt': read('hello.txt'), 'summary.md': read('summary.md') };
   const n = (v) => (Array.isArray(v) ? v.length : 0);
+  if (SCENARIO === 'acceptance') {
+    out.workspaceFiles = Object.fromEntries(['src/inventory.js', 'test/reorder.test.js', 'docs/CHANGES.md', 'package.json'].map((f) => [f, read(f)]));
+    // Independent of every model claim: the harness runs the project's own test contract and
+    // exercises reorderPlan against the DOMAIN.md example itself.
+    const npmTest = spawnSync(process.platform === 'win32' ? 'cmd.exe' : 'sh', process.platform === 'win32' ? ['/d', '/s', '/c', 'npm test'] : ['-c', 'npm test'], { cwd: ws, encoding: 'utf8', timeout: 120_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined, COMPANYOS_MODEL_API_KEY: undefined } });
+    out.npmTest = { status: npmTest.status, tail: `${npmTest.stdout ?? ''}${npmTest.stderr ?? ''}`.slice(-3000) };
+    const probe = spawnSync(process.execPath, ['-e', `const m=require(${JSON.stringify(join(ws, 'src', 'inventory.js'))});const items=[{sku:'C-300',qty:2,reorderPoint:10,targetStock:40,minOrder:10,packSize:6},{sku:'A-100',qty:4,reorderPoint:5,targetStock:12,minOrder:10,packSize:5},{sku:'B-200',qty:20,reorderPoint:20,targetStock:100,minOrder:50,packSize:12},{sku:'D-400',qty:0,reorderPoint:3,targetStock:9,minOrder:1,packSize:1,discontinued:true}];const before=JSON.stringify(items);const plan=m.reorderPlan(items);const inv=new m.Inventory([{sku:'X',qty:3,price:2.5},{sku:'Y',qty:2,price:1.25}]);let threw=false;try{inv.removeItem('X',4)}catch(e){threw=e instanceof RangeError}process.stdout.write(JSON.stringify({plan,pure:before===JSON.stringify(items),empty:m.reorderPlan([]),total:inv.totalValue(),threw,left:inv.get('X').qty}))`], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', COMPANYOS_MODEL_API_KEY: undefined } });
+    try { out.probe = JSON.parse(probe.stdout); } catch { out.probe = { error: `${probe.stdout ?? ''}${probe.stderr ?? ''}`.slice(-1500) }; }
+    const p = out.probe;
+    out.featureChecks = {
+      npmTestPasses: npmTest.status === 0,
+      reorderPlanExample: JSON.stringify(p?.plan) === JSON.stringify([{ sku: 'A-100', orderQty: 10 }, { sku: 'C-300', orderQty: 42 }]),
+      reorderPlanPure: p?.pure === true && Array.isArray(p?.empty) && p.empty.length === 0,
+      removeItemRule: p?.threw === true && p?.left === 3,
+      totalValueRule: p?.total === 10,
+      reorderTests: (out.workspaceFiles['test/reorder.test.js'] ?? '').length > 0,
+      changesDoc: (out.workspaceFiles['docs/CHANGES.md'] ?? '').trim().length > 0,
+      noNewDependencies: !/"(?:dev)?[dD]ependencies"/u.test(out.workspaceFiles['package.json'] ?? ''),
+    };
+  } else {
+    out.workspaceFiles = { 'hello.txt': read('hello.txt'), 'summary.md': read('summary.md') };
+  }
   out.checks = {
     driverCompleted: out.driver?.terminal === true && /COMPLET|SUCCE|DONE/u.test(String(out.driver?.terminalReason ?? '')) || String(out.goalRun?.state ?? '').toUpperCase() === 'COMPLETED',
-    helloFile: (out.workspaceFiles['hello.txt'] ?? '').includes('Hello CompanyOS'),
-    summaryFile: (out.workspaceFiles['summary.md'] ?? '').trim().length > 0,
+    ...(SCENARIO === 'acceptance' ? out.featureChecks : {
+      helloFile: (out.workspaceFiles['hello.txt'] ?? '').includes('Hello CompanyOS'),
+      summaryFile: (out.workspaceFiles['summary.md'] ?? '').trim().length > 0,
+    }),
     artifacts: n(out.artifacts) > 0,
     cas: casFiles.length > 0,
     validationPass: Array.isArray(out.validations) && out.validations.some((v) => v.status === 'pass'),

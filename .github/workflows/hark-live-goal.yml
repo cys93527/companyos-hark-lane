@@ -13,9 +13,11 @@ on:
         description: hark-installer run whose installer artifact to use
         required: true
       mode:
-        description: "planning (H10 plan-only preview) | execute (H15c: packaged agent kernel executes the plan; Artifact/CAS/Validation/Handoff)"
+        description: "planning (H10 plan-only preview) | execute (H15c: packaged agent kernel executes the plan; Artifact/CAS/Validation/Handoff) | acceptance (H15d: realistic multi-step acceptance goal, separate CNY 5 budget)"
         required: false
         default: planning
+        type: choice
+        options: [planning, execute, acceptance]
 
 permissions:
   contents: read
@@ -24,7 +26,7 @@ permissions:
 jobs:
   live-goal:
     runs-on: windows-2022
-    timeout-minutes: 25
+    timeout-minutes: 50
     env:
       COS_MODEL_PROVIDER_ID: model.deepseek
       COS_MODEL_BASE_URL: https://api.deepseek.com
@@ -32,9 +34,10 @@ jobs:
       COS_MODEL_TIMEOUT_MS: '90000'
       COS_MODEL_STRUCTURED_OUTPUT: json_object
       # H15c-fix10: declared output ceiling; the budget proof prices every call at this bound.
-      COS_MODEL_MAX_OUTPUT_TOKENS: ${{ inputs.mode == 'execute' && '2048' || '8192' }}
-      COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: ${{ inputs.mode == 'execute' && '0' || '1' }}
-      H15C_WATCHDOG_MS: '900000'
+      COS_MODEL_MAX_OUTPUT_TOKENS: ${{ inputs.mode == 'planning' && '8192' || '2048' }}
+      COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: ${{ inputs.mode == 'planning' && '1' || '0' }}
+      H15_SCENARIO: ${{ inputs.mode == 'acceptance' && 'acceptance' || 'smoke' }}
+      H15C_WATCHDOG_MS: ${{ inputs.mode == 'acceptance' && '1900000' || '900000' }}
       COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
       H10_WATCHDOG_MS: '300000'
     steps:
@@ -61,7 +64,8 @@ jobs:
         run: |
           $budget = Join-Path $env:RUNNER_TEMP 'h10-budget'
           # H15c: 16 calls x worst-case (8k in / 2048 out at peak rates) = CNY 0.518 <= cap 0.53 <= what remains of the cumulative CNY 1 (installer/budget/h15c-real-spend-ledger.json: 0.4681 counted, UNKNOWN at worst case). H15c PASSED on hark-live-goal 40305126182 (18-call cap).
-          $template = if ('${{ inputs.mode }}' -eq 'execute') { 'installer/budget/deepseek-flash.h15c.approval-template.json' } else { 'installer/budget/deepseek-flash.approval-template.json' }
+          # H15d acceptance: 44 calls x worst-case (48k in / 2048 out at peak rates) = CNY 4.945 <= cap 4.95 <= the separate CNY 5 budget (installer/budget/h15d-acceptance-ledger.json).
+          $template = switch ('${{ inputs.mode }}') { 'execute' { 'installer/budget/deepseek-flash.h15c.approval-template.json' } 'acceptance' { 'installer/budget/deepseek-flash.h15d.approval-template.json' } default { 'installer/budget/deepseek-flash.approval-template.json' } }
           node scripts/hark/make-budget-approval.mjs $budget $template | Tee-Object hark-evidence/budget-approval.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "BUDGETDIR=$budget" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
@@ -70,7 +74,7 @@ jobs:
         run: |
           $env:ELECTRON_RUN_AS_NODE = '1'
           # CompanyOS.exe is a GUI-subsystem binary: '&' does NOT wait for it, so wait explicitly.
-          $script = if ('${{ inputs.mode }}' -eq 'execute') { 'scripts/hark/live-goal-execute.mjs' } else { 'scripts/hark/live-goal-planning.mjs' }
+          $script = if ('${{ inputs.mode }}' -eq 'planning') { 'scripts/hark/live-goal-planning.mjs' } else { 'scripts/hark/live-goal-execute.mjs' }
           $argv = @($script, "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"")
           $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
           $code = $p.ExitCode

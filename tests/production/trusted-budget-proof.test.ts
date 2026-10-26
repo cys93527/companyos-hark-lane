@@ -26,7 +26,8 @@ const proofOf = (over: Partial<TrustedBudgetProof> = {}): TrustedBudgetProof => 
   schema: 'companyos:trusted-budget-proof:1', scope: 'TEST_ONLY', identity,
   pricing: { source: 'TEST_ONLY:tariff', version: 'v1', currency: 'CNY', units: 'MICROS_PER_MILLION_TOKENS',
     rounding: 'CEIL_TOTAL_PER_REQUEST_MICROS', inputRate: 1000000, outputRate: 1000000 },
-  tokens: { inputUpperBound: 30, outputUpperBound: 10, evidenceRef: 'TEST_ONLY:enforced-token-limit' },
+  // H15d: >= the 43-byte fixture body (the admission refuses a body larger than the input bound).
+  tokens: { inputUpperBound: 64, outputUpperBound: 10, evidenceRef: 'TEST_ONLY:enforced-token-limit' },
   validFromMs: 0, validUntilMs: 200000, ...over,
 });
 const route: SelectedModelRoute = { modelProfileId: 'TEST_ONLY:key', providerId: identity.providerId, modelId: identity.modelId,
@@ -71,7 +72,7 @@ const denied = { code: 'POLICY_DENIED' };
 it('TEST ONLY valid proof is persisted in the original reservation and settled from actual token usage', async () => {
   const f = await fixture(); const call = await f.reserve('a');
   const reservation = (await f.safety.budget.read('goal')).reservations[0]!;
-  expect(reservation).toMatchObject({ ownerId: 'a', callId: 'a:network:1', bound: { evidenceRef: f.originalRef, costMicros: 40 } });
+  expect(reservation).toMatchObject({ ownerId: 'a', callId: 'a:network:1', bound: { evidenceRef: f.originalRef, costMicros: 74 } });
   await call.settle({ inputTokens: 2, outputTokens: 3, totalCost: null });
   expect((await f.safety.budget.read('goal')).reservations[0]).toMatchObject({ status: 'KNOWN', usage: { tokens: 5, costMicros: 5 } });
 });
@@ -139,7 +140,7 @@ it.each(['usage', 'proof'])('missing original %s retains UNKNOWN and never subst
   const f = await fixture(); const a = await f.reserve('a');
   if (missing === 'proof') f.jsonWrite('approvals.json', []);
   await a.settle(missing === 'usage' ? null : { inputTokens: 2, outputTokens: 3, totalCost: 0 });
-  expect((await f.safety.budget.read('goal')).reservations[0]).toMatchObject({ status: 'UNKNOWN', usage: null, bound: { costMicros: 40 } });
+  expect((await f.safety.budget.read('goal')).reservations[0]).toMatchObject({ status: 'UNKNOWN', usage: null, bound: { costMicros: 74 } });
   await expect(f.start('after-unknown')).rejects.toMatchObject({ details: { reason: 'GOAL_USAGE_UNKNOWN' } });
 });
 it('real database and CAS reopen preserve the original proof while recovery remains UNKNOWN', async () => {
@@ -150,7 +151,7 @@ it('real database and CAS reopen preserve the original proof while recovery rema
   const recovered = createExecutionSafetyCoordinator(reopened, f.config(source), () => f.time.now);
   await recovered.recover();
   const original = (await recovered.budget.read('goal')).reservations[0]!;
-  expect(original).toMatchObject({ status: 'UNKNOWN', bound: { evidenceRef: f.originalRef, costMicros: 40 } });
+  expect(original).toMatchObject({ status: 'UNKNOWN', bound: { evidenceRef: f.originalRef, costMicros: 74 } });
   expect((await readTrustedBudgetProof(source, original.bound.evidenceRef))?.pricing.version).toBe('v1');
   expect(await pinnedBudgetCost(source, original, { inputTokens: 2, outputTokens: 3, totalCost: null })).toBe(5);
   await expect(recovered.budget.settle('goal', original.callId, { tokens: 5, costMicros: 5 })).rejects.toMatchObject({ details: { reason: 'GOAL_SETTLEMENT_CONFLICT' } });
@@ -212,7 +213,7 @@ it('bounded integer tariff arithmetic follows the attested rounding rule, not pr
   await f.publish({ ...p, pricing: { ...p.pricing, inputRate: 100000, outputRate: 250000 } });
   const a = await f.reserve('fraction'); await a.settle({ inputTokens: 1, outputTokens: 1, totalCost: 999999 });
   const row = (await f.safety.budget.read('goal')).reservations[0]!;
-  expect(row.bound.costMicros).toBe(6); expect(row.usage?.costMicros).toBe(1);
+  expect(row.bound.costMicros).toBe(9); // ceil(64 x 0.1 + 10 x 0.25) expect(row.usage?.costMicros).toBe(1);
 });
 it('trusted fallback with incomplete endpoint/credential identity cannot start the executor', async () => {
   const f = await fixture();

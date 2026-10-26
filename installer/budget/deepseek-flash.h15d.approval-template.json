@@ -1,0 +1,43 @@
+{
+  "approvedBy": "user_owner",
+  "currency": "CNY",
+  "billingScope": {
+    "providerId": "model.deepseek",
+    "account": "deepseek:repo-secret:COMPANYOS_MODEL_API_KEY",
+    "organization": null
+  },
+  "cap": {
+    "maxCalls": 44,
+    "maxTokens": 2203000,
+    "maxCostMicros": 4950000,
+    "durationMs": 1800000
+  },
+  "proof": {
+    "identity": {
+      "providerId": "model.deepseek",
+      "modelId": "deepseek-flash",
+      "upstreamModelIdentity": "DeepSeek-V4.1-Flash-1017",
+      "endpoint": "https://api.deepseek.com",
+      "routingIdentity": "env:deepseek-flash",
+      "credentialRef": "vault://COMPANYOS_MODEL_API_KEY/live",
+      "billingAccount": "deepseek:repo-secret:COMPANYOS_MODEL_API_KEY",
+      "billingOrganization": null,
+      "attestationRef": "user-approval:2026-10-26T16:44:hark-chat:H15d-realistic-acceptance-cap-CNY-5"
+    },
+    "pricing": {
+      "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+      "version": "2026-10-25 peak-hour cache-miss rates (worst case)",
+      "currency": "CNY",
+      "units": "MICROS_PER_MILLION_TOKENS",
+      "rounding": "CEIL_TOTAL_PER_REQUEST_MICROS",
+      "inputRate": 2000000,
+      "outputRate": 8000000
+    },
+    "tokens": {
+      "inputUpperBound": 48000,
+      "outputUpperBound": 2048,
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= the deployment's declared COS_MODEL_MAX_OUTPUT_TOKENS 2048, set by hark-live-goal acceptance mode); input bound 48000 tokens, ENFORCED: the admission refuses a kernel request body larger than 48000 bytes (a byte-level BPE token covers >= 1 byte), so an UNKNOWN settlement at the bound never undercounts"
+    },
+    "validForMs": 604800000
+  }
+}

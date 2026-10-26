@@ -1,0 +1,6 @@
+{
+  "purpose": "H15d realistic acceptance run (user approval 2026-10-26 16:44: separate CNY 5 budget, ONE run, UNKNOWN at the worst-case bound, hard cap; beyond requires the user). Independent of the H15c CNY 1 ledger.",
+  "currency": "CNY",
+  "capMicros": 5000000,
+  "entries": []
+}
