@@ -86,9 +86,13 @@ function Invoke-AsAccount([string]$user, [string]$password, [string]$specPath) {
   $si = New-Object H16Launch+STARTUPINFOW
   $si.cb = [Runtime.InteropServices.Marshal]::SizeOf($si)
   $pi = New-Object H16Launch+PROCESS_INFORMATION
-  $cmd = "`"$node`" `"$(Join-Path $kernelDir 'probe-child.cjs')`" `"$specPath`""
+  # cmd.exe (running as the account) captures the child's stdout/stderr into the workspace log.
+  $log = [IO.Path]::ChangeExtension($specPath, '.log')
+  $r.log = $log
+  $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+  $cmd = "`"$cmdExe`" /d /s /c `"`"$node`" `"$(Join-Path $kernelDir 'probe-child.cjs')`" `"$specPath`" > `"$log`" 2>&1`""
   # CREATE_SUSPENDED 0x4 | CREATE_UNICODE_ENVIRONMENT 0x400 | CREATE_NO_WINDOW 0x08000000; logon flags 0 (no profile load)
-  $ok = [H16Launch]::CreateProcessWithLogonW($user, '.', $password, 0, $node, $cmd, 0x08000404, [IntPtr]::Zero, $workspace, [ref]$si, [ref]$pi)
+  $ok = [H16Launch]::CreateProcessWithLogonW($user, '.', $password, 0, $cmdExe, $cmd, 0x08000404, [IntPtr]::Zero, $workspace, [ref]$si, [ref]$pi)
   if (-not $ok) { $r.launch = "CPWL failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"; return $r }
   $r.launch = 'CPWL ok'
   $job = [H16Launch]::CreateJobObjectW([IntPtr]::Zero, "companyos.h16.$tag.$([Guid]::NewGuid().ToString('N').Substring(0, 6))")
@@ -108,6 +112,7 @@ function Invoke-AsAccount([string]$user, [string]$password, [string]$specPath) {
   [H16Launch]::CloseHandle($pi.hThread) | Out-Null; [H16Launch]::CloseHandle($pi.hProcess) | Out-Null
   Start-Sleep -Milliseconds 500
   $r.survivors = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $pi.dwProcessId } | ForEach-Object { $_.Name })
+  if (Test-Path $log) { $r.output = (Get-Content $log -Raw -ErrorAction SilentlyContinue); if ($r.output) { $r.output = $r.output.Substring([Math]::Max(0, $r.output.Length - 1500)) } }
   return $r
 }
 
@@ -161,13 +166,24 @@ try {
 
   # Firewall rules scoped to the account SID.
   $sddl = "D:(A;;CC;;;$sid)"
+  # (a) every non-loopback IPv4 destination; (a6) ALL of IPv6 incl. ::1 (the broker listens on 127.0.0.1 only).
+  # Windows Firewall refuses ::1 as a single RemoteAddress (run 2, 40333707301), so IPv6 is covered by ranges;
+  # each accepted form is recorded.
   New-NetFirewallRule -DisplayName $ruleA -Direction Outbound -Action Block -LocalUser $sddl `
-    -RemoteAddress @('0.0.0.0-126.255.255.255', '128.0.0.0-255.255.255.255', '::', '::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff') | Out-Null
+    -RemoteAddress @('0.0.0.0-126.255.255.255', '128.0.0.0-255.255.255.255') | Out-Null
+  $report.host.ipv6RuleForm = $null
+  foreach ($form in @(@('::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff'), @('::', '::1-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff'), @('::/0'))) {
+    try {
+      New-NetFirewallRule -DisplayName "$ruleA v6" -Direction Outbound -Action Block -LocalUser $sddl -RemoteAddress $form -ErrorAction Stop | Out-Null
+      $report.host.ipv6RuleForm = ($form -join ','); break
+    } catch { $report.host.ipv6RuleErrors += @("$($form -join ','): $($_.Exception.Message)") }
+  }
+  if (-not $report.host.ipv6RuleForm) { throw 'no IPv6 block rule form accepted' }
+  # (b) IPv4 loopback except the fixed broker port (TCP), and all IPv4 loopback UDP.
   New-NetFirewallRule -DisplayName $ruleB -Direction Outbound -Action Block -LocalUser $sddl -Protocol TCP `
-    -RemoteAddress @('127.0.0.0/8', '::1') -RemotePort @("1-$($brokerPort - 1)", "$($brokerPort + 1)-65535") | Out-Null
-  $ruleBUdp = "$ruleB udp"
-  New-NetFirewallRule -DisplayName $ruleBUdp -Direction Outbound -Action Block -LocalUser $sddl -Protocol UDP `
-    -RemoteAddress @('127.0.0.0/8', '::1') | Out-Null
+    -RemoteAddress @('127.0.0.0/8') -RemotePort @("1-$($brokerPort - 1)", "$($brokerPort + 1)-65535") | Out-Null
+  New-NetFirewallRule -DisplayName "$ruleB udp" -Direction Outbound -Action Block -LocalUser $sddl -Protocol UDP `
+    -RemoteAddress @('127.0.0.0/8') | Out-Null
   Start-Sleep -Seconds 2
 
   # Pass C - isolated.
@@ -187,6 +203,7 @@ try {
   Check 'C.job.assigned' ($L.jobAssign -eq $true -and $L.inJob -eq $true) @{ assign = $L.jobAssign; inJob = $L.inJob; err = $L.jobAssignError }
   Check 'C.job.noSurvivors' ($L.survivors.Count -eq 0) $L.survivors
   Check 'C.net.brokerLoopback.reached' ($C -and $C.net.brokerLoopback.outcome -eq 'REACHED') $C.net.brokerLoopback
+  Check 'C.net.brokerLoopbackV6.blocked' ($C -and (& $notReached $C.net.brokerLoopbackV6)) $C.net.brokerLoopbackV6
   Check 'C.net.otherLoopback.blocked' ($C -and (& $notReached $C.net.otherLoopback)) $C.net.otherLoopback
   Check 'C.net.tcp_1_1_1_1_443.blocked' ($C -and (& $notReached $C.net.tcp_1_1_1_1_443)) $C.net.tcp_1_1_1_1_443
   Check 'C.net.https_deepseek.blocked' ($C -and (& $notReached $C.net.https_deepseek)) $C.net.https_deepseek
@@ -211,7 +228,7 @@ catch {
 }
 finally {
   # Pass D - cleanup with read-back.
-  foreach ($r in @($ruleA, $ruleB, "$ruleB udp")) { Remove-NetFirewallRule -DisplayName $r -ErrorAction SilentlyContinue }
+  foreach ($r in @($ruleA, "$ruleA v6", $ruleB, "$ruleB udp")) { Remove-NetFirewallRule -DisplayName $r -ErrorAction SilentlyContinue }
   $report.cleanup.rulesLeft = @(Get-NetFirewallRule -DisplayName "CompanyOS H16 probe $tag*" -ErrorAction SilentlyContinue).Count
   if ($report.host.accountSid) {
     $s = $report.host.accountSid
