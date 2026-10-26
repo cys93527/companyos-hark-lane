@@ -50,6 +50,24 @@
       "callId": "kernel-1",
       "status": "UNKNOWN (worst-case bound)",
       "micros": 97536
+    },
+    {
+      "run": "hark-live-goal 40296992054",
+      "callId": "planning-1",
+      "status": "KNOWN",
+      "micros": 5470
+    },
+    {
+      "run": "hark-live-goal 40296992054",
+      "callId": "planning-2",
+      "status": "KNOWN",
+      "micros": 5814
+    },
+    {
+      "run": "hark-live-goal 40296992054",
+      "callId": "kernel-1",
+      "status": "UNKNOWN (worst-case bound)",
+      "micros": 97536
     }
   ]
 }

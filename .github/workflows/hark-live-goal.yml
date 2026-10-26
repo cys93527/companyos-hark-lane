@@ -58,7 +58,7 @@ jobs:
         shell: pwsh
         run: |
           $budget = Join-Path $env:RUNNER_TEMP 'h10-budget'
-          # H15c: 7 calls x worst-case (16k in / 8k out at peak rates) = CNY 0.683 <= cap 0.75 <= what remains of the cumulative CNY 1 (installer/budget/h15c-real-spend-ledger.json: 0.2458 counted, UNKNOWN at worst case).
+          # H15c: 7 calls x worst-case (8k in / 8k out at peak rates) = CNY 0.571 <= cap 0.60 <= what remains of the cumulative CNY 1 (installer/budget/h15c-real-spend-ledger.json: 0.3546 counted, UNKNOWN at worst case).
           $template = if ('${{ inputs.mode }}' -eq 'execute') { 'installer/budget/deepseek-flash.h15c.approval-template.json' } else { 'installer/budget/deepseek-flash.approval-template.json' }
           node scripts/hark/make-budget-approval.mjs $budget $template | Tee-Object hark-evidence/budget-approval.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

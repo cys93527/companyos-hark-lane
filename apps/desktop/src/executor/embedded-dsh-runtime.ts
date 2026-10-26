@@ -25,6 +25,7 @@ import { createServer, request as httpRequest, type ClientRequest, type ServerRe
 import { request as httpsRequest } from 'node:https';
 import { routeWireCompatYamlLine } from '../models/route-wire-compat.js';
 import type { Socket } from 'node:net';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -813,7 +814,7 @@ export interface ModelBrokerExchangeObservation {
   readonly upstreamStatus: number | null;
   readonly requestBytes: number;
   readonly responseBytes: number;
-  /** observed | absent | conflicting | invalid | oversize | http-error | not-reached */
+  /** observed | absent | conflicting | invalid | undecodable | oversize | http-error | not-reached */
   readonly usageDisposition: string;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
   /** Structure only (never content) of the response body the usage was read from. */
@@ -825,6 +826,8 @@ export interface ModelBrokerExchangeObservation {
 export interface ModelResponseShape {
   readonly framing: 'sse' | 'json';
   readonly contentType: string;
+  /** Upstream Content-Encoding the body was decoded from ('identity' when none). */
+  readonly contentEncoding: string;
   readonly dataEvents: number;
   readonly commentLines: number;
   readonly doneMarker: boolean;
@@ -832,6 +835,49 @@ export interface ModelResponseShape {
   readonly nullUsageEvents: number;
   readonly unparsedEvents: number;
 }
+
+/** Content codings the broker can decode for usage observation (node:zlib, every runtime we ship). */
+const BROKER_DECODABLE_CODINGS = new Set(['gzip', 'x-gzip', 'deflate', 'br', 'identity']);
+const BROKER_DECODED_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * H15c-fix9 — the Accept-Encoding the broker forwards upstream: the kernel's own offer
+ * restricted to codings the broker can DECODE for usage metering (an undecodable body
+ * would make every settlement UNKNOWN); nothing acceptable left => identity.
+ */
+export const brokerAcceptEncoding = (offered: string | undefined): string => {
+  if (offered === undefined) return 'identity';
+  const kept = offered.split(',').map((part) => part.trim()).filter((part) => {
+    const [coding, ...params] = part.split(';').map((x) => x.trim().toLowerCase());
+    if (coding === undefined || !BROKER_DECODABLE_CODINGS.has(coding)) return false;
+    return !params.some((param) => /^q=0(?:\.0*)?$/u.test(param));
+  });
+  return kept.length === 0 ? 'identity' : kept.join(', ');
+};
+
+/**
+ * H15c-fix9 — decode an upstream body for usage observation per its Content-Encoding.
+ * hark-live-goal 40296992054: DeepSeek answered the kernel (whose HTTP client offers
+ * gzip/br and decodes transparently) with a compressed event stream; the broker read the
+ * raw compressed bytes as UTF-8, found no `data:` line (dataEvents 0, commentLines 0,
+ * 751 bytes) and settled UNKNOWN. Unknown or corrupt coding => null (undecodable, UNKNOWN).
+ */
+export const decodeResponseBody = (body: Buffer, contentEncoding: string): Buffer | null => {
+  const codings = contentEncoding.split(',').map((c) => c.trim().toLowerCase()).filter((c) => c !== '' && c !== 'identity');
+  let out = body;
+  try {
+    for (const coding of codings.reverse()) {
+      const opts = { maxOutputLength: BROKER_DECODED_MAX_BYTES };
+      if (coding === 'gzip' || coding === 'x-gzip') out = gunzipSync(out, opts);
+      else if (coding === 'deflate') out = inflateSync(out, opts);
+      else if (coding === 'br') out = brotliDecompressSync(out, opts);
+      else return null;
+    }
+  } catch {
+    return null;
+  }
+  return out;
+};
 
 /**
  * H15c — read token usage from an upstream Chat Completions response body.
@@ -851,6 +897,7 @@ export interface ModelResponseShape {
 export const observeResponseUsage = (
   text: string,
   contentType: string,
+  contentEncoding = 'identity',
 ): { readonly disposition: 'observed' | 'absent' | 'conflicting' | 'invalid'; readonly usage: { inputTokens: number; outputTokens: number; totalCost: null } | null; readonly shape: ModelResponseShape } => {
   const lines = text.split(/\r?\n/u);
   const sse = contentType.toLowerCase().includes('text/event-stream') || lines.some((line) => line.startsWith('data:'));
@@ -883,7 +930,7 @@ export const observeResponseUsage = (
     dataEvents = 1;
     consider(text.trim());
   }
-  const shape: ModelResponseShape = { framing: sse ? 'sse' : 'json', contentType: contentType.slice(0, 80), dataEvents, commentLines, doneMarker, usageEvents, nullUsageEvents, unparsedEvents };
+  const shape: ModelResponseShape = { framing: sse ? 'sse' : 'json', contentType: contentType.slice(0, 80), contentEncoding: contentEncoding.slice(0, 40), dataEvents, commentLines, doneMarker, usageEvents, nullUsageEvents, unparsedEvents };
   const disposition = invalid ? 'invalid' : conflicting ? 'conflicting' : usage === null ? 'absent' : 'observed';
   return { disposition, usage: disposition === 'observed' ? usage : null, shape };
 };
@@ -1058,6 +1105,8 @@ export const startModelBroker = (input: {
           if (typeof value === 'string' && !drop.has(name.toLowerCase())) headers[name] = value;
         }
         headers['content-length'] = String(size);
+        // H15c-fix9: only codings the broker can decode for metering travel upstream.
+        headers['accept-encoding'] = brokerAcceptEncoding(headers['accept-encoding']);
         /*
          * CREDENTIAL SCHEME GUARD (PROD-01B): the broker is the LAST line before the
          * network. A credential that is itself a reference scheme (vault://, secret://,
@@ -1116,10 +1165,12 @@ export const startModelBroker = (input: {
               });
               upstreamResponse.on('end', () => {
                 const status = upstreamResponse.statusCode ?? 500;
-                const observed = observedBytes > 1_048_576 || status >= 400
+                const contentEncoding = String(upstreamResponse.headers['content-encoding'] ?? 'identity');
+                const decoded = observedBytes > 1_048_576 || status >= 400 ? null : decodeResponseBody(Buffer.concat(usageChunks), contentEncoding);
+                const observed = decoded === null
                   ? null
-                  : observeResponseUsage(Buffer.concat(usageChunks).toString('utf8'), String(upstreamResponse.headers['content-type'] ?? ''));
-                usageDisposition = observedBytes > 1_048_576 ? 'oversize' : status >= 400 ? 'http-error' : (observed?.disposition ?? 'absent');
+                  : observeResponseUsage(decoded.toString('utf8'), String(upstreamResponse.headers['content-type'] ?? ''), contentEncoding);
+                usageDisposition = observedBytes > 1_048_576 ? 'oversize' : status >= 400 ? 'http-error' : decoded === null ? 'undecodable' : (observed?.disposition ?? 'absent');
                 responseShape = observed?.shape ?? null;
                 const usage = observed !== null && observed.disposition === 'observed' ? observed.usage : null;
                 settle(usage, 'upstream-end');

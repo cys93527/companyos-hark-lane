@@ -13,6 +13,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import zlib from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -50,7 +51,7 @@ const runPong = async (runtime) => {
   let calls = 0;
   const requestBytes = [];
   const capFields = [];
-  const sse = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  const sse = (out, obj) => out.write(`data: ${JSON.stringify(obj)}\n\n`);
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || !req.url?.includes('/chat/completions')) { res.writeHead(404).end(); return; }
     const bodyChunks = [];
@@ -59,22 +60,27 @@ const runPong = async (runtime) => {
       calls += 1;
       exchangeTimes.push({ call: calls, requestAt: Date.now() });
       requestBytes.push(Buffer.concat(bodyChunks).length);
-      try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); const msgs = Array.isArray(b.messages) ? b.messages : []; const tool = msgs.filter((m) => m && m.role === 'tool').pop(); if (tool !== undefined) toolResults.push(typeof tool.content === 'string' ? tool.content.slice(0, 6000) : JSON.stringify(tool.content).slice(0, 6000)); capFields.push({ max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null, include_usage: b.stream_options?.include_usage ?? null }); } catch { capFields.push(null); }
+      try { const b = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')); const msgs = Array.isArray(b.messages) ? b.messages : []; const tool = msgs.filter((m) => m && m.role === 'tool').pop(); if (tool !== undefined) toolResults.push(typeof tool.content === 'string' ? tool.content.slice(0, 6000) : JSON.stringify(tool.content).slice(0, 6000)); capFields.push({ acceptEncoding: String(req.headers['accept-encoding'] ?? ''), max_tokens: b.max_tokens ?? null, max_completion_tokens: b.max_completion_tokens ?? null, store: b.store ?? null, include_usage: b.stream_options?.include_usage ?? null }); } catch { capFields.push(null); }
       if (process.env.KERNEL_PONG_DUMP) writeFileSync(`${process.env.KERNEL_PONG_DUMP}-${calls}.json`, Buffer.concat(bodyChunks));
       const step = scenario[Math.min(calls - 1, scenario.length - 1)];
       const id = `pong-${calls}`;
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.write(': keep-alive\n\n'); // DeepSeek opens a waiting stream with SSE comments
-      sse(res, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant' } }] });
+      // H15c-fix9: like DeepSeek, compress the stream when the client offers gzip (the kernel's
+      // HTTP client does and decodes transparently; the broker must decode to meter usage).
+      const gz = /\bgzip\b/u.test(String(req.headers['accept-encoding'] ?? ''));
+      res.writeHead(200, { 'content-type': 'text/event-stream', ...(gz ? { 'content-encoding': 'gzip' } : {}) });
+      const body = gz ? zlib.createGzip() : res;
+      if (gz) body.pipe(res);
+      body.write(': keep-alive\n\n'); // DeepSeek opens a waiting stream with SSE comments
+      sse(body, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant' } }] });
       if (step.tool_call) {
-        sse(res, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${calls}`, type: 'function', function: { name: step.tool_call.name, arguments: JSON.stringify(step.tool_call.arguments) } }] } }] });
-        sse(res, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+        sse(body, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${calls}`, type: 'function', function: { name: step.tool_call.name, arguments: JSON.stringify(step.tool_call.arguments) } }] } }] });
+        sse(body, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
       } else {
-        sse(res, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: step.text } }] });
-        sse(res, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 1, total_tokens: 10 } });
+        sse(body, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: step.text } }] });
+        sse(body, { id, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 1, total_tokens: 10 } });
       }
-      res.write('data: [DONE]\n\n');
-      res.end();
+      body.write('data: [DONE]\n\n');
+      body.end();
       exchangeTimes[exchangeTimes.length - 1].respondedAt = Date.now();
     });
   });

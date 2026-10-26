@@ -2,6 +2,7 @@ import { createServer, request, type ClientRequest } from 'node:http';
 import { observeLoopback } from '../support/loopback-observation.js';
 import { activeHandleSnapshot, identifyOwnedBrokerServer, ownRequests, trackOwnedServer, waitOwnedCompletion, safeError } from '../support/e3-broker-evidence.js';
 import { rmSync } from 'node:fs';
+import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createExecutionSafetyCoordinator } from '../../apps/desktop/src/execution-safety-coordinator.js';
 import { startModelBroker, type ModelBrokerHandle } from '../../apps/desktop/src/executor/embedded-dsh-runtime.js';
@@ -21,7 +22,9 @@ afterEach(async () => {
   }
   while (openDatabases.length) openDatabases.pop()?.close(); while (createdDirs.length) rmSync(createdDirs.pop()!, { recursive: true, force: true });
 });
-const start = async (response: string | null, maxCalls = 2, durationMs = 120000, reconciliationFails = false) => {
+type UpstreamReply = string | null | { readonly body: Buffer; readonly headers: Record<string, string> };
+let seenAcceptEncoding: (string | undefined)[] = [];
+const start = async (response: UpstreamReply, maxCalls = 2, durationMs = 120000, reconciliationFails = false) => {
   const observation = observeLoopback(expect.getState().currentTestName ?? 'BROKER_TEST_ID_NOT_OBSERVED');
   observation.emit('fixture-start', { worker: process.env['VITEST_POOL_ID'] ?? 'NOT_OBSERVED' });
   cleanups.push(async () => observation.dispose());
@@ -31,7 +34,7 @@ const start = async (response: string | null, maxCalls = 2, durationMs = 120000,
   const config = { policyId: 'OFFLINE_BROKER_ONLY', maxCalls, maxTokens: 1000, maxCostMicros: 1000, durationMs, boundOf: ({ modelKey }: { modelKey: string }) => ({ modelKey, inputTokens: 100, outputTokens: 10, costMicros: 50, evidenceRef: 'OFFLINE_FIXED_OUTPUT_NOT_TARIFF', validUntilMs: Date.now() + 120000 }), costOf: () => { if (reconciliationFails) throw new Error('offline billing evidence unavailable'); return 2; } };
   const safety = createExecutionSafetyCoordinator(f.core.database, config, Date.now); await safety.initialize(runId);
   let arrivals = 0;
-  const server = createServer((req, res) => { req.resume(); req.on('end', () => { arrivals++; if (response !== null) res.end(response); }); });
+  const server = createServer((req, res) => { seenAcceptEncoding.push(req.headers['accept-encoding']); req.resume(); req.on('end', () => { arrivals++; if (response === null) return; if (typeof response === 'string') { res.end(response); return; } res.writeHead(200, response.headers); res.end(response.body); }); });
   observation.attach(server);
   const upstreamOwner = trackOwnedServer(server, observation.emit);
   cleanups.push(() => upstreamOwner.close());
@@ -97,5 +100,11 @@ describe('ADR-A/B real loopback nested broker + canonical SQLite (no paid provid
   it('a persistent Goal deadline aborts an in-flight local broker exchange', async () => { const f = await start(null, 2, 300); const pending = f.send(); await expect.poll(f.arrivals).toBe(1); expect(await pending.value()).toBe(403); await expect(f.safety.budget.check(f.runId)).rejects.toMatchObject({ details: { reason: 'GOAL_DEADLINE_EXCEEDED' } }); });
   it('conflicting streamed usage is UNKNOWN, not whichever usage arrived last', async () => { const f = await start('data: {"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\ndata: {"usage":{"prompt_tokens":4,"completion_tokens":2}}\n\ndata: [DONE]\n'); expect(await f.send().value()).toBe(200); await expect.poll(async () => (await f.safety.budget.read(f.runId)).reservations[0]?.status).toBe('UNKNOWN'); });
   // H15c (hark-live-goal 40266877047 / 40291557860): DeepSeek opens a waiting stream with SSE keep-alive comments and sends usage:null on content chunks before a final usage-only chunk.
+  // H15c-fix9 (hark-live-goal 40296992054): DeepSeek compresses the stream for a client that offers gzip; the broker must meter the DECODED body.
+  const deepseekStream = ': keep-alive\n\ndata: {"choices":[{"index":0,"delta":{"content":"hi"}}],"usage":null}\n\ndata: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\ndata: [DONE]\n\n';
+  it('a gzip-encoded DeepSeek stream settles its real usage KNOWN', async () => { const f = await start({ body: gzipSync(deepseekStream), headers: { 'content-type': 'text/event-stream', 'content-encoding': 'gzip' } }, 1); expect(await f.send().value()).toBe(200); await expect.poll(async () => (await f.safety.budget.read(f.runId)).reservations[0]?.status).toBe('KNOWN'); expect((await f.safety.budget.read(f.runId)).reservations[0]?.usage).toEqual({ tokens: 5, costMicros: 2 }); });
+  it('a brotli-encoded stream settles KNOWN too', async () => { const f = await start({ body: brotliCompressSync(deepseekStream), headers: { 'content-type': 'text/event-stream', 'content-encoding': 'br' } }, 1); expect(await f.send().value()).toBe(200); await expect.poll(async () => (await f.safety.budget.read(f.runId)).reservations[0]?.status).toBe('KNOWN'); });
+  it('an undecodable coding stays UNKNOWN', async () => { const f = await start({ body: Buffer.from('not-zstd'), headers: { 'content-type': 'text/event-stream', 'content-encoding': 'zstd' } }, 1); expect(await f.send().value()).toBe(200); await expect.poll(async () => (await f.safety.budget.read(f.runId)).reservations[0]?.status).toBe('UNKNOWN'); });
+  it('forwards only decodable codings upstream', async () => { seenAcceptEncoding = []; const f = await start(known, 1); expect(await f.send().value()).toBe(200); expect(seenAcceptEncoding[0]).toBe('identity'); });
   it('a DeepSeek stream led by keep-alive comments settles its real usage KNOWN', async () => { const f = await start(': keep-alive\n\n: keep-alive\n\ndata: {"choices":[{"index":0,"delta":{"content":"hi"}}],"usage":null}\n\ndata: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\ndata: [DONE]\n\n', 1); expect(await f.send().value()).toBe(200); await expect.poll(async () => (await f.safety.budget.read(f.runId)).reservations[0]?.status).toBe('KNOWN'); expect((await f.safety.budget.read(f.runId)).reservations[0]?.usage).toEqual({ tokens: 5, costMicros: 2 }); });
 });

@@ -119,7 +119,7 @@ try {
   out.planItems = q("SELECT inputs_json FROM tasks WHERE kind != 'companyos:planning' ORDER BY rowid").map((r) => String(r.inputs_json).slice(0, 400));
   const usage = { calls: 0, inputTokens: 0, outputTokens: 0 };
   for (const r of q("SELECT payload FROM events WHERE type = 'provider.invoked'")) {
-    try { const p = JSON.parse(r.payload); usage.calls += 1; usage.inputTokens += p.usage?.inputTokens ?? 0; usage.outputTokens += p.usage?.outputTokens ?? 0; } catch { /* ignore */ }
+    try { const p = JSON.parse(r.payload); usage.calls += 1; usage.inputTokens += p.usage?.inputTokens ?? p.inputTokens ?? 0; usage.outputTokens += p.usage?.outputTokens ?? p.outputTokens ?? 0; } catch { /* ignore */ }
   }
   out.usageFromEvents = usage;
   const rows = (sql) => { try { return q(sql).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 400) : v]))); } catch (e) { return { error: String(e?.message ?? e) }; } };

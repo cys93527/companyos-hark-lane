@@ -55,3 +55,27 @@ describe('observeResponseUsage', () => {
     expect(JSON.stringify(r.shape)).not.toContain('SECRET-ANSWER');
   });
 });
+
+describe('broker content coding (H15c-fix9, hark-live-goal 40296992054)', () => {
+  it('decodes gzip, deflate and br bodies and refuses unknown codings', async () => {
+    const { decodeResponseBody } = await import('../../apps/desktop/src/executor/embedded-dsh-runtime.js');
+    const { gzipSync, deflateSync, brotliCompressSync } = await import('node:zlib');
+    const text = 'data: {"usage":{"prompt_tokens":1,"completion_tokens":2}}\n\n';
+    expect(decodeResponseBody(gzipSync(text), 'gzip')?.toString('utf8')).toBe(text);
+    expect(decodeResponseBody(deflateSync(text), 'deflate')?.toString('utf8')).toBe(text);
+    expect(decodeResponseBody(brotliCompressSync(text), 'br')?.toString('utf8')).toBe(text);
+    expect(decodeResponseBody(Buffer.from(text), 'identity')?.toString('utf8')).toBe(text);
+    expect(decodeResponseBody(Buffer.from(text), 'zstd')).toBeNull();
+    expect(decodeResponseBody(Buffer.from('garbage'), 'gzip')).toBeNull();
+  });
+  it('restricts the forwarded Accept-Encoding to decodable codings', async () => {
+    const { brokerAcceptEncoding } = await import('../../apps/desktop/src/executor/embedded-dsh-runtime.js');
+    expect(brokerAcceptEncoding('gzip, deflate, br, zstd')).toBe('gzip, deflate, br');
+    expect(brokerAcceptEncoding('zstd')).toBe('identity');
+    expect(brokerAcceptEncoding(undefined)).toBe('identity');
+    expect(brokerAcceptEncoding('br;q=0, gzip;q=0.5')).toBe('gzip;q=0.5');
+  });
+  it('records the coding in the shape', () => {
+    expect(observeResponseUsage('data: [DONE]\n', SSE, 'gzip').shape.contentEncoding).toBe('gzip');
+  });
+});
