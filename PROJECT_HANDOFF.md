@@ -1,3 +1,8 @@
+## Hark lane — H18 tag + release (2026-10-31)
+- Tag hark-v0.1.0 → b916b99 (every workflow success on that commit: hark-windows 41201842077, hark-ubuntu 41201842083, hark-installer 41201842095, hark-isolation 41203624277, hark-restart 41203288148, hark-upgrade 41203288149).
+- Prerelease https://github.com/cys93527/companyos-hark-lane/releases/tag/hark-v0.1.0 — unsigned CompanyOS-Hark-Setup-0.1.0-x64.exe (sha256 9cadbd7f17951599fcaea0e47851aafc7d0bc441143bab45035b0bd30a31be84, equal to installer-sha256.txt of 41201842095), SHA256SUMS, shop-inventory.zip; attached by .github/workflows/hark-release-assets.yml run 41204116236 (test tests/hark/h18-release-assets.test.ts).
+- Status: Hark self-review PASS only. Real-PC acceptance (H17_REAL_PC_ACCEPTANCE_CHECKLIST.md) and independent review (H17_INDEPENDENT_REVIEW_PACKET.md) NOT RUN — user / reviewer execute.
+
 ## Hark lane — H16 DONE, H17a CI green, acceptance run 6 PASS (2026-10-31)
 - CI GREEN @b6c85cc: hark-installer 41199673358 (install smoke 36/36 incl. h16-isolation-* and h16-uninstall-removed-isolation, h17a-* 8/8; INSTALLED_ISOLATION_PONG_PASS 13/13: isolated kernel PONG + pwsh tool as the agent account, credential-missing and ACL-tamper refusals, uninstall read-back), hark-windows 41199673369, hark-ubuntu 41199673359, hark-isolation 41199673425, hark-restart 41201181182.
 - Acceptance run 6 PASS: hark-live-goal 41182323377 EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF, 114 calls all KNOWN, CNY 2.54 (ledger installer/budget/pool-cny14-ledger.json).
