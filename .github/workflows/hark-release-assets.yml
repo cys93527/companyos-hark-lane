@@ -1,0 +1,76 @@
+name: hark-release-assets
+
+# Hark lane H18 (user approval 2026-10-26 08:39, ROADMAP #14; unsigned installer by user decision).
+# Attaches the release assets to an existing tag/release using ONLY the artifacts of the tagged
+# commit's own hark-installer run (never a local rebuild):
+#   CompanyOS-Hark-Setup-<ver>-x64.exe, SHA256SUMS, shop-inventory.zip (scripts/hark/acceptance-fixture).
+# Refuses when the installer run is not for the tagged commit, did not succeed, or the exe hash
+# differs from that run's installer-sha256.txt.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'existing release tag (hark-v<version>)'
+        required: true
+      installer_run_id:
+        description: 'hark-installer run id of the tagged commit'
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  attach:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      RUN_ID: ${{ inputs.installer_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1
+      - name: verify installer run belongs to the tagged commit
+        run: |
+          set -euo pipefail
+          tag_sha=$(git rev-parse HEAD)
+          run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+          [ "$(jq -r .name <<<"$run")" = "hark-installer" ] || { echo "run ${RUN_ID} is not hark-installer"; exit 1; }
+          [ "$(jq -r .conclusion <<<"$run")" = "success" ] || { echo "run ${RUN_ID} did not succeed"; exit 1; }
+          [ "$(jq -r .head_sha <<<"$run")" = "$tag_sha" ] || { echo "run ${RUN_ID} is for $(jq -r .head_sha <<<"$run"), tag ${TAG} is ${tag_sha}"; exit 1; }
+          gh release view "$TAG" --json tagName,isPrerelease
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer
+          path: dl/installer
+          run-id: ${{ inputs.installer_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer-evidence
+          path: dl/evidence
+          run-id: ${{ inputs.installer_run_id }}
+          github-token: ${{ github.token }}
+      - name: build SHA256SUMS + shop-inventory.zip, check exe hash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          exes=$(ls dl/installer/*.exe)
+          [ "$(echo "$exes" | wc -l)" = "1" ] || { echo "expected exactly one exe: $exes"; exit 1; }
+          cp "$exes" out/
+          exe=$(basename "$exes")
+          want=$(awk -v f="$exe" '$2==f {print tolower($1)}' dl/evidence/installer-sha256.txt)
+          got=$(sha256sum "out/$exe" | cut -d' ' -f1)
+          echo "exe=$exe want=$want got=$got"
+          [ -n "$want" ] && [ "$want" = "$got" ] || { echo "installer hash mismatch"; exit 1; }
+          git archive --format=tar --prefix=shop-inventory/ HEAD:scripts/hark/acceptance-fixture | tar -x -C out
+          (cd out && zip -q -r -X shop-inventory.zip shop-inventory && rm -rf shop-inventory)
+          (cd out && sha256sum "$exe" shop-inventory.zip > SHA256SUMS && cat SHA256SUMS)
+      - name: attach assets to release
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" out/*.exe out/SHA256SUMS out/shop-inventory.zip --clobber
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"'

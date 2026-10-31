@@ -11,5 +11,8 @@
 - tag 命名：`hark-v<apps/desktop 版本>`，指向上述提交；release 说明列出各工作流 run id。
 - 状态措辞：所有结论只到 "Hark self-review PASS"；普通用户真机验收（H17_REAL_PC_ACCEPTANCE_CHECKLIST.md）与独立评审（H17_INDEPENDENT_REVIEW_PACKET.md）由用户/评审人执行，release 不代表已通过两者。
 
+## 发布方式
+tag 与 release（预发布）由操作脚本建立；附件由工作流 `.github/workflows/hark-release-assets.yml`（手动触发，输入 tag 与 installer run id）上传：它先核对该 run 是 tagged 提交自己的、成功的 hark-installer 运行，再核对 exe 哈希与该 run 的 installer-sha256.txt 一致，然后用 `git archive` 生成 shop-inventory.zip、生成 SHA256SUMS 并上传（不在任何地方重新构建安装包）。测试：tests/hark/h18-release-assets.test.ts。
+
 ## 校验
 `Get-FileHash .\CompanyOS-Hark-Setup-*.exe -Algorithm SHA256` 与 SHA256SUMS 对照。
