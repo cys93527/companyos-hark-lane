@@ -56,6 +56,12 @@
 - H15c 累计记账 ¥0.4681 / ¥1（含两次 UNKNOWN 按上界 ¥0.2111 与 run 4 的 ¥0.0975；实际已知花费约 ¥0.16）。账本 installer/budget/h15c-real-spend-ledger.json。
 - 注意（观察）：run 5 中内核在任务 1 里把两个计划项都做了（提示只含任务 1 的目标与验收项）；run 6 中按任务分开执行。留给 CNY 5 真实验收任务继续观察。
 
+## H15d 真实验收目标（用户 2026-10-26 批准；CNY 10 池 / 2026-10-31 起 CNY 14）
+- 目标：scripts/hark/acceptance-fixture（小型 Node 项目，含 2 个真实缺陷 + 长业务规则文档 + 新功能 reorderPlan 的实现/测试/文档），经已安装应用 + 打包内核 + 真实 DeepSeek 多步执行。
+- 运行史（历史 PASS 不计数，每次独立判定）：run1 40308697073 FAIL（2048 输出截断计划 JSON）、run2 40313767341 INCOMPLETE、run3 40320541076 FAIL（上下文超限 → 输入上界强制 + 内核压缩）、run4 40345609717 INCOMPLETE（`node:assert/strict` 误判为路径）、run5 40359081704 INCOMPLETE（grounding 分类器把 `Inventory.removeItem` 当路径；资金上限耗尽被记成 AUTONOMY_STALLED）→ 根治 bd9d75a（classifyPathClaim、goalEnvelopeExhausted → GOAL_BUDGET_EXHAUSTED）。
+- **run6 PASS：hark-live-goal 41182323377**（安装包 41180400441 @89f97fb）结果 EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF，14 项检查全部为真（driverCompleted、npm test 通过、reorderPlan 示例/纯函数、removeItem/totalValue 规则修复、reorder 测试、CHANGES 文档、无新依赖、Artifact、CAS、Validation PASS、Handoff、未超上限）；114 次模型调用全部 KNOWN，花费 2 542 542 micros（约 CNY 2.54，上限 4 000 000）。证据 lane/evidence/H15d-ci/acceptance6-41182323377；账本 installer/budget/pool-cny10-ledger.json（累计 8 360 958）。
+- 结论标注：Hark self-review PASS（仅 CI 上的自评；独立评审与用户真机验收见 H17，未执行前不得称为通过）。
+
 ## 价格核对（H15c 前置）
 - 2026-10-26 官方价格页：模型名 `deepseek-flash`（DeepSeek-V4.1-Flash-1017），`deepseek-chat` 已不在列。CNY 高峰：输入未命中 2 元/M、输出 8 元/M——与 `installer/budget/deepseek-flash.approval-template.json` 一致。Search/Fetch 自 2026-11-01 起 5 元/千次（含经 Harness 的服务端工具调用）→ H15c 内核 profile 保持网页搜索/抓取关闭。
 

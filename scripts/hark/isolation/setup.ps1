@@ -65,12 +65,32 @@ function Grant([string]$path, [string]$sid, [string]$rights, [string]$type, [boo
   $grants.Add([ordered]@{ path = $path; rights = $rights; type = $type; inherit = $inherit }) | Out-Null
 }
 
+# H16b-3b (hark-installer 41182921120, installed-layout PONG): the kernel state root lives INSIDE userData, and node's
+# realpath lstat()s every ancestor of the staged kernel - the explicit Deny FullControl on userData itself also denied
+# ReadAttributes on that folder (explicit Deny precedes the ancestor Allow) -> EPERM lstat <userData>, the isolated
+# kernel could not start. Deny is now split: on the folder itself everything EXCEPT ReadAttributes/Synchronize (its
+# listing, contents and ACL stay denied), and FullControl inherit-only for everything below it.
+function Grant-Deny([string]$path, [string]$sid, $grants) {
+  $acl = Get-Acl -LiteralPath $path
+  $id = New-Object Security.Principal.SecurityIdentifier($sid)
+  $all = [Security.AccessControl.FileSystemRights]::FullControl
+  $keep = [Security.AccessControl.FileSystemRights]'ReadAttributes, Synchronize'
+  $self = [Security.AccessControl.FileSystemRights]([int]$all -band -bnot [int]$keep)
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, $self, 'None', 'None', 'Deny')))
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, $all, 'ContainerInherit, ObjectInherit', 'InheritOnly', 'Deny')))
+  Set-Acl -LiteralPath $path -AclObject $acl
+  $grants.Add([ordered]@{ path = $path; rights = [int]$self; type = 'Deny'; inherit = $false }) | Out-Null
+  $grants.Add([ordered]@{ path = $path; rights = [int]$all; type = 'Deny'; inherit = $true; inheritOnly = $true }) | Out-Null
+}
+
 function Test-Grant($g, [string]$sid) {
   if (-not (Test-Path -LiteralPath $g.path)) { return "acl:pathMissing:$($g.path)" }
   $want = [Security.AccessControl.FileSystemRights]$g.rights
   $hit = @((Get-Acl -LiteralPath $g.path).Access | Where-Object {
       -not $_.IsInherited -and (Sid-Of $_.IdentityReference) -eq $sid -and $_.AccessControlType.ToString() -eq $g.type -and
-      (($_.FileSystemRights -band $want) -eq $want) })
+      (($_.FileSystemRights -band $want) -eq $want) -and
+      (($_.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None) -eq [bool]$g.inherit) -and
+      ((($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) -eq [bool]$g.inheritOnly) })
   if ($hit.Count -eq 0) { return "acl:missing:$($g.type):$($g.rights):$($g.path)" }
   return $null
 }
@@ -147,7 +167,7 @@ switch ($Action) {
     foreach ($d in $WorkspaceDirs + $StateDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'Modify' 'Allow' $true $grants }
     foreach ($d in $KernelDirs) { Grant $d $sid 'ReadAndExecute' 'Allow' $true $grants }
     # Explicit Allow on a child (e.g. a kernel state root inside userData) is evaluated before the inherited Deny.
-    foreach ($d in $DenyDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'FullControl' 'Deny' $true $grants }
+    foreach ($d in $DenyDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant-Deny $d $sid $grants }
     $seen = @{}
     foreach ($d in $WorkspaceDirs + $StateDirs + $KernelDirs) {
       $parent = Split-Path -Parent $d
