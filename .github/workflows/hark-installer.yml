@@ -160,6 +160,15 @@ jobs:
           node scripts/hark/native-job-smoke.mjs "$env:RUNNER_TEMP/companyos-stage/app" hark-evidence/native-job-smoke.json 2>&1 | Tee-Object hark-evidence/native-job-smoke.log
           exit $LASTEXITCODE
 
+      - name: Isolation (H16b-3b) - installed-layout smoke - setup.ps1 install, packaged kernel PONG as the agent account via the production seam, negatives, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\hark\isolation\installed-pong.ps1 -OutDir "$PWD\hark-evidence\installed-isolation" -StagedApp "$env:RUNNER_TEMP\companyos-stage\app" *> hark-evidence/installed-isolation.log
+          $code = $LASTEXITCODE
+          Get-Content hark-evidence/installed-isolation.log
+          exit $code
+
       - name: Package installer (Inno Setup preinstalled on the runner)
         shell: pwsh
         run: |

@@ -12,6 +12,14 @@
       "commit": "4c4c651",
       "capMicros": 3200000,
       "dispatchedAt": "2026-10-26T23:03+08:00"
+    },
+    {
+      "run": "hark-live-goal 41182323377",
+      "mode": "acceptance",
+      "installer": "41180400441",
+      "commit": "89f97fb",
+      "capMicros": 4000000,
+      "dispatchedAt": "Sat 2026-10-31 3:52 PM CST (UTC+08:00)"
     }
   ],
   "entries": [

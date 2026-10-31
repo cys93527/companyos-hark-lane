@@ -19,8 +19,22 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-const pong = process.argv.includes('--pong');
+// H16b-3b: --isolation-resources <resources/isolation> --isolation-userdata <userData> --workspace <granted dir>
+// run the PONG turn through the PRODUCTION isolation seam (decideIsolation -> planIsolatedLaunch ->
+// companyos-isolated-launch.exe as the agent account inside its Job Object); the scripted model endpoint
+// listens on the allow-listed broker port, the only loopback destination WFP leaves open for the agent SID.
+const VALUE_FLAGS = new Set(['--isolation-resources', '--isolation-userdata', '--workspace']);
+const argv = process.argv.slice(2);
+const flagValue = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+const positional = argv.filter((a, i) => !a.startsWith('--') && !(i > 0 && VALUE_FLAGS.has(argv[i - 1])));
+const pong = argv.includes('--pong');
+const isolationResources = flagValue('--isolation-resources');
+const isolationUserData = flagValue('--isolation-userdata');
+const isolatedWorkspace = flagValue('--workspace');
+const isolated = isolationResources !== undefined;
+if (isolated && (isolationUserData === undefined || isolatedWorkspace === undefined || !pong)) {
+  console.error('--isolation-resources needs --isolation-userdata, --workspace and --pong'); process.exit(2);
+}
 const [kernelDir, stateArg, reportPath] = positional;
 if (!kernelDir) { console.error('usage: kernel-health-smoke.mjs <kernelDir> [stateDir] [report.json]'); process.exit(2); }
 const { resolveEmbeddedDshRuntime } = await import(pathToFileURL(join(root, 'apps/desktop/dist/executor/embedded-dsh-runtime.js')).href);
@@ -44,7 +58,14 @@ const runPong = async (runtime) => {
     { tool_call: { name: 'write', arguments: { file_path: 'PLACEHOLDER', content: 'PONG' } } },
     { text: 'PONG' },
   ];
-  const workspace = mkdtempSync(join(tmpdir(), 'companyos-kernel-pong-ws-'));
+  const workspace = mkdtempSync(join(isolated ? isolatedWorkspace : tmpdir(), 'companyos-kernel-pong-ws-'));
+  let isolation = null;
+  if (isolated) {
+    const { decideIsolation } = await import(pathToFileURL(join(root, 'apps/desktop/dist/executor/isolation/isolation-status-runner.js')).href);
+    const decision = await decideIsolation({ layout: { resourcesDir: isolationResources, userDataDir: isolationUserData } });
+    isolation = { decision };
+    if (decision.kind !== 'launch-isolated') return { ok: false, reason: 'ISOLATION_NOT_ISOLATED', isolation };
+  }
   scenario[withPwsh ? 1 : 0].tool_call.arguments.file_path = join(workspace, 'pong.txt');
   const exchangeTimes = [];
   const toolResults = [];
@@ -84,7 +105,7 @@ const runPong = async (runtime) => {
       exchangeTimes[exchangeTimes.length - 1].respondedAt = Date.now();
     });
   });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  await new Promise((r) => server.listen(isolation === null ? 0 : isolation.decision.brokerPort, '127.0.0.1', r));
   const port = server.address().port;
   try {
     const stage = runtime.prepareAttemptStage({ attemptId: 'pong' });
@@ -130,10 +151,20 @@ const runPong = async (runtime) => {
         ws.onerror = (e) => { hangDiag.error = `ws: ${String(e?.message ?? 'error')}`; };
       });
     };
+    const args = [stage.value.cliEntryPath, runtime.manifest.profileName, '--json', 'Write PONG into pong.txt in the workspace, then reply PONG.'];
+    let exe = node; let exeArgs = args;
+    if (isolation !== null) {
+      const { planIsolatedLaunch } = await import(pathToFileURL(join(root, 'apps/desktop/dist/executor/isolation/isolated-launch-seam.js')).href);
+      const { isolationPaths } = await import(pathToFileURL(join(root, 'apps/desktop/dist/executor/isolation/isolation-status-runner.js')).href);
+      const paths = isolationPaths({ resourcesDir: isolationResources, userDataDir: isolationUserData });
+      const plan = planIsolatedLaunch({ decision: isolation.decision, config: { launcherPath: paths.launcher, credentialPath: paths.credentialPath }, workspaceRoot: workspace, childExecutable: node, childArgv: args });
+      isolation.plan = plan.kind === 'isolated' ? { kind: plan.kind, executable: plan.executable, account: plan.account, brokerPort: plan.brokerPort } : plan;
+      if (plan.kind !== 'isolated') { home.value.dispose(); return { ok: false, reason: 'ISOLATION_PLAN_NOT_ISOLATED', isolation }; }
+      exe = plan.executable; exeArgs = [...plan.argvPrefix];
+    }
     const out = await new Promise((resolvePromise) => {
       let stdout = ''; let stderr = '';
-      const args = [stage.value.cliEntryPath, runtime.manifest.profileName, '--json', 'Write PONG into pong.txt in the workspace, then reply PONG.'];
-      const child = spawn(node, args, { cwd: workspace, env, windowsHide: true });
+      const child = spawn(exe, exeArgs, { cwd: workspace, env, windowsHide: true });
       const timer = setTimeout(() => child.kill(), withPwsh ? 300_000 : 180_000);
       let diagTimer = null;
       child.stdout.on('data', (c) => {
@@ -161,7 +192,7 @@ const runPong = async (runtime) => {
     const pwshOk = !withPwsh || (pwshToolMs !== null && pwshToolMs <= 90_000 && pwshResult !== null);
     const ok = pwshOk && out.code === 0 && fileText === 'PONG' && finalLine !== null && finalLine.includes('PONG') && calls >= (withPwsh ? 3 : 2) && post.ok
       && capFields.length >= 1 && capFields.every((c) => c !== null && c.max_tokens === 4096 && c.max_completion_tokens === null && c.store === null && c.include_usage === true);
-    return { ok, ...(withPwsh ? { pwsh: { ok: pwshOk, toolMs: pwshToolMs, resultLine: pwshResult === null ? null : pwshResult.slice(0, 600), terminalTimeoutShortenedIn: shortened, toolResults, hangDiag } } : {}), exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 && pwshOk ? {} : { startupLog }) };
+    return { ok: ok && (isolation === null || isolation.plan?.kind === 'isolated'), ...(isolation === null ? {} : { isolation, workspace }), ...(withPwsh ? { pwsh: { ok: pwshOk, toolMs: pwshToolMs, resultLine: pwshResult === null ? null : pwshResult.slice(0, 600), terminalTimeoutShortenedIn: shortened, toolResults, hangDiag } } : {}), exitCode: out.code, modelCalls: calls, requestBytes, capFields, fileWritten: fileText, finalLine, postSpawnVerified: post.ok, stdoutTail: out.stdout.slice(-3000), stderrTail: out.stderr.slice(-3000), ...(out.code === 0 && pwshOk ? {} : { startupLog }) };
   } finally {
     server.close();
   }
