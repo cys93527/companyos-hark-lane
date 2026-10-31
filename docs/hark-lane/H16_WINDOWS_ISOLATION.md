@@ -35,6 +35,10 @@
 4. 非提权读 WFP 对象 0x5 → 对象显式安全描述符。
 5. 子进程 profile 未加载导致 ENOMEM、TEMP 指向安装用户 profile → CreateProfile + LOGON_WITH_PROFILE + 环境改写。
 6. PowerShell 报告 ConvertTo-Json OOM（Get-Content 字符串带 ETS 注解）→ 记录时即快照为有界纯字符串。
+7. userData 显式 Deny FullControl 连文件夹本身的 ReadAttributes 也拒绝 → node realpath 对位于 userData 内的内核状态根 lstat EPERM（hark-installer 41182921120）→ Deny 拆分：文件夹本身拒绝除 ReadAttributes/Synchronize 外的一切，子项 FullControl 仅继承拒绝；状态检查校验继承/传播标志。
+8. 目标工作区不在已授权根目录下时内核会以无权写入的账户运行 → 设置状态记录 workspaceDirs，`planIsolatedLaunch` 以 `workspace:notGranted` 拒绝（按路径段、忽略大小写）。
+9. 安装/升级重建 resources/ 会丢失对 resources/agent-kernel 的授权 → 改为对安装目录 {app} 授予 ReadAndExecute（升级后仍在）。
+10. 内核内层 shell 沙箱（上游 sandbox-windows-acl grantWrite）以隔离账户身份给工作区加能力 SID ACE 与 Low 完整性标签，需要 WRITE_DAC + WRITE_OWNER；Modify 不含 → 每次 pwsh 工具调用 Win32 5（hark-installer 41184110972）→ 工作区根目录授予 FullControl（继承），状态目录仍 Modify。
 
 ## 诚实残留（不宣称已关闭）
 - DNS：名字解析由 DNS Client 服务（NetworkService）代发，按账户 SID 的过滤看不到 → DNS 查询仍可作为外泄信道。
