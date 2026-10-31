@@ -30,6 +30,13 @@ DefaultDirName={localappdata}\Programs\CompanyOS
 DefaultGroupName=CompanyOS
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; H16b-3b-fix4 (hark-installer 41191287370/41194007074): Inno 6.7 enables Windows RedirectionGuard on Setup/Uninstall
+; by default, and with PrivilegesRequired=lowest every child process INHERITS it (documented in the 6.7 revision
+; history; fix promised for Inno 7). The uninstaller's [UninstallRun] isolation removal (and the elevated helper it
+; starts) then ran under the mitigation and produced no output at all, leaving the agent account behind. The
+; mitigation protects ELEVATED installers that write user-writable locations; this per-user, never-elevated
+; installer gains nothing from it, so it is off.
+RedirectionGuard=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutDir}

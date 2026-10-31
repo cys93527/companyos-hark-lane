@@ -67,8 +67,18 @@ function Get-IsolationStatus {
 }
 # One elevated helper run; its single JSON line comes back through a result file (an elevated child's stdout cannot
 # be piped to this unelevated process).
+function Test-Elevated { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 function Invoke-Elevated($named) {
   New-Item -ItemType Directory -Force -Path $isoDir | Out-Null
+  if (Test-Elevated) {
+    # Already administrator (e.g. an elevated uninstaller): run the helper directly and capture ALL of its output
+    # (stdout + stderr) and its exit code through a pipe - no second elevation, nothing can get lost.
+    $args2 = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $helper)
+    foreach ($k in $named.Keys) { $args2 += "-$k"; $args2 += [string]$named[$k] }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $raw = & $ps @args2 2>&1 | Out-String; $code = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+    return [pscustomobject]@{ refused = $false; exit = $code; json = (Last-Json $raw); raw = $raw }
+  }
   $result = Join-Path $isoDir ("helper-result-" + [Guid]::NewGuid().ToString('N') + '.txt')
   $parts = @('&', (Quote-Ps $helper))
   foreach ($k in $named.Keys) { $parts += "-$k"; $parts += (Quote-Ps ([string]$named[$k])) }
@@ -104,7 +114,7 @@ if ($Remove) {
   }
   $r = Invoke-Elevated ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })
   if ($r.refused) { Finish 4 '已取消：移除隔离需要管理员权限。' }
-  if ($r.exit -ne 0 -or $null -eq $r.json -or $r.json.ok -ne $true) { Finish 3 "移除隔离失败：$($r.raw)" }
+  if ($r.exit -ne 0 -or $null -eq $r.json -or $r.json.ok -ne $true) { Finish 3 "移除隔离失败（退出码 $($r.exit)）：$($r.raw)" }
   Remove-Item -LiteralPath $credPath -Force -ErrorAction SilentlyContinue
   Finish 0 '已移除隔离：专用账户、防火墙过滤器和文件权限均已删除。之后智能体会以你的账户运行，并标注「未隔离」。'
 }
@@ -139,7 +149,7 @@ Remove-Item -LiteralPath $handoff -Force -ErrorAction SilentlyContinue
 if ($r.refused) { Remove-Item -LiteralPath $newCred -Force -ErrorAction SilentlyContinue; Finish 4 '已取消：启用隔离需要管理员权限。' }
 if ($r.exit -ne 0 -or $null -eq $r.json -or $r.json.ok -ne $true) {
   Remove-Item -LiteralPath $newCred -Force -ErrorAction SilentlyContinue
-  Finish 3 "启用隔离失败：$($r.raw)"
+  Finish 3 "启用隔离失败（退出码 $($r.exit)）：$($r.raw)"
 }
 Move-Item -LiteralPath $newCred -Destination $credPath -Force
 $s = Get-IsolationStatus
