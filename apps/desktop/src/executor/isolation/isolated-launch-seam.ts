@@ -13,7 +13,9 @@
  *   - launch-unisolated → the kernel command unchanged, labelled "未隔离" (isolation never configured);
  *   - refuse            → no spawn at all: ISOLATION_DEGRADED (configured isolation no longer matches) — never
  *                         a silent fallback to the unisolated launch.
- * A missing launcher or credential file on an ISOLATED decision is also DEGRADED (fail closed).
+ * A missing launcher or credential file on an ISOLATED decision is also DEGRADED (fail closed), and so is a
+ * workspace outside every root the setup granted the agent account (H16b-3b: the user picked another workspace
+ * after isolation setup; re-run "CompanyOS 隔离设置" to grant it).
  */
 import { existsSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
@@ -21,6 +23,21 @@ import type { IsolationDispatchDecision } from './isolation-status.js';
 
 // Absolute on the platform that runs it (Windows in production; POSIX-shaped paths only in tests).
 const isAbsolute = (path: string): boolean => win32.isAbsolute(path) || posix.isAbsolute(path);
+
+/** Case-insensitive on Windows-shaped paths (NTFS) and segment-exact: a root `ws` never covers a sibling `ws2`. */
+export const isWithinRoot = (root: string, path: string): boolean => {
+  const windows = win32.isAbsolute(root) && /^[A-Za-z]:|^\\\\/u.test(root);
+  const p = windows ? win32 : posix;
+  const norm = (v: string): string => {
+    const n = p.resolve(v);
+    return windows ? n.toLowerCase() : n;
+  };
+  const r = norm(root);
+  const t = norm(path);
+  if (t === r) return true;
+  const rel = p.relative(r, t);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${p.sep}`) && !p.isAbsolute(rel);
+};
 
 export interface IsolationLaunchConfig {
   /** Absolute path of companyos-isolated-launch.exe (packaged under resources/isolation/). */
@@ -61,6 +78,7 @@ export const planIsolatedLaunch = (input: {
   if (!isAbsolute(config.launcherPath) || !exists(config.launcherPath)) problems.push('launcher:missing');
   if (!isAbsolute(config.credentialPath) || !exists(config.credentialPath)) problems.push('credential:missing');
   if (!isAbsolute(input.workspaceRoot)) problems.push('workspace:notAbsolute');
+  else if (!decision.workspaceDirs.some((root) => isWithinRoot(root, input.workspaceRoot))) problems.push('workspace:notGranted');
   if (!isAbsolute(input.childExecutable)) problems.push('child:notAbsolute');
   if (problems.length > 0) return { kind: 'refused', reasonCode: 'ISOLATION_DEGRADED', problems };
   return {

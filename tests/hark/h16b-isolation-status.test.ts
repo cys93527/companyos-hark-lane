@@ -11,13 +11,13 @@ import {
  * unisolated, and then visibly labelled. Anything malformed fails closed.
  */
 const SID = 'S-1-5-21-1111111111-2222222222-3333333333-1001';
-const ok = JSON.stringify({ state: 'ISOLATED', account: 'CompanyOSAgentab12cd', sid: SID, brokerPort: 47811, problems: [] });
+const ok = JSON.stringify({ state: 'ISOLATED', account: 'CompanyOSAgentab12cd', sid: SID, brokerPort: 47811, workspaceDirs: ['C:\\Users\\u\\Documents\\CompanyOS'], problems: [] });
 
 describe('H16b isolation status', () => {
   it('ISOLATED with a consistent exit code launches as the agent account', () => {
     const s = interpretIsolationStatus(0, `\uFEFF${ok}\r\n`);
     expect(s.state).toBe('ISOLATED');
-    expect(isolationDispatchDecision(s)).toEqual({ kind: 'launch-isolated', account: 'CompanyOSAgentab12cd', sid: SID, brokerPort: 47811 });
+    expect(isolationDispatchDecision(s)).toEqual({ kind: 'launch-isolated', account: 'CompanyOSAgentab12cd', sid: SID, brokerPort: 47811, workspaceDirs: ['C:\\Users\\u\\Documents\\CompanyOS'] });
   });
 
   it('NOT_CONFIGURED launches unisolated with the visible label', () => {
@@ -46,5 +46,14 @@ describe('H16b isolation status', () => {
     const s = interpretIsolationStatus(code, out);
     expect(s.state).toBe('ISOLATION_DEGRADED');
     expect(isolationDispatchDecision(s).kind).toBe('refuse');
+  });
+
+  it('H16b-3b: an ISOLATED report without granted workspace roots fails closed', () => {
+    for (const workspaceDirs of [undefined, [], [''], [42]]) {
+      const raw = { ...JSON.parse(ok), workspaceDirs };
+      const s = interpretIsolationStatus(0, JSON.stringify(raw));
+      expect(s.state).toBe('ISOLATION_DEGRADED');
+      expect(s.problems).toEqual(['status:workspaceDirsMissing']);
+    }
   });
 });

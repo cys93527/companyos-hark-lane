@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { request } from 'node:http';
 import { createServer, type AddressInfo } from 'node:net';
 
-import { planIsolatedLaunch } from '../../apps/desktop/src/executor/isolation/isolated-launch-seam.js';
+import { isWithinRoot, planIsolatedLaunch } from '../../apps/desktop/src/executor/isolation/isolated-launch-seam.js';
 import { startModelBroker } from '../../apps/desktop/src/executor/embedded-dsh-runtime.js';
 
 /*
@@ -14,7 +14,7 @@ const config = {
   credentialPath: 'C:\\Users\\u\\AppData\\Roaming\\CompanyOS\\isolation\\agent-credential.dpapi',
   fileExists: () => true,
 };
-const isolated = { kind: 'launch-isolated', account: 'companyos-agent', sid: 'S-1-5-21-1-2-3-1001', brokerPort: 47811 } as const;
+const isolated = { kind: 'launch-isolated', account: 'companyos-agent', sid: 'S-1-5-21-1-2-3-1001', brokerPort: 47811, workspaceDirs: ['/ws'] } as const;
 const base = {
   workspaceRoot: '/ws/goal',
   childExecutable: '/state/.dsh-stages/stage-x/node/node.exe',
@@ -130,14 +130,30 @@ describe('H16b-3 start-time status runner', () => {
       layout, platform: 'win32', fileExists: () => true, powershell: 'powershell.exe',
       exec: async (file, args) => {
         calls.push([file, ...args]);
-        return { code: 0, stdout: '{"state":"ISOLATED","account":"companyos-agent","sid":"S-1-5-21-1-2-3-1001","brokerPort":47811,"problems":[]}\r\n' };
+        return { code: 0, stdout: '{"state":"ISOLATED","account":"companyos-agent","sid":"S-1-5-21-1-2-3-1001","brokerPort":47811,"workspaceDirs":["C:\\\\ws"],"problems":[]}\r\n' };
       },
     });
-    expect(ok).toEqual({ kind: 'launch-isolated', account: 'companyos-agent', sid: 'S-1-5-21-1-2-3-1001', brokerPort: 47811 });
+    expect(ok).toEqual({ kind: 'launch-isolated', account: 'companyos-agent', sid: 'S-1-5-21-1-2-3-1001', brokerPort: 47811, workspaceDirs: ['C:\\ws'] });
     expect(calls[0]).toContain('-File');
     expect(calls[0]).toContain('status');
     expect(calls[0]?.some((a) => a.endsWith('setup.ps1'))).toBe(true);
     const timedOut = await decideIsolation({ layout, platform: 'win32', fileExists: () => true, exec: async () => ({ code: null, stdout: '' }) });
     expect(timedOut.kind).toBe('refuse');
+  });
+
+  it('H16b-3b: a workspace outside every granted root is refused, never launched as an account that cannot write it', () => {
+    const plan = planIsolatedLaunch({ decision: isolated, config, ...base, workspaceRoot: '/ws2/goal' });
+    expect(plan).toEqual({ kind: 'refused', reasonCode: 'ISOLATION_DEGRADED', problems: ['workspace:notGranted'] });
+    expect(planIsolatedLaunch({ decision: isolated, config, ...base, workspaceRoot: '/ws' }).kind).toBe('isolated');
+  });
+
+  it('H16b-3b: isWithinRoot is segment-exact and case-insensitive for Windows paths', () => {
+    expect(isWithinRoot('C:\\Users\\u\\Documents\\CompanyOS', 'c:\\users\\U\\documents\\companyos\\goal-1')).toBe(true);
+    expect(isWithinRoot('C:\\Users\\u\\Documents\\CompanyOS', 'C:\\Users\\u\\Documents\\CompanyOS2')).toBe(false);
+    expect(isWithinRoot('C:\\ws', 'C:\\ws\\..\\other')).toBe(false);
+    expect(isWithinRoot('C:\\ws', 'C:\\ws\\..data')).toBe(true);
+    expect(isWithinRoot('/ws', '/ws/a/b')).toBe(true);
+    expect(isWithinRoot('/ws', '/wsx')).toBe(false);
+    expect(isWithinRoot('/ws', '/')).toBe(false);
   });
 });

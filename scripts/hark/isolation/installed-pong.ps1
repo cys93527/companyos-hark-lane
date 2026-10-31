@@ -1,7 +1,8 @@
 # H16b-3b installed-layout isolation smoke (CI ONLY, windows-2022, elevated runner; never on a user's PC).
 # Uses the STAGED app's resources (resources/isolation helper + launcher, resources/agent-kernel) in the production
 # per-user layout and the production seam (decideIsolation -> planIsolatedLaunch -> companyos-isolated-launch.exe):
-#   P1 elevated setup.ps1 install (account, workspace/state Modify, kernel RX, userData deny, persistent WFP)
+#   P1 elevated setup.ps1 install (account, workspace/state Modify, app dir RX as configure-isolation.ps1 grants it,
+#      userData deny, persistent WFP)
 #   P2 the app's DPAPI(CurrentUser) credential blob at <userData>/isolation/agent-credential.dpapi
 #   P3 packaged kernel PONG turn AS the agent account (kernel-health-smoke --pong --isolation-*): pwsh tool + fs write
 #      + model endpoint on the allow-listed broker port; pong.txt owned by the agent account
@@ -59,7 +60,7 @@ try {
   $handoff = Join-Path $userData "isolation\handoff-$([Guid]::NewGuid().ToString('N')).txt"
   Set-Content -LiteralPath $handoff -Value $password -NoNewline -Encoding ascii
   $p1 = Invoke-Setup ([ordered]@{ Action = 'install'; StatePath = $statePath; PasswordFile = $handoff; BrokerPort = "$brokerPort"; AccountName = $account
-      WorkspaceDirs = $workspace; StateDirs = $stateDir; KernelDirs = $kernelRoot; DenyDirs = $userData })
+      WorkspaceDirs = $workspace; StateDirs = $stateDir; KernelDirs = $StagedApp; DenyDirs = $userData })
   $report.steps.P1 = [ordered]@{ code = $p1.code; readBack = $p1.json.readBack; raw = $p1.raw.Substring(0, [Math]::Min(3000, $p1.raw.Length)) }
   Check 'P1.install.isolated' ($p1.code -eq 0 -and $p1.json.readBack.state -eq 'ISOLATED') $p1.json
   Check 'P1.install.handoffDeleted' (-not (Test-Path -LiteralPath $handoff)) $handoff

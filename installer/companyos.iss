@@ -68,6 +68,16 @@ Name: "{autodesktop}\CompanyOS"; Filename: "{app}\CompanyOS.exe"; Tasks: desktop
 ; H17a: ordinary-user provider setup (DeepSeek key via DPAPI + per-Goal budget), runs as the user, no elevation.
 Name: "{autoprograms}\CompanyOS 首次配置"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-deepseek.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CompanyOS.exe"
 
+; H16b-3b: optional Windows isolation of the agent (dedicated account, workspace-only writes, broker-only network);
+; asks for administrator rights once per change (UAC). -Status/-Remove are offered by the same helper.
+Name: "{autoprograms}\CompanyOS 隔离设置"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-isolation.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\CompanyOS.exe"
+Name: "{autoprograms}\CompanyOS 移除隔离"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-isolation.ps1"" -Remove"; WorkingDir: "{app}"; IconFilename: "{app}\CompanyOS.exe"
+
+[UninstallRun]
+; H16b-3b: uninstalling CompanyOS also removes a configured isolation (account, WFP filters, ACEs) - no leftovers.
+; Without isolation configured this does nothing and asks for nothing.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-isolation.ps1"" -Remove -IfConfigured -NoPause"; Flags: runhidden waituntilterminated; RunOnceId: "CompanyOSRemoveIsolation"
+
 [Run]
 Filename: "{app}\CompanyOS.exe"; Description: "{cm:LaunchProgram,CompanyOS}"; Flags: nowait postinstall skipifsilent
 

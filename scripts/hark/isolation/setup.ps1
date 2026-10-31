@@ -98,7 +98,10 @@ function Get-Status {
   } catch { $problems.Add("wfp:error:$($_.Exception.Message)") | Out-Null }
   finally { try { [CompanyOSWfp]::Close() } catch {} }
   $state = if ($problems.Count -eq 0) { 'ISOLATED' } else { 'ISOLATION_DEGRADED' }
-  return [ordered]@{ state = $state; account = $st.account; sid = $st.sid; brokerPort = $st.brokerPort; problems = @($problems) }
+  # H16b-3b: the granted workspace roots travel with the report (the app refuses a goal workspace outside them).
+  $ws = @($st.workspaceDirs | Where-Object { $_ })
+  if ($ws.Count -eq 0) { $problems.Add('state:workspaceDirsMissing') | Out-Null; $state = 'ISOLATION_DEGRADED' }
+  return [ordered]@{ state = $state; account = $st.account; sid = $st.sid; brokerPort = $st.brokerPort; workspaceDirs = $ws; problems = @($problems) }
 }
 
 function Remove-AllAces([string]$path, [string]$sid) {
@@ -174,6 +177,7 @@ switch ($Action) {
 
     $state = [ordered]@{
       schema = $SCHEMA; account = $AccountName; sid = $sid; profilePath = $profilePath; brokerPort = $BrokerPort; installedAt = (Get-Date).ToString('o')
+      workspaceDirs = @($WorkspaceDirs)
       grants = @($grants); ancestorGrants = @($ancestorGrants)
       wfp = [ordered]@{ provider = [CompanyOSWfp]::PROVIDER_KEY.ToString(); sublayer = [CompanyOSWfp]::SUBLAYER_KEY.ToString(); v4 = [CompanyOSWfp]::FILTER_V4_KEY.ToString(); v6 = [CompanyOSWfp]::FILTER_V6_KEY.ToString() }
     }

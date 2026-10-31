@@ -18,10 +18,18 @@ export interface IsolationStatus {
   readonly account?: string;
   readonly sid?: string;
   readonly brokerPort?: number;
+  /** H16b-3b: the workspace roots the agent account was granted Modify on (the only roots it can work in). */
+  readonly workspaceDirs?: readonly string[];
 }
 
 export type IsolationDispatchDecision =
-  | { readonly kind: 'launch-isolated'; readonly account: string; readonly sid: string; readonly brokerPort: number }
+  | {
+    readonly kind: 'launch-isolated';
+    readonly account: string;
+    readonly sid: string;
+    readonly brokerPort: number;
+    readonly workspaceDirs: readonly string[];
+  }
   | { readonly kind: 'launch-unisolated'; readonly label: '未隔离' }
   | { readonly kind: 'refuse'; readonly reasonCode: 'ISOLATION_DEGRADED'; readonly problems: readonly string[] };
 
@@ -55,13 +63,27 @@ export const interpretIsolationStatus = (exitCode: number | null, stdout: string
   if (typeof brokerPort !== 'number' || !Number.isInteger(brokerPort) || brokerPort < 1024 || brokerPort > 65535) {
     return degraded('status:brokerPortInvalid');
   }
-  return { state, problems: [], account, sid, brokerPort };
+  // H16b-3b: a goal whose workspace was never granted would run as an account that cannot write there; the
+  // granted roots travel with the decision so the launch plan can refuse such a workspace up front.
+  const workspaceDirs = r['workspaceDirs'];
+  if (!Array.isArray(workspaceDirs) || workspaceDirs.length === 0
+    || !workspaceDirs.every((d): d is string => typeof d === 'string' && d.length > 0)) {
+    return degraded('status:workspaceDirsMissing');
+  }
+  return { state, problems: [], account, sid, brokerPort, workspaceDirs };
 };
 
 export const isolationDispatchDecision = (status: IsolationStatus): IsolationDispatchDecision => {
   if (status.state === 'NOT_CONFIGURED') return { kind: 'launch-unisolated', label: '未隔离' };
-  if (status.state === 'ISOLATED' && status.account !== undefined && status.sid !== undefined && status.brokerPort !== undefined) {
-    return { kind: 'launch-isolated', account: status.account, sid: status.sid, brokerPort: status.brokerPort };
+  if (status.state === 'ISOLATED' && status.account !== undefined && status.sid !== undefined && status.brokerPort !== undefined
+    && status.workspaceDirs !== undefined) {
+    return {
+      kind: 'launch-isolated',
+      account: status.account,
+      sid: status.sid,
+      brokerPort: status.brokerPort,
+      workspaceDirs: status.workspaceDirs,
+    };
   }
   return {
     kind: 'refuse',

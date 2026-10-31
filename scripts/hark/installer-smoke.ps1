@@ -1,4 +1,4 @@
-# Hark lane H8: per-user install -> launch -> uninstall smoke on the CI runner.
+﻿# Hark lane H8: per-user install -> launch -> uninstall smoke on the CI runner.
 # Records evidence into $Evidence. Exit 0 only if every check passes.
 param([Parameter(Mandatory)] [string]$Setup, [Parameter(Mandatory)] [string]$Evidence)
 $ErrorActionPreference = 'Stop'
@@ -109,10 +109,36 @@ $ErrorActionPreference = 'Stop'
 Check 'h17a-remove' (($removeExit -eq 0) -and -not (Test-Path (Join-Path $userData 'provider\model-api-key.dpapi')) -and -not (Test-Path $approval)) "exit=$removeExit"
 if ($logs) { Get-ChildItem (Join-Path $userData 'logs') -File -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName (Join-Path $Evidence ("app-after-h17a-" + $_.Name)) } }
 
+# H16b-3b: ordinary-user isolation setup on the INSTALLED app (Start menu 'CompanyOS 隔离设置'), then the
+# uninstaller must remove it (no account / WFP filter / ACE left behind).
+$isoPs1 = Join-Path $dir 'resources\setup\configure-isolation.ps1'
+Check 'h16-isolation-helper-installed' ((Test-Path $isoPs1) -and (Test-Path (Join-Path $dir 'resources\isolation\setup.ps1')) -and (Test-Path (Join-Path $dir 'resources\isolation\companyos-isolated-launch.exe'))) $isoPs1
+$isoLnk = @(Get-ChildItem (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') -Filter 'CompanyOS *.lnk' -ErrorAction SilentlyContinue)
+Check 'h16-isolation-shortcuts' ($isoLnk.Count -ge 3) (($isoLnk | ForEach-Object Name) -join ',')
+$smokeWs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CompanyOS-HarkSmoke-workspace'
+New-Item -ItemType Directory -Force -Path $smokeWs | Out-Null
+# What the app writes when the user picks a workspace (workspace-selection.ts).
+[IO.File]::WriteAllText((Join-Path $userData 'workspace-selection.json'), (([ordered]@{ root = $smokeWs; selectedAt = (Get-Date).ToString('o') }) | ConvertTo-Json))
+$ErrorActionPreference = 'Continue'
+& $ps -NoProfile -ExecutionPolicy Bypass -File $isoPs1 -NoPause *> (Join-Path $Evidence 'h16-isolation-setup.txt')
+$isoExit = $LASTEXITCODE
+& $ps -NoProfile -ExecutionPolicy Bypass -File $isoPs1 -Status -NoPause *> (Join-Path $Evidence 'h16-isolation-status.txt')
+$isoStatusExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+$isoState = Join-Path $userData 'isolation\state.json'
+$isoAccount = $null; $isoWs = $null
+try { $st = Get-Content -LiteralPath $isoState -Raw | ConvertFrom-Json; $isoAccount = $st.account; $isoWs = @($st.workspaceDirs) } catch { }
+Check 'h16-isolation-setup-exit-0' ($isoExit -eq 0) "exit=$isoExit"
+Check 'h16-isolation-state' (($null -ne $isoAccount) -and (Test-Path (Join-Path $userData 'isolation\agent-credential.dpapi')) -and ($isoWs -contains $smokeWs)) "account=$isoAccount workspaceDirs=$($isoWs -join ';')"
+Check 'h16-isolation-account-exists' ($isoAccount -and (Get-LocalUser -Name $isoAccount -ErrorAction SilentlyContinue)) "$isoAccount"
+Check 'h16-isolation-status-isolated' ($isoStatusExit -eq 0) "exit=$isoStatusExit"
+Check 'h16-isolation-no-handoff-left' (@(Get-ChildItem (Join-Path $userData 'isolation') -Filter 'handoff-*' -ErrorAction SilentlyContinue).Count -eq 0) ''
+
 $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=`"$Evidence\uninstall.log`"" -PassThru -Wait
 Check 'uninstall-exit-0' ($u.ExitCode -eq 0) $u.ExitCode
 Start-Sleep -Seconds 3  # the Inno uninstaller deletes itself via a short-lived helper
 Check 'install-dir-removed' (-not (Test-Path $exe)) ((Get-ChildItem $dir -Recurse -ErrorAction SilentlyContinue | ForEach-Object FullName) -join ';')
+Check 'h16-uninstall-removed-isolation' ((-not (Test-Path $isoState)) -and (-not (Test-Path (Join-Path $userData 'isolation\agent-credential.dpapi'))) -and -not ($isoAccount -and (Get-LocalUser -Name $isoAccount -ErrorAction SilentlyContinue))) "account=$isoAccount"
 $still = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'CompanyOS' }
 Check 'uninstall-entry-removed' ($null -eq $still) ''
 $result.userDataExistedBefore = $before
