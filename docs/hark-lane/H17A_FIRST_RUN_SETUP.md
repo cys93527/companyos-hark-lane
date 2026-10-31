@@ -1,6 +1,6 @@
 # H17a — 普通用户首次配置（DeepSeek API Key + 每个目标的预算）
 
-状态：本地实现 + 测试 + 门禁通过（Hark self-review PASS，不是独立评审结论）。Windows 安装冒烟待 GitHub Actions 恢复后运行。
+状态：完成（Hark self-review PASS，不是独立评审结论）。Windows 安装冒烟 h17a-* 8 项在 hark-installer 41199673358 @b6c85cc 全部通过（安装冒烟 36/36）。普通用户真机执行属 H17 验收清单。
 
 ## 缺口
 已安装版只从进程环境变量（COS_MODEL_* / COMPANYOS_MODEL_API_KEY）和运营者写入的 `userData/budget/approvals.json` 读取模型与预算；普通用户没有受支持的配置方式（界面显示"提供商凭证不在界面中管理"）。
@@ -17,8 +17,8 @@
 - `tests/hark/h17a-provider-setup.test.ts` 13 项：环境 > 文件优先、部分/损坏/他人 DPAPI/无解密能力 → INVALID 不写环境、报告不含 Key、写入的批准被 deployment-budget-proof 信任且 identify/select 命中、价格证明过期、上限范围、移除只删自己的批准、koffi DPAPI 调用形状（明文清零 + LocalFree/HeapFree）、PS 脚本静态检查（SecureString、CurrentUser、无智能引号、Key 不传给 node）。
 - offline 138/138，typecheck 0，boundaries 0，architecture 0，eslint（改动文件）0，tests/hark + apps/renderer/tests 41 文件 354 项全过。证据 lane/evidence/H17a-gates。
 
-## 待 CI（Actions 恢复后）
-hark-installer 增加：在已安装应用上 `configure-deepseek.ps1 -KeyFromStdin -CapCny 1 -NoPause`（假 Key）→ 启动应用 → 日志出现 `provider setup` source=provider-setup setupState=CONFIGURED → 证据中搜不到假 Key → `-Remove` 后 NOT_CONFIGURED。
+## CI（hark-installer 41199673358 @b6c85cc 通过）
+hark-installer 检查：在已安装应用上 `configure-deepseek.ps1 -KeyFromStdin -CapCny 1 -NoPause`（假 Key）→ 启动应用 → 日志出现 `provider setup` source=provider-setup setupState=CONFIGURED → 证据中搜不到假 Key → `-Remove` 后 NOT_CONFIGURED。
 
 
 ## 修复记录（2026-10-31）

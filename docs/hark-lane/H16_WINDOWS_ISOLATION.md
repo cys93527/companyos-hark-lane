@@ -1,6 +1,6 @@
-# H16 — Windows 文件/网络隔离（Hark lane，草稿）
+# H16 — Windows 文件/网络隔离（Hark lane）
 
-状态：**进行中**。H16a 探测与 H16b-2 生命周期在 Windows CI runner 上 **Hark self-review PASS**；H16b-3b（安装冒烟中的隔离 PONG + 负例、设置界面/IPC 提权）尚未完成。独立评审：**未授予**。用户批准：2026-10-26 08:39（ROADMAP #11）。只在 GitHub Windows runner 上验证，**从不改动用户本机**。
+状态：**完成（Hark self-review PASS，非独立评审）**。H16a 探测、H16b-2 生命周期、H16b-3a 生产接线、H16b-3b 安装后隔离 PONG + 负例 + 卸载回读均在 GitHub Windows runner 上通过（b6c85cc 全部工作流绿）。独立评审：**未授予**（由用户/评审人按 H17 资料执行）。用户批准：2026-10-26 08:39（ROADMAP #11）。只在 GitHub Windows runner 上验证，**从不改动用户本机**；真机验证属 H17。
 
 设计与探测原始记录：`lane/H16_DESIGN.md`（含 PROBE RESULT），证据 `lane/evidence/H16-ci/`（保留每次首次失败）。
 
@@ -26,7 +26,7 @@
 | H16a 探测 | hark-isolation 40334964921 @b6cd9bd | ISOLATION_PROBE_PASS 25/25（首次失败 run1–run5 保留：BOM/stderr 包装、::1 单地址被拒、祖先 lstat EPERM、防火墙不匹配回环 ×2） |
 | H16b-2 生命周期 | hark-isolation 40352982060 @d80af91 | ISOLATION_LIFECYCLE_PASS 43/43（安装、新进程状态、隔离子进程身份/网络/文件、启动器 8 项、非提权状态、WFP/ACL 篡改 → DEGRADED、修复不重复、卸载回读）。首次失败 run 7 40347340358（36/40，子进程 os.userInfo() ENOMEM：未加载 profile）→ 根治 d80af91 |
 | H16b-3a 生产接线 | hark-installer 40360476317 @939655c | 绿：启动器编译、resources/isolation 入包 |
-| H16b-3b | — | **未运行**：2026-10-27 00:51 起 GitHub Actions 因账户付款/支出上限拒绝启动任何 job，等待恢复 |
+| H16b-3b 安装后隔离 | hark-installer 41199673358 @b6c85cc | INSTALLED_ISOLATION_PONG_PASS 13/13（P1 提权安装 ISOLATED + 交接文件删除；P2 生产接缝判定隔离启动；P3 打包内核健康 + 隔离账户 PONG + pwsh 工具调用 + 产出文件属主为隔离账户；N1 凭据缺失拒绝派发；N2 ACL 篡改 → 拒绝派发；N3 卸载、NOT_CONFIGURED 标"未隔离"、账户已删除）；安装冒烟 36/36（含 h16-isolation-* 7 项与 h16-uninstall-removed-isolation）。同一提交：hark-windows 41199673369、hark-ubuntu 41199673359、hark-isolation 41199673425、hark-restart 41201181182 均绿。首次失败保留：41182921120（userData lstat）、41184110972（工作区 WRITE_DAC）、41189442900（5.1 弯引号）、41191287370 / 41194007074 / 41195872992（卸载未移除隔离） |
 
 ## 根治过的问题（摘要）
 1. 本地账户名超长（21 > 20）→ 名称规则 + 类型化错误。
@@ -48,8 +48,7 @@
 - 隔离需要一次管理员提权（UAC）；普通标准用户无管理员凭据时无法启用，应用保持"未隔离"标签并照常可用。
 - 只在 GitHub windows-2022 runner 上验证；真机（家用版、杀毒软件、域策略）未运行，属 H17 用户验收项。
 
-## 剩余工作（H16b-3b，需要 CI）
-1. 安装冒烟：对已安装应用执行提权 setup → 经启动器的隔离内核 PONG → 负例（删除一个过滤器后 DEGRADED 并拒绝派发）→ 卸载回读。
-2. 设置界面/IPC：「启用隔离 / 移除隔离」，主进程 `Start-Process -Verb RunAs` 调用 setup.ps1，密码只经 DPAPI；渲染进程不接触凭据。
-3. 收紧：`.dsh-stages` 只给 ReadAndExecute，Modify 只给 `.dsh-homes`。
-4. 完成后补 CI run id，ROADMAP #11 改为 DONE（self-review）。
+## H16b-3b 收尾说明（原"剩余工作"）
+1. 安装冒烟隔离 PONG + 负例 + 卸载回读：**已完成**（见 CI 表 H16b-3b 行）。
+2. 启用/移除隔离的入口：按 V1 边界（渲染进程不接触凭据、不发起提权）改为开始菜单「CompanyOS 隔离设置 / 移除隔离」助手（scripts/hark/setup/configure-isolation.ps1，UAC 提权运行 setup.ps1，账户密码只经 DPAPI，结果写 %APPDATA%\CompanyOS\isolation-setup.log）；卸载时自动移除。应用内只读显示隔离状态，不提供提权按钮——这是有意的边界，不是遗漏。
+3. `.dsh-stages` 收紧为只读：**不做**，理由：隔离账户本身就是运行该内核代码的身份；每次尝试派发前 verifyStaged 对 stage 做 100% 闭包重新哈希（embedded-dsh-runtime.ts），篡改在下次尝试即失败关闭，因此不会出现"被篡改的 stage 被信任执行"。

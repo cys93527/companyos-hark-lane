@@ -281,4 +281,5 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
   [hark-lane/H16_WINDOWS_ISOLATION.md](./hark-lane/H16_WINDOWS_ISOLATION.md) ·
   [hark-lane/H17_REAL_PC_ACCEPTANCE_CHECKLIST.md](./hark-lane/H17_REAL_PC_ACCEPTANCE_CHECKLIST.md) ·
   [hark-lane/H17_INDEPENDENT_REVIEW_PACKET.md](./hark-lane/H17_INDEPENDENT_REVIEW_PACKET.md) ·
+  [hark-lane/H18_RELEASE.md](./hark-lane/H18_RELEASE.md) ·
   [hark-lane/ROADMAP.md](./hark-lane/ROADMAP.md)
