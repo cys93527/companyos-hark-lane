@@ -39,6 +39,7 @@
 8. 目标工作区不在已授权根目录下时内核会以无权写入的账户运行 → 设置状态记录 workspaceDirs，`planIsolatedLaunch` 以 `workspace:notGranted` 拒绝（按路径段、忽略大小写）。
 9. 安装/升级重建 resources/ 会丢失对 resources/agent-kernel 的授权 → 改为对安装目录 {app} 授予 ReadAndExecute（升级后仍在）。
 10. 内核内层 shell 沙箱（上游 sandbox-windows-acl grantWrite）以隔离账户身份给工作区加能力 SID ACE 与 Low 完整性标签，需要 WRITE_DAC + WRITE_OWNER；Modify 不含 → 每次 pwsh 工具调用 Win32 5（hark-installer 41184110972）→ 工作区根目录授予 FullControl（继承），状态目录仍 Modify。
+11. 开始菜单「CompanyOS 隔离设置」脚本在 Windows PowerShell 5.1 上解析失败：PowerShell 把中文弯引号 U+201C/U+201D 当作普通双引号，双引号字符串里的“已隔离”提前结束字符串（hark-installer 41189442900 安装冒烟 h16-*）→ 改用「」，并加 tests/hark/h16b-ps1-quote-chars.test.ts：scripts/hark 下所有 PowerShell 脚本禁止 U+2018–U+201E，含非 ASCII 必须带 UTF-8 BOM。
 
 ## 诚实残留（不宣称已关闭）
 - DNS：名字解析由 DNS Client 服务（NetworkService）代发，按账户 SID 的过滤看不到 → DNS 查询仍可作为外泄信道。

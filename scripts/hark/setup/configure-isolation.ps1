@@ -98,7 +98,7 @@ if ($Remove) {
   if ($r.refused) { Finish 4 '已取消：移除隔离需要管理员权限。' }
   if ($r.exit -ne 0 -or $null -eq $r.json -or $r.json.ok -ne $true) { Finish 3 "移除隔离失败：$($r.raw)" }
   Remove-Item -LiteralPath $credPath -Force -ErrorAction SilentlyContinue
-  Finish 0 '已移除隔离：专用账户、防火墙过滤器和文件权限均已删除。之后智能体会以你的账户运行，并标注“未隔离”。'
+  Finish 0 '已移除隔离：专用账户、防火墙过滤器和文件权限均已删除。之后智能体会以你的账户运行，并标注「未隔离」。'
 }
 
 Write-Host 'CompanyOS 隔离设置'
@@ -135,5 +135,5 @@ if ($r.exit -ne 0 -or $null -eq $r.json -or $r.json.ok -ne $true) {
 }
 Move-Item -LiteralPath $newCred -Destination $credPath -Force
 $s = Get-IsolationStatus
-if ($null -eq $s -or $s.state -ne 'ISOLATED') { Finish 3 ("隔离已安装但本用户读回的状态不是“已隔离”：" + ($s | ConvertTo-Json -Compress)) }
+if ($null -eq $s -or $s.state -ne 'ISOLATED') { Finish 3 ("隔离已安装但本用户读回的状态不是「已隔离」：" + ($s | ConvertTo-Json -Compress)) }
 Finish 0 "已启用隔离（专用账户 $($s.account)，工作区 $Workspace）。下一次派发目标即生效；更换工作区后请重新运行本设置。"
