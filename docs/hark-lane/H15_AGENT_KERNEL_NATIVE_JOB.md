@@ -59,7 +59,7 @@
 ## H15d 真实验收目标（用户 2026-10-26 批准；CNY 10 池 / 2026-10-31 起 CNY 14）
 - 目标：scripts/hark/acceptance-fixture（小型 Node 项目，含 2 个真实缺陷 + 长业务规则文档 + 新功能 reorderPlan 的实现/测试/文档），经已安装应用 + 打包内核 + 真实 DeepSeek 多步执行。
 - 运行史（历史 PASS 不计数，每次独立判定）：run1 40308697073 FAIL（2048 输出截断计划 JSON）、run2 40313767341 INCOMPLETE、run3 40320541076 FAIL（上下文超限 → 输入上界强制 + 内核压缩）、run4 40345609717 INCOMPLETE（`node:assert/strict` 误判为路径）、run5 40359081704 INCOMPLETE（grounding 分类器把 `Inventory.removeItem` 当路径；资金上限耗尽被记成 AUTONOMY_STALLED）→ 根治 bd9d75a（classifyPathClaim、goalEnvelopeExhausted → GOAL_BUDGET_EXHAUSTED）。
-- **run6 PASS：hark-live-goal 41182323377**（安装包 41180400441 @89f97fb）结果 EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF，14 项检查全部为真（driverCompleted、npm test 通过、reorderPlan 示例/纯函数、removeItem/totalValue 规则修复、reorder 测试、CHANGES 文档、无新依赖、Artifact、CAS、Validation PASS、Handoff、未超上限）；114 次模型调用全部 KNOWN，花费 2 542 542 micros（约 CNY 2.54，上限 4 000 000）。证据 lane/evidence/H15d-ci/acceptance6-41182323377；账本 installer/budget/pool-cny10-ledger.json（累计 8 360 958）。
+- **run6 PASS：hark-live-goal 41182323377**（安装包 41180400441 @89f97fb）结果 EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF，14 项检查全部为真（driverCompleted、npm test 通过、reorderPlan 示例/纯函数、removeItem/totalValue 规则修复、reorder 测试、CHANGES 文档、无新依赖、Artifact、CAS、Validation PASS、Handoff、未超上限）；114 次模型调用全部 KNOWN，花费 2 542 542 micros（约 CNY 2.54，上限 4 000 000）。证据 lane/evidence/H15d-ci/acceptance6-41182323377；账本 installer/budget/pool-cny14-ledger.json（2026-10-31 15:15 用户批准的 CNY 14 池，已用 2 542 542，剩 11 457 458；CNY 10 池于 15:15 关闭在 5 818 416）。
 - 结论标注：Hark self-review PASS（仅 CI 上的自评；独立评审与用户真机验收见 H17，未执行前不得称为通过）。
 
 ## 价格核对（H15c 前置）

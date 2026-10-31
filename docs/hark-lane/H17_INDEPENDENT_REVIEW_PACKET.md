@@ -24,7 +24,7 @@
 | 质量 | 定向回归、完整门按范围、安装卸载独立证据；保留首次失败 | H14 文档、`scripts/hark/ubuntu-vitest-baseline.json`（仅环境绑定项，附原因）、`lane/evidence/*/run1-*` | 重跑 hark-ubuntu；核对基线中没有产品缺陷被当作基线；核对每阶段首次失败证据存在 |
 
 ## 3. 真实花费（DeepSeek，人民币）
-- H10/H15c 冒烟（CNY 1 上限账本 `installer/budget/h15c-real-spend-ledger.json`）、H15d 验收（CNY 5 账本 `h15d-acceptance-ledger.json`，2026-10-26 22:47 关闭于 ¥1.786）、此后 CNY 10 池（`pool-cny10-ledger.json`）。UNKNOWN 一律按上界计入，因此账本 ≥ 实际账单。
+- H10/H15c 冒烟（CNY 1 上限账本 `installer/budget/h15c-real-spend-ledger.json`）、H15d 验收（CNY 5 账本 `h15d-acceptance-ledger.json`，2026-10-26 22:47 关闭于 ¥1.786）、此后 CNY 10 池（`pool-cny10-ledger.json`，2026-10-31 15:15 关闭于 ¥5.818）、再后 CNY 14 池（`pool-cny14-ledger.json`，用户 2026-10-31 15:15 批准）。UNKNOWN 一律按上界计入，因此账本 ≥ 实际账单。
 - 评审人可要求用户提供 DeepSeek 控制台账单与账本对照。
 
 ## 4. Hark 自认的已知限制（请评审人判断是否阻断）

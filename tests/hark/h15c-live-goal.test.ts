@@ -52,8 +52,13 @@ describe('H15d realistic acceptance run budget', () => {
     // the cumulative CNY 10 pool (UNKNOWN at worst case) and its cap must fit what the pool has left.
     const closed = JSON.parse(readFileSync('installer/budget/h15d-acceptance-ledger.json', 'utf8')) as { capMicros: number };
     expect(closed.capMicros).toBe(5_000_000);
-    const ledger = JSON.parse(readFileSync('installer/budget/pool-cny10-ledger.json', 'utf8')) as { capMicros: number; entries: { micros: number }[] };
-    expect(ledger.capMicros).toBe(10_000_000);
+    // User 2026-10-31 15:15 CST: up to CNY 14 from then to project end supersedes the CNY 10 pool remainder;
+    // the CNY 10 pool is closed (never re-opened, its remainder not added) and the cap must fit the active pool.
+    const pool10 = JSON.parse(readFileSync('installer/budget/pool-cny10-ledger.json', 'utf8')) as { capMicros: number; entries: { micros: number }[]; closed?: { totalMicros: number } };
+    expect(pool10.capMicros).toBe(10_000_000);
+    expect(pool10.closed?.totalMicros).toBe(pool10.entries.reduce((n, e) => n + e.micros, 0));
+    const ledger = JSON.parse(readFileSync('installer/budget/pool-cny14-ledger.json', 'utf8')) as { capMicros: number; entries: { micros: number }[] };
+    expect(ledger.capMicros).toBe(14_000_000);
     const spent = ledger.entries.reduce((n, e) => n + e.micros, 0);
     expect(t.cap.maxCostMicros).toBeLessThanOrEqual(ledger.capMicros - spent);
     // H15d-fix2: the money limit is maxCostMicros, enforced per admission by the durable
