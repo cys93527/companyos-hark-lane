@@ -41,8 +41,16 @@ $statePath = Join-Path $isoDir 'state.json'
 $credPath = Join-Path $isoDir 'agent-credential.dpapi'
 $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
+# Every outcome (with the helper's raw output on failure) is appended to %APPDATA%\CompanyOS\isolation-setup.log:
+# the uninstaller runs -Remove hidden, so without this a failed removal would leave no trace for the user or support.
+$setupLog = Join-Path $UserData 'isolation-setup.log'
+$mode = if ($Remove) { 'remove' + $(if ($IfConfigured) { ' -IfConfigured' } else { '' }) } elseif ($Status) { 'status' } else { 'install' }
 function Finish([int]$code, [string]$message) {
   Write-Host $message
+  try {
+    New-Item -ItemType Directory -Force -Path $UserData | Out-Null
+    [IO.File]::AppendAllText($setupLog, ((Get-Date).ToString('o') + " [$mode] exit=$code " + $message + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+  } catch { }
   if (-not $NoPause) { [void](Read-Host '按回车键关闭') }
   exit $code
 }

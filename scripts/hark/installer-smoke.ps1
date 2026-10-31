@@ -138,7 +138,17 @@ $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList '/VER
 Check 'uninstall-exit-0' ($u.ExitCode -eq 0) $u.ExitCode
 Start-Sleep -Seconds 3  # the Inno uninstaller deletes itself via a short-lived helper
 Check 'install-dir-removed' (-not (Test-Path $exe)) ((Get-ChildItem $dir -Recurse -ErrorAction SilentlyContinue | ForEach-Object FullName) -join ';')
-Check 'h16-uninstall-removed-isolation' ((-not (Test-Path $isoState)) -and (-not (Test-Path (Join-Path $userData 'isolation\agent-credential.dpapi'))) -and -not ($isoAccount -and (Get-LocalUser -Name $isoAccount -ErrorAction SilentlyContinue))) "account=$isoAccount"
+$isoStateLeft = Test-Path $isoState
+$isoCredLeft = Test-Path (Join-Path $userData 'isolation\agent-credential.dpapi')
+$isoAccountLeft = [bool]($isoAccount -and (Get-LocalUser -Name $isoAccount -ErrorAction SilentlyContinue))
+Copy-Item (Join-Path $userData 'isolation-setup.log') (Join-Path $Evidence 'h16-isolation-setup-log.txt') -ErrorAction SilentlyContinue
+Check 'h16-uninstall-removed-isolation' ((-not $isoStateLeft) -and (-not $isoCredLeft) -and (-not $isoAccountLeft)) "account=$isoAccount stateLeft=$isoStateLeft credLeft=$isoCredLeft accountLeft=$isoAccountLeft"
+if ($isoStateLeft) {
+  # Diagnose + clean the runner: the same helper the uninstaller drives, run directly (this step is elevated).
+  $ErrorActionPreference = 'Continue'
+  & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'isolation\setup.ps1') -Action uninstall -StatePath $isoState *> (Join-Path $Evidence 'h16-uninstall-direct.txt')
+  $ErrorActionPreference = 'Stop'
+}
 $still = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'CompanyOS' }
 Check 'uninstall-entry-removed' ($null -eq $still) ''
 $result.userDataExistedBefore = $before
