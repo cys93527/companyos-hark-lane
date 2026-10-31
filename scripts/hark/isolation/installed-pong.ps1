@@ -1,7 +1,7 @@
 # H16b-3b installed-layout isolation smoke (CI ONLY, windows-2022, elevated runner; never on a user's PC).
 # Uses the STAGED app's resources (resources/isolation helper + launcher, resources/agent-kernel) in the production
 # per-user layout and the production seam (decideIsolation -> planIsolatedLaunch -> companyos-isolated-launch.exe):
-#   P1 elevated setup.ps1 install (account, workspace/state Modify, app dir RX as configure-isolation.ps1 grants it,
+#   P1 elevated setup.ps1 install (account, workspace FullControl + state Modify, app dir RX as configure-isolation.ps1 grants it,
 #      userData deny, persistent WFP)
 #   P2 the app's DPAPI(CurrentUser) credential blob at <userData>/isolation/agent-credential.dpapi
 #   P3 packaged kernel PONG turn AS the agent account (kernel-health-smoke --pong --isolation-*): pwsh tool + fs write

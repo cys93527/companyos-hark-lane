@@ -3,7 +3,7 @@
 #   -Action install    ELEVATED. Creates/reuses the dedicated local account, sets its password from a one-time
 #                      handoff file (the non-elevated app generated it and keeps it DPAPI-protected itself; this
 #                      helper deletes the handoff file after reading and never logs the password), grants
-#                      workspace/state Modify + kernel ReadAndExecute + userData Deny, this-folder-only
+#                      workspace FullControl + state Modify + kernel ReadAndExecute + userData Deny, this-folder-only
 #                      ReadAttributes on every ancestor of a granted dir (probe F1), and installs PERSISTENT WFP
 #                      filters (probe F3) under fixed keys. Writes the state file, then reads everything back.
 #   -Action status     Verifies account, SID, every recorded ACE and the WFP object set against the state file.
@@ -164,7 +164,14 @@ switch ($Action) {
     if ($prev -and $prev.sid -eq $sid) { foreach ($g in @($prev.grants) + @($prev.ancestorGrants)) { if ($g) { Remove-AllAces $g.path $sid | Out-Null } } }
     $grants = New-Object System.Collections.ArrayList
     $ancestorGrants = New-Object System.Collections.ArrayList
-    foreach ($d in $WorkspaceDirs + $StateDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'Modify' 'Allow' $true $grants }
+    # H16b-3b-fix2 (hark-installer 41184110972, installed-layout PONG): the kernel's inner shell sandbox (upstream
+    # sandbox-windows-acl grantWrite) adds its capability-SID ACE + the Low no-write-up label on the goal workspace
+    # with SetNamedSecurityInfoW(DACL|LABEL) running AS the agent account - that needs WRITE_DAC and WRITE_OWNER on
+    # the workspace (upstream: "a Full-control workspace satisfies both"). Modify gave neither -> Win32 5, every pwsh
+    # tool call failed. Workspace roots therefore get FullControl (inherited by everything below); the kernel state
+    # dirs keep Modify (the inner sandbox never grants there).
+    foreach ($d in $WorkspaceDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'FullControl' 'Allow' $true $grants }
+    foreach ($d in $StateDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'Modify' 'Allow' $true $grants }
     foreach ($d in $KernelDirs) { Grant $d $sid 'ReadAndExecute' 'Allow' $true $grants }
     # Explicit Allow on a child (e.g. a kernel state root inside userData) is evaluated before the inherited Deny.
     foreach ($d in $DenyDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant-Deny $d $sid $grants }

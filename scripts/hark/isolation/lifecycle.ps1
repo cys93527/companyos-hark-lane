@@ -245,7 +245,7 @@ try {
   $l6 = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
   $report.steps.L6_status = Snap ($l6.json)
   Progress 'step' 'L6_status' $report.steps.L6_status
-  Check 'L6.aclTamper.degraded' ($l6.code -eq 2 -and (@($l6.json.problems) -match '^acl:missing:Allow:Modify').Count -gt 0) $l6.json
+  Check 'L6.aclTamper.degraded' ($l6.code -eq 2 -and (@($l6.json.problems) -match '^acl:missing:Allow:FullControl').Count -gt 0) $l6.json
 
   # L7
   $password = New-Password
