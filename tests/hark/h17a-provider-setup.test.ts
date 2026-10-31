@@ -11,7 +11,7 @@ import {
   PROVIDER_SETUP_KEY_FILE,
   PROVIDER_SETUP_MODEL_FILE,
 } from '../../apps/desktop/src/provider-setup.js';
-import { capCnyToMicros, DEEPSEEK_SETUP, removeProviderSetup, writeProviderSetup } from '../../apps/desktop/src/provider-setup-write.js';
+import { capCnyToMicros, parseProviderSetupProfile, PROVIDER_SETUP_CREDENTIAL_REF, readProviderSetupProfile, removeProviderSetup, writeProviderSetup as writeWithProfile, type ProviderSetupWriteInput } from '../../apps/desktop/src/provider-setup-write.js';
 import { createDeploymentBudgetProofSource, readDeploymentBudgetApproval } from '../../apps/desktop/src/deployment-budget-proof.js';
 import { createKoffiDpapiUnprotect, loadProviderSetupUnprotect } from '../../apps/desktop/src/provider-setup-dpapi.js';
 import { resolveOpenAiCompatibleConfig } from '../../apps/desktop/src/models/openai-compatible-provider.js';
@@ -23,7 +23,11 @@ import { parseArgs } from '../../scripts/hark/setup/configure-provider.mjs';
  * non-secret model.json + the user's budget approval; the main process overlays its environment
  * (deployment env wins whole), fail closed on anything partial or unreadable, never reporting values.
  */
-const KEY = 'sk-test-0123456789abcdef';
+const KEY = 'fake-key-for-h17a-0123456789';
+// The shipped deployment profile (resources/setup/provider-profile.json) — vendor data lives there, not in source.
+const PROFILE_PATH = join(__dirname, '../../scripts/hark/setup/provider-profile.json');
+const PROFILE = readProviderSetupProfile(PROFILE_PATH);
+const writeProviderSetup = (input: Omit<ProviderSetupWriteInput, 'profile'>): ReturnType<typeof writeWithProfile> => writeWithProfile({ ...input, profile: PROFILE });
 // Test stand-in for DPAPI: a reversible XOR "protection" (the real one is CryptUnprotectData).
 const protect = (s: string): Buffer => Buffer.from(Buffer.from(s, 'utf8').map((b) => b ^ 0x5a));
 const unprotect = (blob: Uint8Array): Uint8Array => Buffer.from(Buffer.from(blob).map((b) => b ^ 0x5a));
@@ -133,7 +137,7 @@ describe('H17a provider setup — write', () => {
     const deployment = createDeploymentBudgetProofSource(join(ud, 'budget'), () => now);
     expect(deployment).toBeDefined();
     const identity = await deployment!.source.identify({
-      providerId: 'model.deepseek', modelId: 'deepseek-flash', endpoint: 'https://api.deepseek.com/', credentialRef: DEEPSEEK_SETUP.credentialRef,
+      providerId: 'model.deepseek', modelId: 'deepseek-flash', endpoint: 'https://api.deepseek.com/', credentialRef: PROVIDER_SETUP_CREDENTIAL_REF,
     } as Parameters<NonNullable<typeof deployment>["source"]["identify"]>[0]);
     expect(identity).not.toBeNull();
     const ref = await deployment!.source.select(identity!);
@@ -145,7 +149,7 @@ describe('H17a provider setup — write', () => {
   it('the price proof expires (re-attested by re-running setup)', async () => {
     const now = Date.now();
     const ud = configured(5, now);
-    const later = createDeploymentBudgetProofSource(join(ud, 'budget'), () => now + DEEPSEEK_SETUP.proofValidForMs + 1);
+    const later = createDeploymentBudgetProofSource(join(ud, 'budget'), () => now + PROFILE.proofValidForMs + 1);
     const identity = await later!.source.identify({ providerId: 'model.deepseek', modelId: 'deepseek-flash' } as Parameters<NonNullable<typeof later>['source']['identify']>[0]);
     expect(identity).toBeNull();
   });
@@ -159,7 +163,7 @@ describe('H17a provider setup — write', () => {
 
   it('remove deletes the user files and only an approval the helper wrote', () => {
     const ud = configured();
-    expect(removeProviderSetup(ud).removed).toEqual(['provider/model.json', 'provider/model-api-key.dpapi', 'budget/approvals.json']);
+    expect(removeProviderSetup(ud, PROFILE).removed).toEqual(['provider/model.json', 'provider/model-api-key.dpapi', 'budget/approvals.json']);
     expect(readProviderSetup(ud, unprotect)).toEqual({ state: 'NOT_CONFIGURED' });
 
     const op = fresh();
@@ -167,8 +171,24 @@ describe('H17a provider setup — write', () => {
     const operator = JSON.parse(readFileSync(join(configured(), 'budget', 'approvals.json'), 'utf8')) as { billingScope: { account: string } };
     operator.billingScope.account = 'deepseek:repo-secret:COMPANYOS_MODEL_API_KEY';
     writeFileSync(join(op, 'budget', 'approvals.json'), JSON.stringify(operator));
-    expect(removeProviderSetup(op).removed).toEqual([]);
+    expect(removeProviderSetup(op, PROFILE).removed).toEqual([]);
     expect(existsSync(join(op, 'budget', 'approvals.json'))).toBe(true);
+  });
+});
+
+describe('H17a provider profile is deployment data', () => {
+  it('the shipped profile parses; any shape defect is refused whole', () => {
+    const raw = JSON.parse(readFileSync(PROFILE_PATH, 'utf8')) as Record<string, unknown>;
+    expect(parseProviderSetupProfile(raw)).not.toBeNull();
+    expect(parseProviderSetupProfile({ ...raw, extra: 1 })).toBeNull();
+    expect(parseProviderSetupProfile({ ...raw, baseUrl: 'http://api.deepseek.com' })).toBeNull();
+    expect(parseProviderSetupProfile({ ...raw, maxCalls: 0 })).toBeNull();
+    expect(parseProviderSetupProfile({ ...raw, pricing: { ...(raw['pricing'] as object), currency: 'USD' } })).toBeNull();
+    expect(parseProviderSetupProfile({ ...raw, schema: 'other' })).toBeNull();
+    const { billingAccount: _drop, ...missing } = raw;
+    expect(parseProviderSetupProfile(missing)).toBeNull();
+    expect(() => writeWithProfile({ userDataDir: fresh(), capCny: 1, approvedBy: 'alice', profile: { ...PROFILE, modelId: '' } })).toThrow(/profile/u);
+    expect(() => readProviderSetupProfile(join(fresh(), 'none.json'))).toThrow(/profile/u);
   });
 });
 

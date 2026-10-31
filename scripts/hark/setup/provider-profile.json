@@ -1,0 +1,25 @@
+{
+  "schema": "companyos:provider-setup-profile:1",
+  "providerId": "model.deepseek",
+  "baseUrl": "https://api.deepseek.com",
+  "modelId": "deepseek-flash",
+  "upstreamModelIdentity": "DeepSeek-V4.1-Flash-1017",
+  "maxOutputTokens": 4096,
+  "timeoutMs": 120000,
+  "structuredOutput": "json_object",
+  "billingAccount": "deepseek:user-setup:COMPANYOS_MODEL_API_KEY",
+  "pricing": {
+    "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+    "version": "2026-10-25 peak-hour cache-miss rates (worst case)",
+    "currency": "CNY",
+    "units": "MICROS_PER_MILLION_TOKENS",
+    "rounding": "CEIL_TOTAL_PER_REQUEST_MICROS",
+    "inputRate": 2000000,
+    "outputRate": 8000000
+  },
+  "inputUpperBound": 96000,
+  "maxCalls": 160,
+  "maxTokens": 16015360,
+  "durationMs": 3600000,
+  "proofValidForMs": 2592000000
+}
