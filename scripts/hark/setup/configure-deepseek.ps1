@@ -18,6 +18,24 @@ param(
   [string]$UserData = (Join-Path $env:APPDATA 'CompanyOS'),
   [string]$AppExe = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'CompanyOS.exe')
 )
+# Windows PowerShell 5.1 started by a non-PowerShell parent that itself runs inside PowerShell 7 (e.g. the uninstaller
+# launched from a pwsh window) inherits pwsh's PSModulePath and then autoloads the PowerShell 7 editions of
+# Microsoft.PowerShell.Security/Utility, which 5.1 cannot load ('Get-Acl ... module could not be loaded'; hark-installer
+# 41195872992 uninstall). pwsh only repairs this for powershell.exe it starts itself, so every shipped 5.1 script
+# restores the Windows PowerShell module path before its first module command; children inherit the repaired value.
+function Repair-WindowsPowerShellModulePath {
+  if ($PSVersionTable.PSEdition -eq 'Core') { return }
+  $wps = @()
+  $docs = [Environment]::GetFolderPath('MyDocuments')
+  if ($docs) { $wps += [IO.Path]::Combine($docs, 'WindowsPowerShell', 'Modules') }
+  if ($env:ProgramFiles) { $wps += [IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell', 'Modules') }
+  $wps += [IO.Path]::Combine($env:SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules')
+  $rest = @(([string]$env:PSModulePath) -split ';' | Where-Object { $_ -and ($_ -notmatch '(^|\\)PowerShell(\\|$)') })
+  $seen = @{}; $out = @()
+  foreach ($p in ($wps + $rest)) { $k = $p.TrimEnd('\').ToLowerInvariant(); if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $out += $p } }
+  $env:PSModulePath = $out -join ';'
+}
+Repair-WindowsPowerShellModulePath
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
