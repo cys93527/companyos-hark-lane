@@ -68,6 +68,9 @@ export default tseslint.config(
       '.tmp/offline-gates/**',
       // H15d: the acceptance goal's INPUT project (deliberately defective CommonJS fixture).
       'scripts/hark/acceptance-fixture/**',
+      // H15d-fix5: verbatim model-written artifacts from acceptance run 5 (40359081704),
+      // replayed byte-for-byte as grounding-classifier INPUT data (some are truncated excerpts).
+      'tests/hark/fixtures/h15d-run5/**',
       // DRA-01 historical diagnostic entrypoints, preserved byte-for-byte.
       // Exclude only these two files; other tmp-e2e and product files stay linted.
       'tmp-e2e/minimal-app/main.js',
