@@ -51,7 +51,7 @@ import { projectReadiness } from './readiness.js';
 import { isDatabaseBootstrapRetryable } from './database-bootstrap-policy.js';
 import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
 import { productionCompositionOptions, productionIsolationResourcesDir, productionResourcesRoot } from './production-composition.js';
-import { applyProviderSetupOverlay, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
+import { captureRuntimeEnv, createProviderRuntimeEnv, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
 import { loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
 import { productionIsolationLaunchConfig } from './executor/isolation/isolation-status-runner.js';
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
@@ -159,6 +159,15 @@ let workflowError: string | null = null;
  * seam; the DEFAULT is the runtime's single actor, never an OS identity.
  */
 const SESSION_ACTOR = process.env['COMPANYOS_ACTOR'] ?? 'user_owner';
+
+/**
+ * AUDIT-D3 — the PRIVATE runtime environment every composition reads (vault, model config,
+ * attempt timeout). Captured at module load, and every secret-shaped name (the model API key,
+ * COMPANYOS_*KEY/TOKEN/SECRET…) is removed from process.env at the same moment, so ShellExecute
+ * (打开/链接), execFile without `env` and Chromium children never inherit a credential. The
+ * H17a setup overlay is applied to this copy, never to process.env.
+ */
+let runtimeEnv: Readonly<Record<string, string | undefined>> = captureRuntimeEnv(process.env);
 /** The single V1 company every desktop-created Goal belongs to (matches the renderer). */
 const COMPANY_ID = 'company_default';
 
@@ -231,7 +240,8 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
             // production-reachability tests exercise. The routed adapter id is a
             // deployment value (COMPANYOS_EXECUTOR_PROVIDER); a missing or unknown
             // adapter fails loud at dispatch, never a silent mock.
-            ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
+            ...productionCompositionOptions(runtimeEnv, deploymentBudgetOptions()),
+            runtimeEnv,
             usageReconciliationDir: join(app.getPath('userData'), 'budget'),
       embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
       embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
@@ -539,7 +549,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
 
 /**
  * H17a — the ordinary user's provider setup ("CompanyOS 首次配置", resources/setup). Applied to
- * the MAIN process environment once, before any composition reads it; a deployment environment
+ * the PRIVATE runtime environment (AUDIT-D3; never process.env) once, before any composition reads it; a deployment environment
  * that declares the model wins whole. The DPAPI binding is loaded only when a key file exists.
  * Logged by state and counts only — never a name of a secret, never a value.
  */
@@ -547,7 +557,9 @@ async function applyInstalledProviderSetup(): Promise<void> {
   const userData = app.getPath('userData');
   const keyExists = existsSync(join(userData, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE));
   const dpapi = keyExists ? await loadProviderSetupUnprotect(productionResourcesRoot()) : { unprotect: null, detail: null };
-  const result = applyProviderSetupOverlay(process.env, readProviderSetup(userData, dpapi.unprotect));
+  const applied = createProviderRuntimeEnv(runtimeEnv, readProviderSetup(userData, dpapi.unprotect));
+  runtimeEnv = applied.runtimeEnv;
+  const result = applied.result;
   logger.info('provider setup', {
     source: result.source,
     setupState: result.setupState,
@@ -895,7 +907,8 @@ async function main(): Promise<void> {
       // workflow-API composition: this quiescent-startup instance is REUSED as the
       // product instance whenever the database was up at boot, so both sites must
       // carry the same wiring.
-      ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
+      ...productionCompositionOptions(runtimeEnv, deploymentBudgetOptions()),
+      runtimeEnv,
       usageReconciliationDir: join(app.getPath('userData'), 'budget'),
       embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
       embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),

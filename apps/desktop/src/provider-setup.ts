@@ -18,7 +18,8 @@
  *   main process at startup (this module):
  *     - readProviderSetup(): NOT_CONFIGURED | CONFIGURED | INVALID (typed reason, fail closed)
  *     - applyProviderSetupOverlay(): when the deployment environment declares no model
- *       endpoint/key, the configured values are placed in the MAIN process environment
+ *       endpoint/key, the configured values are placed in the PRIVATE runtime environment
+ *       (createProviderRuntimeEnv, AUDIT-D3 — never the MAIN process environment)
  *       before composition (exactly the shape a CI/operator deployment uses). A deployment
  *       environment that declares ANY model field wins whole; the two are never mixed.
  *
@@ -178,4 +179,44 @@ export const applyProviderSetupOverlay = (env: NodeJS.ProcessEnv | Record<string
     applied.push(name);
   }
   return { source: 'provider-setup', setupState: setup.state, reasonCode, applied };
+};
+
+/**
+ * AUDIT-D3 — names whose values are secret material and must never sit in the MAIN process
+ * environment block: every process the app starts with a default environment (ShellExecute
+ * for 打开/链接, execFile without `env`, Chromium children) inherits that block. The vault
+ * namespace is COMPANYOS_; within it, credential-shaped names are secret. The model API key
+ * name is always secret.
+ */
+const SECRET_ENV_SHAPE = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|ACCESS|BEARER|AUTH)/i;
+export const isSecretEnvName = (name: string): boolean =>
+  name === MODEL_PROVIDER_ENV.apiKey || (name.toUpperCase().startsWith('COMPANYOS_') && SECRET_ENV_SHAPE.test(name.slice('COMPANYOS_'.length)));
+
+/**
+ * AUDIT-D3 — take a PRIVATE copy of the host environment for composition (the vault, the
+ * model config, the attempt-timeout lookup) and remove every secret-shaped name from the
+ * host environment object itself, so no inheriting child ever sees it. Returns the copy;
+ * the host object is mutated (secret names deleted) and holds no secret afterwards.
+ */
+export const captureRuntimeEnv = (hostEnv: NodeJS.ProcessEnv | Record<string, string | undefined>): Record<string, string | undefined> => {
+  const runtimeEnv: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(hostEnv)) runtimeEnv[name] = value;
+  for (const name of Object.keys(hostEnv)) {
+    if (isSecretEnvName(name)) delete hostEnv[name];
+  }
+  return runtimeEnv;
+};
+
+/**
+ * AUDIT-D3 — the H17a overlay applied to a PRIVATE runtime environment (never to the host
+ * process environment). `hostEnv` is scrubbed of secret names; the returned `runtimeEnv` is
+ * the only place the decrypted key lives, and it is handed to composition explicitly.
+ */
+export const createProviderRuntimeEnv = (
+  hostEnv: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  setup: ProviderSetupState,
+): { readonly runtimeEnv: Readonly<Record<string, string | undefined>>; readonly result: ProviderSetupOverlayResult } => {
+  const runtimeEnv = captureRuntimeEnv(hostEnv);
+  const result = applyProviderSetupOverlay(runtimeEnv, setup);
+  return { runtimeEnv, result };
 };

@@ -473,6 +473,11 @@ export interface RepositoryRuntimeOptions {
 }
 
 export interface ComposeCoreServicesOptions {
+  /**
+   * AUDIT-D3 — the PRIVATE runtime environment (secrets live only here and in the vault built
+   * from it; main.ts scrubs them from process.env). Defaults to process.env for tests/tools.
+   */
+  readonly runtimeEnv?: Readonly<Record<string, string | undefined>>;
   readonly executionSafety?: GoalSafetyConfiguration;
   /**
    * H12c — the operator deployment directory (userData/budget) holding
@@ -861,7 +866,8 @@ export async function composeCoreServices(
      * provider dispatch this composition runs receives it explicitly, so the DSH
      * provider's internal 120s fallback is never the production path.
      */
-    const executionAttemptTimeoutMs = resolveExecutionAttemptTimeoutMs(process.env);
+    const runtimeEnv = options.runtimeEnv ?? process.env;
+    const executionAttemptTimeoutMs = resolveExecutionAttemptTimeoutMs(runtimeEnv);
     const artifactFoundation = options.artifactFoundation;
     const clock = new SystemClock();
     const ids = new UlidFactory(clock);
@@ -958,7 +964,7 @@ export async function composeCoreServices(
 
     // ---- secrets: values stay in memory; every access is authority-checked -----------
     const vault = createEnvSecretVault({
-      env: process.env,
+      env: runtimeEnv,
       prefix: 'COMPANYOS_',
       authorize: sessionAuthorize,
     });
@@ -1030,7 +1036,7 @@ export async function composeCoreServices(
     const { createOpenAiCompatibleProvider, resolveOpenAiCompatibleConfig } = await import(
       './models/openai-compatible-provider.js'
     );
-    const modelAdapterConfig = resolveOpenAiCompatibleConfig();
+    const modelAdapterConfig = resolveOpenAiCompatibleConfig(runtimeEnv);
     if (!modelAdapterConfig.ok) {
       throw new Error(`the model adapter configuration is invalid: ${modelAdapterConfig.error.message}`);
     }
