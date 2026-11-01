@@ -112,12 +112,27 @@ export async function ensureBootstrapOwner(
   return ok({ provisioned: true, roleId: owner.value.id, reason: 'provisioned' });
 }
 
+const AUTHZ_PAGE_SIZE = 500;
+
+/** Read every row of a paged store; stops on `total` or on an empty page (never loops). */
+const readAllRows = async <T extends { readonly id: string }>(store: EntityStore<T>): Promise<T[]> => {
+  const collected: T[] = [];
+  for (let offset = 0; ; ) {
+    const page = await store.list({ limit: AUTHZ_PAGE_SIZE, offset });
+    for (const item of page.items) collected.push(item);
+    offset += page.items.length;
+    if (page.items.length === 0 || offset >= page.total) break;
+  }
+  return collected;
+};
+
 export function createAuthorizationService(deps: AuthorizationDeps): AuthorizationService {
   const nowIso = (): string => deps.clock.nowIso();
 
-  const loadRoles = async (): Promise<readonly Role[]> => (await deps.roles.list({ limit: 500 })).items;
-  const loadAssignments = async (): Promise<readonly RoleAssignment[]> =>
-    (await deps.assignments.list({ limit: 500 })).items;
+  // AUDIT-E6: every authorization read pages to exhaustion. A single 500-row page made
+  // roles/assignments past it invisible (newly assigned roles silently denied).
+  const loadRoles = async (): Promise<readonly Role[]> => readAllRows(deps.roles);
+  const loadAssignments = async (): Promise<readonly RoleAssignment[]> => readAllRows(deps.assignments);
 
   return {
     async defineRole(input: DefineRoleInput): Promise<Result<Role, DomainError>> {
