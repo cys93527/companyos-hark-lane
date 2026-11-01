@@ -142,7 +142,7 @@ Write-Host '启用后，智能体在专用的本机账户下运行：只能写�
 Write-Host '网络只能连到 CompanyOS 的本机模型代理（由它代你访问模型服务商）。需要一次管理员授权。'
 if (-not $Workspace) {
   $sel = Join-Path $UserData 'workspace-selection.json'
-  if (Test-Path -LiteralPath $sel) { try { $Workspace = (Get-Content -LiteralPath $sel -Raw | ConvertFrom-Json).root } catch { } }
+  if (Test-Path -LiteralPath $sel) { try { $Workspace = ([IO.File]::ReadAllText($sel, (New-Object Text.UTF8Encoding($false))) | ConvertFrom-Json).root } catch { } }
 }
 if (-not $Workspace -or -not (Test-Path -LiteralPath $Workspace -PathType Container)) {
   Finish 2 '请先打开 CompanyOS 选择工作区，然后再运行隔离设置。'

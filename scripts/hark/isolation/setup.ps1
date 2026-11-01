@@ -53,7 +53,7 @@ $SCHEMA = 'companyos/isolation-state/1'
 $HIDE_KEY = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
 
 function Out-Result($obj, [int]$code) { ($obj | ConvertTo-Json -Compress -Depth 6) | Write-Output; exit $code }
-function Load-Wfp { if (-not ('CompanyOSWfp' -as [type])) { Add-Type -TypeDefinition (Get-Content (Join-Path $PSScriptRoot 'wfp-persistent.cs') -Raw) } }
+function Load-Wfp { if (-not ('CompanyOSWfp' -as [type])) { Add-Type -TypeDefinition (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wfp-persistent.cs') -Raw -Encoding UTF8) } }
 # Agent profile (lifecycle run 7, 40347340358): the launcher loads the account's own profile (LOGON_WITH_PROFILE) and
 # points HOME/TEMP/APPDATA at it, so install creates it up front (elevated) and status/uninstall track it.
 $PROFILE_CS = @'
@@ -116,7 +116,7 @@ function Test-Grant($g, [string]$sid) {
 function Get-Status {
   if (-not (Test-Path -LiteralPath $StatePath)) { return [ordered]@{ state = 'NOT_CONFIGURED'; problems = @() } }
   $problems = New-Object System.Collections.ArrayList
-  $st = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+  $st = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
   if ($st.schema -ne $SCHEMA) { return [ordered]@{ state = 'ISOLATION_DEGRADED'; problems = @("state:schema:$($st.schema)") } }
   $user = Get-LocalUser -Name $st.account -ErrorAction SilentlyContinue
   if (-not $user) { $problems.Add("account:missing:$($st.account)") | Out-Null }
@@ -166,7 +166,7 @@ switch ($Action) {
     $password = $null
 
     $prev = $null
-    if (Test-Path -LiteralPath $StatePath) { $prev = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json }
+    if (Test-Path -LiteralPath $StatePath) { $prev = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json }
     if (-not $AccountName) { $AccountName = if ($prev) { $prev.account } else { 'CompanyOSAgent' + ([Guid]::NewGuid().ToString('N')).Substring(0, 6) } }
     # Local account names are limited to 20 characters (lifecycle run 2, 40340473413: 'CompanyOSAgent-xxxxxx' = 21).
     if ($AccountName.Length -gt 20 -or $AccountName -notmatch '^[A-Za-z0-9-]+$') { Out-Result ([ordered]@{ ok = $false; error = 'ACCOUNT_NAME_INVALID' }) 1 }
@@ -243,7 +243,7 @@ switch ($Action) {
     [CompanyOSWfp]::Close()
     $r.wfpObjectsLeft = @($left | Where-Object { $_ -notmatch ':missing' }).Count
     if (Test-Path -LiteralPath $StatePath) {
-      $st = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+      $st = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
       $acesLeft = 0
       foreach ($g in @($st.grants) + @($st.ancestorGrants)) { if ($g) { $acesLeft += (Remove-AllAces $g.path $st.sid) } }
       $r.acesLeft = $acesLeft
