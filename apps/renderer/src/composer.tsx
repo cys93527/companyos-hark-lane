@@ -184,6 +184,10 @@ export interface ComposerViewProps {
   readonly modelLabel: string;
   readonly workspaceLabel: string | null;
   readonly pendingIntent: boolean;
+  /** AUDIT R2: the objective of the unconfirmed submission, shown with 重试 / 放弃. */
+  readonly pendingObjective?: string | null;
+  readonly onRetryPending?: () => void;
+  readonly onDiscardPending?: () => void;
   readonly onDraftChange: (value: string) => void;
   readonly onSubmit: () => void;
   readonly onChangeWorkspace: () => void;
@@ -216,6 +220,25 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
     h(
       'div',
       { className: 'composer__center' },
+      props.pendingIntent
+        ? h(
+            'div',
+            { className: 'composer__pending', role: 'status', 'data-testid': 'pending-submission' },
+            h(
+              'p',
+              null,
+              props.pendingObjective === null || props.pendingObjective === undefined
+                ? '上一次提交尚未确认。'
+                : `上一次提交尚未确认：「${props.pendingObjective}」`,
+            ),
+            props.onRetryPending === undefined
+              ? null
+              : h('button', { type: 'button', disabled: props.busy, onClick: props.onRetryPending }, '重试'),
+            props.onDiscardPending === undefined
+              ? null
+              : h('button', { type: 'button', disabled: props.busy, onClick: props.onDiscardPending }, '放弃'),
+          )
+        : null,
       h('textarea', {
         className: 'composer__input',
         'aria-label': 'goal-objective',

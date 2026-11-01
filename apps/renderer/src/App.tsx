@@ -43,7 +43,7 @@ import {
   type ModelSelectionStatus,
   type SelectionExplanation,
 } from './models.js';
-import { createSubmissionController, type SubmissionController } from './submission-intent.js';
+import { createSubmissionController, type SubmissionController, type SubmissionResult } from './submission-intent.js';
 import { createSubmissionIntentStore } from './intent-store.js';
 import { LocalDraftControls } from './local-draft-controls.js';
 import { fileDeliveryConstraints } from './file-delivery-input.js';
@@ -125,6 +125,7 @@ export function App() {
   const [modelBusy, setModelBusy] = useState(false);
   const [catalogueCount, setCatalogueCount] = useState(0);
   const [pendingIntent, setPendingIntent] = useState(false);
+  const [pendingObjective, setPendingObjective] = useState<string | null>(null);
   const [popover, setPopover] = useState<'model' | 'authority' | 'runtime' | null>(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
   const [runtimeTab, setRuntimeTab] = useState<RuntimeTab>('run');
@@ -320,7 +321,12 @@ export function App() {
         },
       })) as BridgeEnvelope<{ readonly runId: string }>;
       if (!response.ok || response.value === undefined) {
-        return { error: response.error?.message ?? 'goal.create failed' };
+        // AUDIT R2: pass main's typed code through, so the controller can tell a canonical
+        // refusal (cleared) from an unknown outcome (kept pending for an explicit retry).
+        return {
+          error: response.error?.message ?? 'goal.create failed',
+          ...(typeof response.error?.code === 'string' ? { code: response.error.code } : {}),
+        };
       }
       return { runId: response.value.runId };
     },
@@ -344,32 +350,71 @@ export function App() {
   controllerRef.current = controller;
 
   const syncPending = useCallback(() => {
-    setPendingIntent(controllerRef.current?.pending() !== null && controllerRef.current?.pending() !== undefined);
+    let record: ReturnType<SubmissionController['pending']> = null;
+    try {
+      record = controllerRef.current?.pending() ?? null;
+    } catch {
+      record = null;
+    }
+    setPendingIntent(record !== null);
+    setPendingObjective(record === null ? null : record.objective);
   }, []);
 
-  // STAGE 2 case C: resolve an intent that survived a remount/reload BEFORE any new
-  // submission is accepted, so an unacknowledged submission replays instead of duplicating.
+  // STAGE 2 case C / AUDIT R2: an intent that survived a remount/reload still owns the next
+  // submission (so it can never be duplicated), but it is NOT replayed silently any more:
+  // the composer shows it with explicit 重试 (same intent id) / 放弃 actions.
   useEffect(() => {
     syncPending();
-    const active = controllerRef.current;
-    if (active === null) return;
-    void (async () => {
-      try {
-        const result = await active.resolvePending();
-        if (result !== null && (result.status === 'created' || result.status === 'replayed')) {
-          setOpenGoalRunId(result.runId);
-          setRefreshKey((key) => key + 1);
-        }
-      } catch {
-        // Unknown outcome (local store unavailable): the intent stays pending.
-      } finally {
-        syncPending();
-      }
-    })();
-    // Mount-only on purpose: resolving an unacknowledged intent is a STARTUP action, so it
-    // must never re-run because some unrelated state changed (that was the hot-replay loop
-    // the real-boot smoke caught: 4095 replays of one submission intent).
+  }, [syncPending, controller]);
+
+  /** One place that turns a submission result into UI state (send + explicit retry). */
+  const applySubmissionResult = useCallback((result: SubmissionResult) => {
+    if (result.status === 'created' || result.status === 'replayed') {
+      setDraft('');
+      setOpenGoalRunId(result.runId);
+      setRefreshKey((key) => key + 1);
+      // Autonomy continues in the main process; the client only observes canonical state.
+    } else if (result.status === 'refused') {
+      setSubmissionFailure({ code: result.code, message: result.error });
+    } else if (result.status === 'failed') {
+      setSubmissionFailure({
+        code: 'SUBMISSION_UNCONFIRMED',
+        message: `提交结果未确认（${result.error}）。可点击「重试」以同一提交标识重试，或「放弃」。`,
+      });
+    } else if (result.status === 'blocked' && result.reason === 'pending') {
+      setSubmissionFailure({ code: 'SUBMISSION_PENDING', message: '上一次提交尚未确认：请先「重试」或「放弃」。' });
+    }
   }, []);
+
+  const retryPending = useCallback(async () => {
+    const active = controllerRef.current;
+    if (active === null || submissionInFlight.current) return;
+    submissionInFlight.current = true;
+    setSubmissionBusy(true);
+    setSubmissionFailure(null);
+    try {
+      const result = await active.retry();
+      if (result !== null) applySubmissionResult(result);
+    } catch {
+      setSubmissionFailure({ code: 'SUBMISSION_UNCONFIRMED', message: '本地提交存储或主进程通信失败，提交结果未确认。' });
+    } finally {
+      syncPending();
+      submissionInFlight.current = false;
+      setSubmissionBusy(false);
+    }
+  }, [applySubmissionResult, syncPending]);
+
+  const discardPending = useCallback(() => {
+    if (submissionInFlight.current) return;
+    // The editor text is the user's; it is kept.
+    setSubmissionFailure(null);
+    try {
+      controllerRef.current?.discard();
+    } catch {
+      setSubmissionFailure({ code: 'SUBMISSION_STORE_UNAVAILABLE', message: '本地提交存储不可用，无法放弃该提交。' });
+    }
+    syncPending();
+  }, [syncPending]);
 
   const sendGoal = useCallback(async () => {
     const active = controllerRef.current;
@@ -400,21 +445,12 @@ export function App() {
       } finally {
         syncPending();
       }
-      if (result.status === 'created' || result.status === 'replayed') {
-        setDraft('');
-        setOpenGoalRunId(result.runId);
-        setRefreshKey((key) => key + 1);
-        // Autonomy continues in the main process; the client only observes canonical state.
-      } else if (result.status === 'failed') {
-        setSubmissionFailure({ code: 'GOAL_CREATE_FAILED', message: result.error });
-      } else if (result.status === 'blocked' && result.reason === 'pending') {
-        setSubmissionFailure({ code: 'SUBMISSION_PENDING', message: '上一次提交尚未确认，请稍候。' });
-      }
+      applySubmissionResult(result);
     } finally {
       submissionInFlight.current = false;
       setSubmissionBusy(false);
     }
-  }, [draft, workspaceRoot, syncPending, deliveryPath, deliveryText]);
+  }, [draft, workspaceRoot, syncPending, deliveryPath, deliveryText, applySubmissionResult]);
 
   /* ------------------------------------------------- canonical projections --- */
   const loadRecent = useCallback(async () => {
@@ -1038,6 +1074,9 @@ export function App() {
         modelLabel,
         workspaceLabel: workspaceRoot,
         pendingIntent,
+        pendingObjective,
+        onRetryPending: () => void retryPending(),
+        onDiscardPending: discardPending,
         onDraftChange: setDraft,
         onSubmit: () => void sendGoal(),
         onChangeWorkspace: changeWorkspace,

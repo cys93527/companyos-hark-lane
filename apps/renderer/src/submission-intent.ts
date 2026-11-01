@@ -39,7 +39,10 @@ export interface SubmissionIntentStore {
 export type SubmissionResult =
   | { readonly status: 'created'; readonly runId: string; readonly intentId: string }
   | { readonly status: 'replayed'; readonly runId: string; readonly intentId: string }
+  /** Outcome UNKNOWN (transport/internal failure): the intent stays pending for an explicit retry. */
   | { readonly status: 'failed'; readonly intentId: string; readonly error: string }
+  /** Main answered with a typed refusal: nothing was created, the intent is cleared. */
+  | { readonly status: 'refused'; readonly intentId: string; readonly code: string; readonly error: string }
   | { readonly status: 'blocked'; readonly reason: 'pending' | 'empty' | 'no-workspace' };
 
 export interface SubmissionSubmit {
@@ -48,8 +51,26 @@ export interface SubmissionSubmit {
     readonly objective: string;
     readonly structured?: Readonly<Record<string, unknown>>;
     readonly workspaceRoot: string;
-  }): Promise<{ readonly runId: string } | { readonly error: string }>;
+  }): Promise<{ readonly runId: string } | { readonly error: string; readonly code?: string }>;
 }
+
+/**
+ * AUDIT R2 — error codes whose outcome is UNKNOWN: main may or may not have committed the
+ * Goal (the IPC broke, main threw, or persistence failed after the run row was written).
+ * Only these keep the intent pending so a retry replays the SAME commandId. Every other
+ * typed code is a canonical refusal: nothing was created and the intent is cleared, so a
+ * refusal can never lock the composer or replay on the next start. A failure WITHOUT a
+ * code is treated as unknown (fail safe against duplicate Goals).
+ */
+export const UNKNOWN_OUTCOME_CODES: ReadonlySet<string> = new Set([
+  'IPC_FAILED',
+  'INTERNAL_ERROR',
+  'PERSISTENCE_FAILED',
+  'TIMEOUT',
+]);
+
+export const isUnknownOutcome = (code: string | undefined): boolean =>
+  code === undefined || UNKNOWN_OUTCOME_CODES.has(code);
 
 export interface SubmissionControllerOptions {
   readonly store: SubmissionIntentStore;
@@ -101,7 +122,13 @@ export const createSubmissionController = (options: SubmissionControllerOptions)
       workspaceRoot: intent.workspaceRoot,
     });
     if ('runId' in outcome) return acknowledge(intent, outcome.runId);
-    // Failed: keep the record pending so a retry replays the same identity.
+    if (!isUnknownOutcome(outcome.code)) {
+      // Canonically refused: main answered and created nothing. Clear the outbox so the
+      // next explicit submission is accepted and nothing replays on the next start.
+      store.save(null);
+      return { status: 'refused', intentId: intent.intentId, code: outcome.code as string, error: outcome.error };
+    }
+    // Unknown outcome: keep the record pending so an explicit retry replays the same identity.
     return { status: 'failed', intentId: intent.intentId, error: outcome.error };
   };
 
