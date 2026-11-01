@@ -18,6 +18,7 @@
  * the canonical loaders). The pure loaders are exported too, so tests can assert the
  * canonical reads directly.
  */
+import { safeRequest } from './bridge.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isRunEnded, runStateLabel, runStateModifier, terminalOutcomeOf, type RunEndInput } from './run-outcome.js';
 
@@ -53,7 +54,9 @@ export async function controlPlaneRead<T>(
   operation: string,
   payload: Readonly<Record<string, unknown>>,
 ): Promise<ControlPlaneEnvelope<T>> {
-  return (await bridge.controlPlaneRequest({ operation, payload })) as ControlPlaneEnvelope<T>;
+  // AUDIT R7: a rejected IPC call becomes the typed IPC_FAILED envelope, so no loader
+  // (GoalList, GoalWorkspace, …) can be left on 「加载中…」 by an unhandled rejection.
+  return (await safeRequest(() => bridge.controlPlaneRequest({ operation, payload }))) as ControlPlaneEnvelope<T>;
 }
 
 /* --------------------------------------------------- pure canonical loaders --- */

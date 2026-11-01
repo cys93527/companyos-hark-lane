@@ -16,6 +16,8 @@ import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, u
 import {
   FALLBACK_APP_VERSION,
   bridgeAvailability,
+  IPC_FAILED,
+  safeRequest,
   getBridge,
   resolveAppVersion,
   resolveDatabaseStatus,
@@ -168,14 +170,14 @@ export function App() {
   const workflow: WorkflowBridge | null = useMemo(
     () =>
       bridge !== null && typeof bridge.workflowRequest === 'function'
-        ? { workflowRequest: (request) => (bridge.workflowRequest as NonNullable<typeof bridge.workflowRequest>)(request) }
+        ? { workflowRequest: (request) => safeRequest(() => (bridge.workflowRequest as NonNullable<typeof bridge.workflowRequest>)(request)) }
         : null,
     [bridge],
   );
   const controlPlane: ControlPlaneBridge | null = useMemo(
     () =>
       bridge !== null && typeof bridge.controlPlaneRequest === 'function'
-        ? { controlPlaneRequest: (request) => (bridge.controlPlaneRequest as NonNullable<typeof bridge.controlPlaneRequest>)(request) }
+        ? { controlPlaneRequest: (request) => safeRequest(() => (bridge.controlPlaneRequest as NonNullable<typeof bridge.controlPlaneRequest>)(request)) }
         : null,
     [bridge],
   );
@@ -188,9 +190,18 @@ export function App() {
       typeof bridge.workspaceSwitch === 'function'
         ? {
             workspaceSelect: () => (bridge.workspaceSelect as NonNullable<typeof bridge.workspaceSelect>)(),
-            workspaceOpen: (root) => (bridge.workspaceOpen as NonNullable<typeof bridge.workspaceOpen>)(root),
-            workspaceCurrent: () => (bridge.workspaceCurrent as NonNullable<typeof bridge.workspaceCurrent>)(),
-            workspaceSwitch: (root) => (bridge.workspaceSwitch as NonNullable<typeof bridge.workspaceSwitch>)(root),
+            // AUDIT R7: a rejected open/switch is a typed refusal ({ok:false, error:IPC_FAILED}),
+            // never an unhandled rejection; a rejected current-read means "nothing open".
+            workspaceOpen: (root) =>
+              (bridge.workspaceOpen as NonNullable<typeof bridge.workspaceOpen>)(root).catch(
+                () => ({ ok: false, root, error: IPC_FAILED }) as const,
+              ),
+            workspaceCurrent: () =>
+              (bridge.workspaceCurrent as NonNullable<typeof bridge.workspaceCurrent>)().catch(() => null),
+            workspaceSwitch: (root) =>
+              (bridge.workspaceSwitch as NonNullable<typeof bridge.workspaceSwitch>)(root).catch(
+                () => ({ ok: false, root, error: IPC_FAILED }) as const,
+              ),
           }
         : null,
     [bridge],
@@ -229,7 +240,7 @@ export function App() {
   }, [workflow]);
 
   useEffect(() => {
-    void refreshModels();
+    void refreshModels().catch(() => undefined);
   }, [refreshModels]);
 
   const chooseModel = useCallback(
@@ -237,21 +248,28 @@ export function App() {
       if (workflow === null) return;
       setModelBusy(true);
       setModelExplanation(null);
-      const result = await establishCompanySelection(workflow, {
-        providerId: option.providerId,
-        providerModelId: option.providerModelId,
-        modelKey: option.modelKey,
-      });
-      if (result.ok) {
-        setModelExplanation(result.explanation);
-        setModelStatus({ kind: 'selected', modelKey: result.modelKey, displayName: option.displayName });
-        setSubmissionFailure(null);
-      } else {
-        setSubmissionFailure({ code: result.code, message: result.message });
+      try {
+        const result = await establishCompanySelection(workflow, {
+          providerId: option.providerId,
+          providerModelId: option.providerModelId,
+          modelKey: option.modelKey,
+        });
+        if (result.ok) {
+          setModelExplanation(result.explanation);
+          setModelStatus({ kind: 'selected', modelKey: result.modelKey, displayName: option.displayName });
+          setSubmissionFailure(null);
+        } else {
+          setSubmissionFailure({ code: result.code, message: result.message });
+        }
+      } catch {
+        setSubmissionFailure({ code: 'MODEL_SELECTION_FAILED', message: '模型选择未完成（读取或保存失败），请重试。' });
+      } finally {
+        // AUDIT R7: the busy flag is released on EVERY path, so a throw can never leave
+        // the model buttons disabled forever.
+        setModelBusy(false);
+        setPopover(null);
       }
-      setModelBusy(false);
-      setPopover(null);
-      await refreshModels();
+      await refreshModels().catch(() => undefined);
     },
     [workflow, refreshModels],
   );
@@ -263,7 +281,13 @@ export function App() {
   const changeWorkspace = useCallback(() => {
     if (workspaceSelection === null) return;
     void (async () => {
-      const picked = await workspaceSelection.workspaceSelect().catch(() => null);
+      let picked: string | null;
+      try {
+        picked = await workspaceSelection.workspaceSelect();
+      } catch {
+        setSubmissionFailure({ code: 'WORKSPACE_SELECT_FAILED', message: '无法打开目录选择器。已保持在当前工作空间。' });
+        return;
+      }
       if (picked === null) return; // user cancelled the chooser — not an error
       const switched = await workspaceSelection.workspaceSwitch(picked).catch(
         (error: unknown) =>
@@ -330,12 +354,17 @@ export function App() {
     const active = controllerRef.current;
     if (active === null) return;
     void (async () => {
-      const result = await active.resolvePending();
-      if (result !== null && (result.status === 'created' || result.status === 'replayed')) {
-        setOpenGoalRunId(result.runId);
-        setRefreshKey((key) => key + 1);
+      try {
+        const result = await active.resolvePending();
+        if (result !== null && (result.status === 'created' || result.status === 'replayed')) {
+          setOpenGoalRunId(result.runId);
+          setRefreshKey((key) => key + 1);
+        }
+      } catch {
+        // Unknown outcome (local store unavailable): the intent stays pending.
+      } finally {
+        syncPending();
       }
-      syncPending();
     })();
     // Mount-only on purpose: resolving an unacknowledged intent is a STARTUP action, so it
     // must never re-run because some unrelated state changed (that was the hot-replay loop
@@ -349,10 +378,28 @@ export function App() {
     setSubmissionBusy(true);
     setSubmissionFailure(null);
     try {
-      const structured = await fileDeliveryConstraints(deliveryPath, deliveryText);
-      if (workspaceIdentity.current !== workspaceRoot) throw new Error('WORKSPACE_CHANGED_BEFORE_SUBMIT');
-      const result = await active.submitObjective(draft, workspaceRoot, structured);
-      syncPending();
+      // AUDIT R7: only a failure to BUILD the file-delivery requirement is a delivery-input
+      // error; a store/IPC failure of the submission itself is reported as what it is.
+      let structured: Awaited<ReturnType<typeof fileDeliveryConstraints>>;
+      try {
+        structured = await fileDeliveryConstraints(deliveryPath, deliveryText);
+      } catch {
+        setSubmissionFailure({ code: 'DELIVERY_INPUT_INVALID', message: '文件要求无效；请检查相对路径与期望内容。未提交。' });
+        return;
+      }
+      if (workspaceIdentity.current !== workspaceRoot) {
+        setSubmissionFailure({ code: 'WORKSPACE_CHANGED_BEFORE_SUBMIT', message: '提交前工作空间已变化，未提交。' });
+        return;
+      }
+      let result: Awaited<ReturnType<SubmissionController['submitObjective']>>;
+      try {
+        result = await active.submitObjective(draft, workspaceRoot, structured);
+      } catch {
+        setSubmissionFailure({ code: 'SUBMISSION_UNCONFIRMED', message: '本地提交存储或主进程通信失败，提交结果未确认。' });
+        return;
+      } finally {
+        syncPending();
+      }
       if (result.status === 'created' || result.status === 'replayed') {
         setDraft('');
         setOpenGoalRunId(result.runId);
@@ -363,8 +410,6 @@ export function App() {
       } else if (result.status === 'blocked' && result.reason === 'pending') {
         setSubmissionFailure({ code: 'SUBMISSION_PENDING', message: '上一次提交尚未确认，请稍候。' });
       }
-    } catch {
-      setSubmissionFailure({ code: 'DELIVERY_INPUT_INVALID', message: '文件要求或本地提交存储不可用；请检查相对路径与期望内容。未确认提交。' });
     } finally {
       submissionInFlight.current = false;
       setSubmissionBusy(false);
@@ -483,7 +528,7 @@ export function App() {
   }, [controlPlane, openGoalRunId]);
 
   useEffect(() => {
-    void loadRecent();
+    void loadRecent().catch(() => undefined);
   }, [loadRecent, refreshKey]);
 
   // The current Goal's runtime projections ride the SAME controlled refresh as every
@@ -615,7 +660,7 @@ export function App() {
   }, [controlPlane]);
 
   useEffect(() => {
-    void loadPendingDecisionsNow();
+    void loadPendingDecisionsNow().catch(() => undefined);
   }, [loadPendingDecisionsNow, refreshKey]);
 
   // The Goal usage projection (E1 semantics) for the selected Goal.
@@ -626,7 +671,7 @@ export function App() {
     }
     let cancelled = false;
     void (async () => {
-      const projection = await loadGoalUsage(controlPlane, openGoalRunId);
+      const projection = await loadGoalUsage(controlPlane, openGoalRunId).catch(() => null);
       if (!cancelled) setUsageProjection(projection);
     })();
     return () => {
@@ -655,7 +700,9 @@ export function App() {
     if (workflow === null || view !== 'settings') return;
     let cancelled = false;
     void (async () => {
-      const response = (await workflow.workflowRequest({ operation: 'runtime.readiness' })) as {
+      const response = (await workflow
+        .workflowRequest({ operation: 'runtime.readiness' })
+        .catch(() => ({ ok: false }))) as {
         readonly ok: boolean;
         readonly value?: unknown;
       };
@@ -691,7 +738,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const info = await bridge?.platformInfo?.();
+      const info = await bridge?.platformInfo?.().catch(() => undefined);
       if (cancelled || info === undefined || info === null) return;
       setPlatformInfo({ electron: info.electron, nodeVersion: info.node });
     })();
@@ -708,13 +755,19 @@ export function App() {
       if (approval === null) return;
       setApprovalBusy(true);
       setApprovalFailure(null);
-      const result = await respondToApproval(controlPlane, {
-        runId: approval.runId,
-        decision,
-      });
-      if (!result.ok) setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: result.message ?? '审批提交失败。' });
-      setApprovalBusy(false);
-      await loadPendingDecisionsNow();
+      try {
+        const result = await respondToApproval(controlPlane, {
+          runId: approval.runId,
+          decision,
+        });
+        if (!result.ok) setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: result.message ?? '审批提交失败。' });
+      } catch {
+        setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: '审批提交结果未确认（通信失败），请刷新后重试。' });
+      } finally {
+        // AUDIT R7: never leave 批准/拒绝 disabled forever.
+        setApprovalBusy(false);
+      }
+      await loadPendingDecisionsNow().catch(() => undefined);
       setRefreshKey((key) => key + 1);
     },
     [controlPlane, pendingApprovalDecision, loadPendingDecisionsNow],
@@ -729,7 +782,14 @@ export function App() {
       }
       setArtifactFailure(null);
       const result = await runArtifactAction(
-        { artifactAction: (request) => bridge.artifactAction!(request) },
+        {
+          artifactAction: (request) =>
+            bridge.artifactAction!(request).catch((error: unknown) => ({
+              ok: false,
+              code: IPC_FAILED,
+              message: `与主进程通信失败（${error instanceof Error ? error.message : 'UNKNOWN'}），操作结果未确认。`,
+            })),
+        },
         operation,
         { artifactId, kind },
       );
