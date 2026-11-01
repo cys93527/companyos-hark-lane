@@ -57,8 +57,16 @@ function Invoke-SetupNode([string[]]$arguments) {
   $env:ELECTRON_RUN_AS_NODE = '1'
   try {
     $p = Start-Process -FilePath $AppExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
-    $text = [IO.File]::ReadAllText($out)
-    return [pscustomobject]@{ exit = $p.ExitCode; result = ($text | ConvertFrom-Json -ErrorAction SilentlyContinue); raw = $text }
+    $text = [IO.File]::ReadAllText($out, (New-Object Text.UTF8Encoding($false)))
+    # AUDIT-S13: node's stderr (an import failure, a crash) is part of the message; it never carries the key.
+    $errText = ([IO.File]::ReadAllText($err, (New-Object Text.UTF8Encoding($false)))).Trim()
+    if ($errText.Length -gt 2000) { $errText = $errText.Substring(0, 2000) + ' ...' }
+    $raw = $text.Trim()
+    if ($errText) { $raw = ($raw + [Environment]::NewLine + $errText).Trim() }
+    # an empty stdout (the module never loaded) must not throw a binding error that would hide $errText
+    $parsed = $null
+    if (-not [string]::IsNullOrWhiteSpace($text)) { try { $parsed = $text | ConvertFrom-Json } catch { $parsed = $null } }
+    return [pscustomobject]@{ exit = $p.ExitCode; result = $parsed; raw = $raw }
   } catch {
     return [pscustomobject]@{ exit = -1; result = $null; raw = "无法启动 CompanyOS 程序：$($_.Exception.Message)" }
   } finally {
