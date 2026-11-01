@@ -39,6 +39,7 @@ import {
   existsSync,
   fsyncSync,
   lstatSync,
+  chmodSync,
   linkSync,
   mkdirSync,
   openSync,
@@ -151,6 +152,25 @@ const removeStagingDirIfEmpty = (casRoot: string): void => {
   }
 };
 
+/**
+ * AUDIT-D4 (defence in depth) — a PUBLISHED object is sealed READ-ONLY (POSIX 0o444; on
+ * Windows Node maps this to FILE_ATTRIBUTE_READONLY), so an external editor that is handed
+ * the object (or a user poking in userData) cannot silently rewrite bytes whose address is
+ * their own hash — the next start-up's reconciliation would otherwise find
+ * CAS_HASH_MISMATCH. Ordering matters on Windows: the attribute lives on the file record
+ * shared by every hard link, and deleting a read-only link clears it, so the seal is applied
+ * only AFTER the staging link has been removed. Reuse paths re-seal objects published by
+ * older builds. Sealing is best effort: integrity is ENFORCED by the hash-on-every-read gate,
+ * so a volume that refuses the attribute must not turn a verified publication into a failure.
+ */
+const sealReadOnly = (finalPath: string): void => {
+  try {
+    chmodSync(finalPath, 0o444);
+  } catch {
+    /* integrity remains enforced by hash verification on every read */
+  }
+};
+
 /** Verify existing published bytes; reuse on match, fail closed on mismatch. */
 const verifyExistingTarget = (
   finalPath: string,
@@ -197,7 +217,9 @@ export function createFilesystemArtifactContentStore(options: CasStoreOptions): 
 
       // Fast path: already published and intact → reuse (no overwrite, no rewrite).
       if (existsSync(finalPath)) {
-        return verifyExistingTarget(finalPath, hex, sizeBytes);
+        const reused = verifyExistingTarget(finalPath, hex, sizeBytes);
+        sealReadOnly(finalPath);
+        return reused;
       }
 
       const stagingPath = writeStaging(casRoot, content, hex);
@@ -211,6 +233,7 @@ export function createFilesystemArtifactContentStore(options: CasStoreOptions): 
           linkSync(stagingPath, finalPath);
           removeQuietly(stagingPath);
           removeStagingDirIfEmpty(casRoot);
+          sealReadOnly(finalPath);
           return { contentRef: `sha256:${hex}`, contentHash: hex, sizeBytes };
         } catch (error) {
           const code = error instanceof Error && 'code' in error ? String((error as { code: unknown }).code) : '';
@@ -229,6 +252,7 @@ export function createFilesystemArtifactContentStore(options: CasStoreOptions): 
           const verdict = verifyExistingTarget(finalPath, hex, sizeBytes);
           removeQuietly(stagingPath);
           removeStagingDirIfEmpty(casRoot);
+          sealReadOnly(finalPath);
           return verdict;
         }
       } finally {
