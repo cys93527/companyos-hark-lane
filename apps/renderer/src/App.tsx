@@ -536,6 +536,13 @@ export function App() {
     setRuntimeTimeline([]);
     setRuntimeArtifacts([]);
     setRuntimeReadFailure(null);
+    // AUDIT R8: every other Goal-scoped projection belongs to the Goal it was read for,
+    // so it is cleared before the new selection paints (no Goal-A preview/spend on B).
+    setArtifactPreview(null);
+    setArtifactFailure(null);
+    setBudgetRead(null);
+    setUsageProjection(null);
+    setApprovalFailure(null);
   }, [openGoalRunId]);
   useLayoutEffect(() => {
     currentWorkspace.current = runtimeWorkspace?.runId === openGoalRunId ? runtimeWorkspace : null;
@@ -861,6 +868,8 @@ export function App() {
         return;
       }
       setArtifactFailure(null);
+      // AUDIT R8: a response that returns after the user opened another Goal is dropped.
+      const owner = selectedGoal.current;
       const result = await runArtifactAction(
         {
           artifactAction: (request) =>
@@ -873,6 +882,7 @@ export function App() {
         operation,
         { artifactId, kind },
       );
+      if (selectedGoal.current !== owner) return;
       if (!result.ok) {
         setArtifactPreview(null);
         setArtifactFailure({ code: result.code ?? 'ARTIFACT_ACTION_FAILED', message: result.message ?? '操作失败。' });
