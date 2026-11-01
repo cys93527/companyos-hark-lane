@@ -66,6 +66,7 @@ export interface MountOptions {
   readonly artifactAction?: (request: { operation: string; artifactId: string }) => Promise<unknown>;
   readonly workspaceSwitch?: (root: string) => Promise<unknown>;
   readonly workspaceSelect?: () => Promise<string | null>;
+  readonly workspaceOpen?: (root: string) => Promise<unknown>;
 }
 
 export const mountApp = async (options: MountOptions) => {
@@ -98,7 +99,7 @@ export const mountApp = async (options: MountOptions) => {
       return { ok: true, value: [] };
     },
     workspaceSelect: options.workspaceSelect ?? (async () => null),
-    workspaceOpen: async (r: string) => ({ ok: true, root: r }),
+    workspaceOpen: options.workspaceOpen ?? (async (r: string) => ({ ok: true, root: r })),
     workspaceCurrent: async () => WORKSPACE,
     workspaceSwitch: options.workspaceSwitch ?? (async (r: string) => ({ ok: true, root: r })),
     artifactAction: options.artifactAction ?? (async () => ({ ok: true, value: null })),

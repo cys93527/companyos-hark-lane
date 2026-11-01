@@ -166,16 +166,36 @@ export function WorkspaceSelector({
         return;
       }
       const currentRoot = await selection.workspaceCurrent().catch(() => null);
-      if (!cancelled) {
-        setCurrent(currentRoot);
+      if (cancelled) return;
+      if (currentRoot === null) {
+        setCurrent(null);
         setLoaded(true);
-        if (currentRoot !== null) onWorkspaceOpened(currentRoot);
+        return;
+      }
+      // AUDIT R10: workspaceCurrent may report a PERSISTED root that main could not re-open
+      // at startup. Confirm it through the trusted open seam (re-opening the open root is
+      // accepted) and only treat it as current on success; otherwise show a typed failure
+      // and keep the chooser, instead of a composer whose first Send is refused.
+      const opened = await selection
+        .workspaceOpen(currentRoot)
+        .catch((error: unknown) => ({ ok: false, root: currentRoot, error: String((error as Error)?.message ?? error) }));
+      if (cancelled) return;
+      setLoaded(true);
+      if (opened.ok) {
+        setCurrent(opened.root);
+        onWorkspaceOpened(opened.root);
+      } else {
+        setCurrent(null);
+        setFailure({
+          code: opened.error ?? 'WORKSPACE_REOPEN_FAILED',
+          message: `上次的工作空间（${currentRoot}）无法重新打开，请重新选择工作空间。`,
+        });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [selection, onWorkspaceOpened]);
+  }, [selection, onWorkspaceOpened, setFailure]);
 
   const choose = useCallback(async () => {
     if (selection === null || pending) return;
