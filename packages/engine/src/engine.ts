@@ -1093,6 +1093,46 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     const taskStates: string[] = [];
     let blocked = false;
 
+    /**
+     * AUDIT-E1 — the ONE post-settlement tail of the claim path. Every way an executor
+     * attempt can end (returned succeeded/failed/blocked, or THREW) funnels its settled
+     * task through here, so no exit path can leave a terminal task under an EXECUTING
+     * run again: CANCELLED -> RUN.CANCEL, FAILED -> EXECUTION.FAIL, BLOCKED -> stage
+     * blocked, otherwise (DONE, or READY awaiting its retry) the stage continues.
+     */
+    const afterSettlement = async (
+      settled: Task,
+      failReason: string,
+    ): Promise<
+      | { readonly kind: 'return'; readonly result: Result<StageOutcome, DomainError> }
+      | { readonly kind: 'blocked' }
+      | { readonly kind: 'continue' }
+    > => {
+      await deps.tasks.put(settled);
+      taskStates.push(settled.state);
+      if (settled.state === 'CANCELLED' || settled.state === 'FAILED') {
+        const cancelled = settled.state === 'CANCELLED';
+        const moved = await inTransaction(() =>
+          dispatchInternal(
+            request.runId,
+            cancelled ? 'RUN.CANCEL' : 'EXECUTION.FAIL',
+            { reason: cancelled ? 'durable cancellation intent' : failReason },
+            true,
+          ),
+        );
+        if (!moved.ok) return { kind: 'return', result: moved };
+        if (!moved.value.ok) {
+          // The run transition itself was refused: acceptable only when the run already
+          // left the live states (e.g. a concurrent cancel won); otherwise surface it.
+          const current = await deps.runs.get(request.runId);
+          if (current === null || !isRunTerminal(current.state)) return { kind: 'return', result: moved.value };
+        }
+        return { kind: 'return', result: ok({ outcome: 'failed', attempts, taskStates }) };
+      }
+      if (settled.state === 'BLOCKED') return { kind: 'blocked' };
+      return { kind: 'continue' };
+    };
+
     for (const taskId of request.taskIds) {
       const loaded = await deps.tasks.get(taskId);
       if (loaded === null) {
@@ -1226,11 +1266,13 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
             return inner.value;
           });
           if (!settledTx.ok) return settledTx;
-          if (settledTx.value.task.state === 'CANCELLED') {
-            const cancelledRun = await inTransaction(() => dispatchInternal(request.runId, 'RUN.CANCEL', { reason: 'durable cancellation intent' }, true));
-            if (!cancelledRun.ok) return cancelledRun;
-          }
-          return ok({ outcome: 'failed', attempts, taskStates: [ ...taskStates, settledTx.value.task.state ] });
+          // AUDIT-E1: the crash outcome shares the ONE settlement tail with a returned
+          // 'failed' — a FAILED (exhausted) task drives EXECUTION.FAIL, a retryable one
+          // stays READY for the next turn. Never a FAILED task under an EXECUTING run.
+          const crashTail = await afterSettlement(settledTx.value.task, `task ${String(claim.task.id)} failed with EXECUTOR_CRASH`);
+          if (crashTail.kind === 'return') return crashTail.result;
+          if (crashTail.kind === 'blocked') { blocked = true; break; }
+          continue;
         }
 
         const normalized = normalizeStageHandlerResult(reported);
@@ -1271,22 +1313,15 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
         });
         if (!settledTx.ok) return settledTx;
         task = settledTx.value.task;
-        await deps.tasks.put(task);
-        taskStates.push(task.state);
-        if (task.state === 'CANCELLED') {
-          const cancelledRun = await inTransaction(() => dispatchInternal(request.runId, 'RUN.CANCEL', { reason: 'durable cancellation intent' }, true));
-          if (!cancelledRun.ok) return cancelledRun;
-          return ok({ outcome: 'failed', attempts, taskStates });
-        }
-        if (settledTx.value.task.state === 'BLOCKED') {
+        const failureCode = result.failure === undefined ? null : result.failure.code;
+        const tail = await afterSettlement(
+          task,
+          failureCode === null ? `task ${task.id} exhausted ${claim.task.maxAttempts} attempts` : `task ${task.id} failed with ${failureCode}${(task.attempts < claim.task.maxAttempts) ? ' (non-retryable)' : ''}`,
+        );
+        if (tail.kind === 'return') return tail.result;
+        if (tail.kind === 'blocked') {
           blocked = true;
           break;
-        }
-        if (settledTx.value.task.state === 'FAILED') {
-          const failureCode = result.failure === undefined ? null : result.failure.code;
-          const failedRun = await inTransaction(() => dispatchInternal(request.runId, 'EXECUTION.FAIL', { reason: failureCode === null ? `task ${task.id} exhausted ${claim.task.maxAttempts} attempts` : `task ${task.id} failed with ${failureCode}${(task.attempts < claim.task.maxAttempts) ? ' (non-retryable)' : ''}` }, true));
-          if (!failedRun.ok) return failedRun;
-          return ok({ outcome: 'failed', attempts, taskStates });
         }
         /*
          * LIVE-SMOKE-FIX-04 — the retryable failure kept the task's RETRY semantics
