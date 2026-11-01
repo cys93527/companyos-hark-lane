@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openDatabase, type Database, type OpenDatabaseOptions } from './db.js';
-import { shippedMigrationNames } from './durable/index.js';
+import { closeAfterFailedOpen, shippedMigrationNames } from './durable/index.js';
 import { applyMigrations, loadMigrations, type MigrationReport } from './migrations.js';
 
 export {
@@ -152,21 +152,28 @@ export function openCompanyDatabase(options: OpenCompanyDatabaseOptions): Compan
     ...(options.foreignKeys === undefined ? {} : { foreignKeys: options.foreignKeys }),
   });
 
-  const migrationsDir = options.migrationsDir ?? defaultMigrationsDir();
-  const migrations = loadMigrations(migrationsDir);
-  const migrationReport = applyMigrations({
-    db,
-    migrations,
-    appliedAt: options.appliedAt,
-    knownNames: shippedMigrationNames([migrationsDir]),
-    ...(options.logger === undefined ? {} : { logger: options.logger }),
-  });
+  // AUDIT-P6 — a migration failure after open closes the connection before propagating
+  // (otherwise the unreachable handle keeps the DB files locked on Windows).
+  try {
+    const migrationsDir = options.migrationsDir ?? defaultMigrationsDir();
+    const migrations = loadMigrations(migrationsDir);
+    const migrationReport = applyMigrations({
+      db,
+      migrations,
+      appliedAt: options.appliedAt,
+      knownNames: shippedMigrationNames([migrationsDir]),
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+    });
 
-  const journalRow = db.prepare('PRAGMA journal_mode').get();
-  const journalMode =
-    journalRow === undefined
-      ? 'unknown'
-      : String(Object.values(journalRow as Record<string, unknown>)[0] ?? 'unknown');
+    const journalRow = db.prepare('PRAGMA journal_mode').get();
+    const journalMode =
+      journalRow === undefined
+        ? 'unknown'
+        : String(Object.values(journalRow as Record<string, unknown>)[0] ?? 'unknown');
 
-  return { db, path, migrationReport, journalMode };
+    return { db, path, migrationReport, journalMode };
+  } catch (error) {
+    closeAfterFailedOpen(db);
+    throw error;
+  }
 }

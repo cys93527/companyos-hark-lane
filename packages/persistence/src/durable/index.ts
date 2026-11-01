@@ -449,6 +449,33 @@ export function openDurableDatabase(options: OpenDurableDatabaseOptions): Durabl
     ...(options.foreignKeys === undefined ? {} : { foreignKeys: options.foreignKeys }),
   });
 
+  // AUDIT-P6 — once the connection is open, ANY failure while migrating or assembling the
+  // stores (downgrade refusal, checksum mismatch, a legacy-data abort, …) must close it
+  // before the error propagates: the caller keeps running by design, and an unreachable
+  // DatabaseSync would hold companyos.sqlite (+ -wal/-shm) locked on Windows for the life
+  // of the process — exactly the file the error tells the user to back up or restore.
+  try {
+    return assembleDurableDatabase(db, path, options);
+  } catch (error) {
+    closeAfterFailedOpen(db);
+    throw error;
+  }
+}
+
+/** Close a connection whose open failed; the ORIGINAL open error is the one reported. */
+export function closeAfterFailedOpen(db: Database): void {
+  try {
+    db.close();
+  } catch {
+    // Nothing more can be done for this handle; the caller rethrows the open error.
+  }
+}
+
+function assembleDurableDatabase(
+  db: Database,
+  path: string,
+  options: OpenDurableDatabaseOptions,
+): DurableDatabase {
   const knownNames = shippedMigrationNames();
   const apply = (chain: MigrationChainName): MigrationReport =>
     applyMigrations({
