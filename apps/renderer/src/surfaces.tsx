@@ -228,7 +228,8 @@ export function AgentsSurfaceView(props: {
     props.failure === null
       ? null
       : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
-    props.rows === null
+    // AUDIT R13: a failure replaces the spinner (same guard as Tools / Knowledge).
+    props.failure !== null ? null : props.rows === null
       ? h('p', { className: 'muted' }, '加载中…')
       : props.rows.length === 0
         ? h('p', { className: 'muted' }, '尚无执行记录。')

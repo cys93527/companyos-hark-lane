@@ -128,7 +128,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
           return h(
             'div',
             { key: `v${index}`, className: 'chat__row' },
-            `验证 · 完成 ${entry.completed} · 失败 ${entry.failed ? 1 : 0} · 缺失 ${entry.failed === true ? 1 : 0}`,
+            `验证 · 完成 ${entry.completed} · 失败 ${entry.failed ? 1 : 0} · 缺失 ${entry.missing}`,
           );
         case 'artifacts':
           return h(

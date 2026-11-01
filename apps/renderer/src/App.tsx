@@ -406,6 +406,9 @@ export function App() {
         }
       }
       setDraft('');
+      // AUDIT R12: the file-delivery requirement belongs to the submitted Goal only.
+      setDeliveryPath('');
+      setDeliveryText('');
       setOpenGoalRunId(result.runId);
       setRefreshKey((key) => key + 1);
       // Autonomy continues in the main process; the client only observes canonical state.
