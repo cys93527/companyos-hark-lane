@@ -102,6 +102,25 @@ interface BridgeEnvelope<T> {
   readonly error?: { readonly code?: string; readonly message?: string };
 }
 
+/**
+ * AUDIT R3: the typed failure of the last ACTION (submit, workspace change, model choice),
+ * rendered in the composer dock so it is visible on every view (Home with no Goal open,
+ * Settings, Tools, …) and independent of the open Goal's read failures.
+ */
+function ActionFailureLine(props: {
+  readonly failures: readonly ({ readonly code: string; readonly message: string } | null)[];
+}) {
+  const shown = props.failures.filter((entry): entry is { code: string; message: string } => entry !== null);
+  if (shown.length === 0) return null;
+  return h(
+    'div',
+    { className: 'typed-error action-failure', role: 'alert', 'data-testid': 'action-failure' },
+    shown.map((failure) =>
+      h('p', { key: failure.code, className: 'typed-error__message' }, `${failure.code} ${failure.message}`),
+    ),
+  );
+}
+
 export function App() {
   const [version, setVersion] = useState<string>(FALLBACK_APP_VERSION);
   const [database, setDatabase] = useState<DatabaseStatus | null>(null);
@@ -123,6 +142,8 @@ export function App() {
   const [modelStatus, setModelStatus] = useState<ModelSelectionStatus>({ kind: 'no-models' });
   const [modelExplanation, setModelExplanation] = useState<SelectionExplanation | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
+  // AUDIT R3: model-selection failures have their own surface (onboarding card + dock).
+  const [modelFailure, setModelFailure] = useState<{ code: string; message: string } | null>(null);
   const [catalogueCount, setCatalogueCount] = useState(0);
   const [pendingIntent, setPendingIntent] = useState(false);
   const [pendingObjective, setPendingObjective] = useState<string | null>(null);
@@ -249,6 +270,7 @@ export function App() {
       if (workflow === null) return;
       setModelBusy(true);
       setModelExplanation(null);
+      setModelFailure(null);
       try {
         const result = await establishCompanySelection(workflow, {
           providerId: option.providerId,
@@ -260,10 +282,10 @@ export function App() {
           setModelStatus({ kind: 'selected', modelKey: result.modelKey, displayName: option.displayName });
           setSubmissionFailure(null);
         } else {
-          setSubmissionFailure({ code: result.code, message: result.message });
+          setModelFailure({ code: result.code, message: result.message });
         }
       } catch {
-        setSubmissionFailure({ code: 'MODEL_SELECTION_FAILED', message: '模型选择未完成（读取或保存失败），请重试。' });
+        setModelFailure({ code: 'MODEL_SELECTION_FAILED', message: '模型选择未完成（读取或保存失败），请重试。' });
       } finally {
         // AUDIT R7: the busy flag is released on EVERY path, so a throw can never leave
         // the model buttons disabled forever.
@@ -942,7 +964,7 @@ export function App() {
     options: modelOptions,
     selectedProviderModelId: null,
     busy: modelBusy,
-    failure: null,
+    failure: modelFailure,
     explanation: modelExplanation,
     onSelect: (option: ModelOptionRow) => void chooseModel(option),
     onOpenSettings: () => setView('settings'),
@@ -992,7 +1014,9 @@ export function App() {
                   objective: selectedObjective,
                   entries: conversation,
                   loading: runtimeWorkspace === null && openGoalRunId !== null && runtimeReadFailure === null,
-                  failure: submissionFailure ?? runtimeReadFailure,
+                  // AUDIT R3: only the open Goal's read failure here; action failures
+                  // (submission / workspace / model) have their own line in the dock.
+                  failure: runtimeReadFailure,
                 }),
                 h(GoalList, {
                   bridge: controlPlane,
@@ -1066,6 +1090,13 @@ export function App() {
         h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'aria-label': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
         h('p', null, '文件要求仅随明确提交发送，不包含在本地文字草稿中。')),
       h(LocalDraftControls, { companyId: COMPANY_ID, workspaceRoot, objective: draft, busy: submissionBusy, onRestore: setDraft }),
+      h(ActionFailureLine, {
+        failures: [
+          submissionFailure,
+          // The chat column already shows the model failure in the onboarding card.
+          view === 'home' || view === 'chat' ? null : modelFailure,
+        ],
+      }),
       h(ComposerView, {
         draft,
         ready: modelReady && workspaceRoot !== null && !pendingIntent,

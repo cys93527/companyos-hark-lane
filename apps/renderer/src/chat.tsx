@@ -93,6 +93,10 @@ export function ChatView(props: ChatViewProps): JSX.Element {
       { className: 'chat chat--empty', 'aria-label': 'conversation' },
       h('h1', { className: 'chat__title' }, '你想把什么事情变成现实？'),
       h('p', { className: 'chat__subtitle muted' }, '用一句话描述目标，CompanyOS 会规划、执行并交付。'),
+      // AUDIT R3: a failure is never swallowed by the empty state.
+      props.failure === null
+        ? null
+        : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
     );
   }
   return h(
