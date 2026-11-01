@@ -45,6 +45,16 @@ export const settle = async (): Promise<void> => {
   });
 };
 
+/** Settle until `done()` holds (macrotask turns too: file-delivery hashing is async). */
+export const waitFor = async (done: () => boolean, turns = 50): Promise<void> => {
+  for (let i = 0; i < turns && !done(); i += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  await settle();
+};
+
 let root: Root | null = null;
 let container: MiniElement | null = null;
 

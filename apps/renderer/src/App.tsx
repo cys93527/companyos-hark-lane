@@ -46,6 +46,7 @@ import {
 import { createSubmissionController, type SubmissionController, type SubmissionResult } from './submission-intent.js';
 import { createSubmissionIntentStore } from './intent-store.js';
 import { LocalDraftControls } from './local-draft-controls.js';
+import { browserDraftStorage, createLocalDraftStore } from './local-draft-store.js';
 import { fileDeliveryConstraints } from './file-delivery-input.js';
 import {
   RuntimePanelView,
@@ -390,8 +391,20 @@ export function App() {
   }, [syncPending, controller]);
 
   /** One place that turns a submission result into UI state (send + explicit retry). */
-  const applySubmissionResult = useCallback((result: SubmissionResult) => {
+  const draftStore = useMemo(() => createLocalDraftStore(browserDraftStorage()), []);
+  const applySubmissionResult = useCallback((
+    result: SubmissionResult,
+    submitted: { readonly objective: string; readonly workspaceRoot: string } | null,
+  ) => {
     if (result.status === 'created' || result.status === 'replayed') {
+      // AUDIT R6: the submitted text is no longer an unsubmitted draft.
+      if (submitted !== null) {
+        try {
+          draftStore.clearIfSubmitted(COMPANY_ID, submitted.workspaceRoot, submitted.objective);
+        } catch {
+          // Storage unavailable: nothing was persisted that could be restored either.
+        }
+      }
       setDraft('');
       setOpenGoalRunId(result.runId);
       setRefreshKey((key) => key + 1);
@@ -406,7 +419,7 @@ export function App() {
     } else if (result.status === 'blocked' && result.reason === 'pending') {
       setSubmissionFailure({ code: 'SUBMISSION_PENDING', message: '上一次提交尚未确认：请先「重试」或「放弃」。' });
     }
-  }, []);
+  }, [draftStore]);
 
   const retryPending = useCallback(async () => {
     const active = controllerRef.current;
@@ -415,8 +428,14 @@ export function App() {
     setSubmissionBusy(true);
     setSubmissionFailure(null);
     try {
+      const intent = active.pending();
       const result = await active.retry();
-      if (result !== null) applySubmissionResult(result);
+      if (result !== null) {
+        applySubmissionResult(
+          result,
+          intent === null ? null : { objective: intent.objective, workspaceRoot: intent.workspaceRoot },
+        );
+      }
     } catch {
       setSubmissionFailure({ code: 'SUBMISSION_UNCONFIRMED', message: '本地提交存储或主进程通信失败，提交结果未确认。' });
     } finally {
@@ -467,7 +486,7 @@ export function App() {
       } finally {
         syncPending();
       }
-      applySubmissionResult(result);
+      applySubmissionResult(result, { objective: draft, workspaceRoot });
     } finally {
       submissionInFlight.current = false;
       setSubmissionBusy(false);

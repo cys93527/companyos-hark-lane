@@ -105,3 +105,47 @@ describe('AUDIT R2 — submission refusal vs unknown outcome', () => {
     expect(storage.getItem(SUBMISSION_INTENT_STORAGE_KEY)).toBeNull();
   });
 });
+
+describe('AUDIT R6 — a submitted objective is not restored as an unsubmitted draft', () => {
+  it('store: clearIfSubmitted removes only a draft whose text was submitted', () => {
+    const storage = memoryStorage();
+    const store = createLocalDraftStore(storage);
+    store.save('c', WORKSPACE, '目标 A');
+    expect(store.clearIfSubmitted('c', WORKSPACE, '目标 B')).toBe(false);
+    expect(store.load('c', WORKSPACE)?.objective).toBe('目标 A');
+    expect(store.clearIfSubmitted('c', WORKSPACE, '  目标 A  ')).toBe(true);
+    expect(store.load('c', WORKSPACE)).toBeNull();
+  });
+
+  it('App: after a created Goal the saved draft is gone, so a remount does not offer it again', async () => {
+    const storage = memoryStorage();
+    createLocalDraftStore(storage).save('company_default', WORKSPACE, '生成周报');
+    const app = await mountApp({
+      storage,
+      control: (call) => (call.operation === 'goal.create' ? { ok: true, value: { runId: 'run_goal_7' } } : undefined),
+    });
+    expect(app.view.textContent).toContain('已恢复本地未提交草稿');
+    await app.click('提交并开始执行');
+    expect(app.callsOf('goal.create')).toHaveLength(1);
+    expect(createLocalDraftStore(storage).load('company_default', WORKSPACE)).toBeNull();
+    unmountApp();
+    const again = await mountApp({ storage, control: () => undefined });
+    expect(again.view.textContent).not.toContain('已恢复本地未提交草稿');
+  });
+
+  it('App: a different saved draft survives the submission of other text', async () => {
+    const storage = memoryStorage();
+    createLocalDraftStore(storage).save('company_default', WORKSPACE, '草稿 1');
+    // A pending intent for different text, confirmed through 重试.
+    storage.setItem(
+      SUBMISSION_INTENT_STORAGE_KEY,
+      JSON.stringify({ intentId: 'si-x', objective: '另一个目标', workspaceRoot: WORKSPACE, state: 'pending', createdAt: '' }),
+    );
+    const app = await mountApp({
+      storage,
+      control: (call) => (call.operation === 'goal.create' ? { ok: true, value: { runId: 'run_goal_8' } } : undefined),
+    });
+    await app.click('重试');
+    expect(createLocalDraftStore(storage).load('company_default', WORKSPACE)?.objective).toBe('草稿 1');
+  });
+});
