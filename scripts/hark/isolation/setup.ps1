@@ -52,7 +52,19 @@ $WorkspaceDirs = Split-Dirs $WorkspaceDirs; $StateDirs = Split-Dirs $StateDirs; 
 $SCHEMA = 'companyos/isolation-state/1'
 $HIDE_KEY = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
 
-function Out-Result($obj, [int]$code) { ($obj | ConvertTo-Json -Compress -Depth 6) | Write-Output; exit $code }
+# AUDIT-S3: the app reads this JSON through a hidden console whose output code page is the OEM default (936/437) and
+# decodes it as UTF-8; 5.1 ConvertTo-Json does not escape non-ASCII, so a Chinese workspace root arrived as U+FFFD and
+# every goal was refused (workspace:notGranted). Emit UTF-8, and make the JSON ASCII-only (\uXXXX for every char above
+# 0x7E) so any decoder reads it byte-exact.
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
+function ConvertTo-AsciiJson([string]$json) {
+  $sb = New-Object Text.StringBuilder
+  foreach ($ch in $json.ToCharArray()) {
+    if ([int]$ch -gt 0x7E) { [void]$sb.Append('\u').Append(([int]$ch).ToString('x4')) } else { [void]$sb.Append($ch) }
+  }
+  return $sb.ToString()
+}
+function Out-Result($obj, [int]$code) { (ConvertTo-AsciiJson ($obj | ConvertTo-Json -Compress -Depth 6)) | Write-Output; exit $code }
 function Load-Wfp { if (-not ('CompanyOSWfp' -as [type])) { Add-Type -TypeDefinition (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wfp-persistent.cs') -Raw -Encoding UTF8) } }
 # Agent profile (lifecycle run 7, 40347340358): the launcher loads the account's own profile (LOGON_WITH_PROFILE) and
 # points HOME/TEMP/APPDATA at it, so install creates it up front (elevated) and status/uninstall track it.
