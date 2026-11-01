@@ -1310,7 +1310,9 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntimeService 
             if (!attempt.ok) throw attempt.error;
             return attempt;
             } catch (error) {
-              if (!settlementAttempted) await admission?.settle(null);
+              // AUDIT-E3: a thrown failure still settles from its typed usage evidence
+              // (KNOWN zero when provably never dispatched); no evidence stays UNKNOWN.
+              if (!settlementAttempted) await admission?.settle(observedUsageOf(error));
               throw error;
             } finally { admission?.release(); }
           },

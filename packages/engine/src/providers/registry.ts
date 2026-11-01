@@ -180,6 +180,42 @@ export function classifyPlainError(
   return normalizeProviderError({ kind, message, providerId });
 }
 
+/**
+ * AUDIT-E3 — typed usage evidence on a failed invocation (the budget settlement input).
+ *
+ * `usageStatus: 'KNOWN'` + `observedUsage` is the contract the agent runtime settles a
+ * failed call's Goal reservation from (`observedUsageOf`); anything else settles UNKNOWN
+ * (ADR-0032: UNKNOWN blocks further calls). Two engine-owned facts were being lost:
+ *   1. an adapter's own usage evidence (H15d: an answered-but-unusable call reports its
+ *      real usage) was DROPPED by the normalization below, so every failed call settled
+ *      UNKNOWN at its bound;
+ *   2. a failure the registry raised BEFORE the adapter's invoke was ever called (secret
+ *      refresh, permission, binding, catalogue preflight, cancellation) provably sent no
+ *      model request and consumed no tokens — it is KNOWN zero, not unknown.
+ * Nothing here invents usage for a request that reached the adapter: a dispatched
+ * failure without adapter evidence stays UNKNOWN (fail closed).
+ */
+export const NOT_DISPATCHED_USAGE: Readonly<Record<string, unknown>> = Object.freeze({
+  usageStatus: 'KNOWN',
+  observedUsage: Object.freeze({ inputTokens: 0, outputTokens: 0 }),
+  dispatch: 'NOT_DISPATCHED',
+});
+
+const usageEvidenceOf = (error: unknown): Readonly<Record<string, unknown>> => {
+  if (!(error instanceof DomainError)) return {};
+  const status = error.details['usageStatus'];
+  if (status === 'UNKNOWN') return { usageStatus: 'UNKNOWN' };
+  if (status !== 'KNOWN') return {};
+  const usage = error.details['observedUsage'] as { inputTokens?: unknown; outputTokens?: unknown } | null | undefined;
+  const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  if (usage === null || usage === undefined || !count(usage.inputTokens) || !count(usage.outputTokens)) return {};
+  return { usageStatus: 'KNOWN', observedUsage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } };
+};
+
+/** Re-issue a registry-raised error with the not-dispatched (KNOWN zero) evidence. */
+const notDispatched = (error: DomainError): DomainError =>
+  error.details['usageStatus'] !== undefined ? error : domainError(error.code, error.message, { ...error.details, ...NOT_DISPATCHED_USAGE });
+
 export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegistry {
   const bound = new Map<string, ModelProviderPort>();
   let knownSecrets: readonly string[] = [];
@@ -611,18 +647,22 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
           kind: normalized.kind,
           phase: 'secret_refresh',
         });
-        return err(providerErrorToDomainError(normalized));
+        return err(providerErrorToDomainError(normalized, NOT_DISPATCHED_USAGE));
       }
       const permitted = await permit(selection.actorId, 'provider.invoke');
-      if (!permitted.ok) return permitted;
+      if (!permitted.ok) return err(notDispatched(permitted.error));
+      // AUDIT-E3: flips only when the adapter's invoke is actually called; every failure
+      // before that point provably sent no model request (KNOWN zero usage).
+      let dispatched = false;
       try {
         const provider = requireBound(selection.providerId);
         await preflight(selection.providerId, request);
         // F2 closure: a cancellation that fired while the preflight ran ends the
         // invocation HERE - the provider is never invoked on an aborted signal.
         if (request.signal?.aborted) {
-          return err(domainError('CANCELLED', 'The model invocation was cancelled.', { kind: 'CANCELLED' }));
+          return err(domainError('CANCELLED', 'The model invocation was cancelled.', { kind: 'CANCELLED', ...NOT_DISPATCHED_USAGE }));
         }
+        dispatched = true;
         const result = await provider.invoke(request);
         if (!result.ok) {
           // Task-18-06 corrective: a cancelled invocation is NOT a provider failure. The
@@ -653,7 +693,8 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
             kind: normalized.kind,
             phase: 'invoke',
           });
-          return err(providerErrorToDomainError(normalized));
+          // AUDIT-E3: the adapter's typed usage evidence survives normalization.
+          return err(providerErrorToDomainError(normalized, usageEvidenceOf(result.error)));
         }
         // Nothing leaving the registry may carry a credential (requirement N).
         guardOutbound(result.value, 'provider invocation result');
@@ -669,6 +710,10 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
           outputText: redacted(result.value.outputText),
         });
       } catch (error) {
+        // AUDIT-E3: before the adapter was called nothing was sent (KNOWN zero); after, only
+        // the adapter's own typed evidence counts (absent evidence stays UNKNOWN).
+        const evidence = dispatched ? usageEvidenceOf(error) : NOT_DISPATCHED_USAGE;
+        const own = (domain: DomainError): DomainError => (dispatched ? domain : notDispatched(domain));
         // Task-18-06 corrective: an adapter that rejects with a cancellation (instead of
         // returning the canonical `err(CANCELLED)`) is still a cancellation, and must not be
         // laundered into a provider failure by the classifier.
@@ -678,7 +723,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
             modelId: request.modelId,
             phase: 'invoke',
           });
-          return err(error);
+          return err(own(error));
         }
         // A provider-declared failure carries a marker: normalize it. Anything else that
         // is already a DomainError is one of our own guards (context limit, secret leak,
@@ -693,7 +738,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
               kind: normalized.kind,
               phase: 'invoke',
             });
-            return err(providerErrorToDomainError(normalized));
+            return err(providerErrorToDomainError(normalized, evidence));
           }
           // Our own guards (preflight gates, binding, secret material) already carry a
           // marker: they are the answer, not an adapter failure to re-classify - but they
@@ -711,7 +756,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
                   : 'invalid_request',
               phase: 'preflight',
             });
-            return err(error);
+            return err(own(error));
           }
           const normalized = classifyPlainError(error, selection.providerId);
           await audit('provider.failed', selection.providerId, selection.actorId, {
@@ -720,7 +765,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
             kind: normalized.kind,
             phase: 'invoke',
           });
-          return err(providerErrorToDomainError(normalized));
+          return err(providerErrorToDomainError(normalized, evidence));
         }
         const normalized = classifyPlainError(error, selection.providerId);
         await audit('provider.failed', selection.providerId, selection.actorId, {
@@ -729,7 +774,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
           kind: normalized.kind,
           phase: 'invoke',
         });
-        return err(providerErrorToDomainError(normalized));
+        return err(providerErrorToDomainError(normalized, evidence));
       }
     },
 
