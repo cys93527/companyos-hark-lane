@@ -16,6 +16,8 @@
  * binds to the canonical workspace (never a renderer value), so a refused switch can never
  * redirect execution.
  */
+import { posix, win32 } from 'node:path';
+
 import type { DomainError, Result } from '@companyos/core';
 
 export interface WorkspaceSwitchSeams {
@@ -25,7 +27,30 @@ export interface WorkspaceSwitchSeams {
   readonly close: () => Result<true, DomainError>;
   /** Validate + bind a root as the active workspace. */
   readonly open: (root: string) => Promise<Result<{ readonly canonicalRoot: string }, DomainError>>;
+  /**
+   * AUDIT-D14 — resolve a requested root to its filesystem-canonical form (realpath: subst,
+   * junction, symlink, on-disk case) or null when it cannot be resolved. Optional; the
+   * lexical comparison below always applies.
+   */
+  readonly canonicalize?: (root: string) => string | null;
+  /** AUDIT-D14 — the host platform for path identity (win32 compares case-insensitively). Defaults to process.platform. */
+  readonly platform?: NodeJS.Platform;
 }
+
+/**
+ * AUDIT-D14 — workspace root identity: lexically normalised (resolved, no trailing
+ * separator), case-insensitive on win32. `c:\proj\` and `C:\proj` are the SAME workspace.
+ */
+export const sameWorkspaceRoot = (a: string, b: string, platform: NodeJS.Platform = process.platform): boolean => {
+  const lib = platform === 'win32' ? win32 : posix;
+  const norm = (p: string): string => {
+    const resolved = lib.resolve(p);
+    const root = lib.parse(resolved).root;
+    const trimmed = resolved.length > root.length ? resolved.replace(/[\\/]+$/, '') : resolved;
+    return platform === 'win32' ? trimmed.toLowerCase() : trimmed;
+  };
+  return norm(a) === norm(b);
+};
 
 export type WorkspaceSwitchResult =
   | { readonly ok: true; readonly root: string }
@@ -50,9 +75,15 @@ export const switchWorkspace = async (
     return { ok: false, root: '', error: 'WORKSPACE_PATH_REQUIRED' };
   }
   const previous = seams.currentRoot();
-  // Idempotent re-affirmation of the SAME canonical workspace is a no-op success.
-  if (previous === requestedRoot) {
-    return { ok: true, root: requestedRoot };
+  // Idempotent re-affirmation of the SAME canonical workspace is a no-op success. AUDIT-D14:
+  // identity is compared on canonical paths (realpath when available, lexical + win32
+  // case-insensitive always), and the answer is the CANONICAL root, never the raw request.
+  if (previous !== null) {
+    const platform = seams.platform ?? process.platform;
+    const canonicalRequested = seams.canonicalize?.(requestedRoot) ?? null;
+    if (sameWorkspaceRoot(previous, requestedRoot, platform) || (canonicalRequested !== null && sameWorkspaceRoot(previous, canonicalRequested, platform))) {
+      return { ok: true, root: previous };
+    }
   }
   const closed = seams.close();
   if (!closed.ok) {

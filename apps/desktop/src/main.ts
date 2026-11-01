@@ -11,7 +11,7 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -693,9 +693,13 @@ function registerIpcHandlers(): void {
       }
       // Operational context only: remember WHICH directory the user chose so a
       // restart can re-offer it. Never canonical workflow truth.
-      writePersistedSelection(app.getPath('userData'), { root, selectedAt: new Date().toISOString() });
-      logger.info('workspace opened', { root });
-      return { ok: true, root };
+      // AUDIT-D14: persist and return the CANONICAL root the engine bound, never the raw
+      // renderer string (a case/trailing-separator/subst variant would later defeat the
+      // workspaceSwitch identity check and turn a no-op re-affirm into close→reopen).
+      const canonicalRoot = opened.value.canonicalRoot;
+      writePersistedSelection(app.getPath('userData'), { root: canonicalRoot, selectedAt: new Date().toISOString() });
+      logger.info('workspace opened', { root: canonicalRoot });
+      return { ok: true, root: canonicalRoot };
     },
   );
 
@@ -713,6 +717,13 @@ function registerIpcHandlers(): void {
       const result = await switchWorkspace(
         {
           currentRoot: () => core.repositoryRuntime.currentWorkspace()?.canonicalRoot ?? null,
+          canonicalize: (candidate) => {
+            try {
+              return realpathSync.native(candidate);
+            } catch {
+              return null;
+            }
+          },
           close: () => core.repositoryRuntime.closeWorkspace(),
           open: async (next) => {
             const opened = await core.repositoryRuntime.openWorkspace({ root: next, commandProfile: {} });
