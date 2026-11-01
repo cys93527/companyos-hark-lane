@@ -317,6 +317,12 @@ export interface AutonomyRunResult {
   readonly doctor: readonly DoctorCheck[];
   readonly outcome: FinalOutcomeProjection;
   readonly progress: GoalProgressPhase;
+  /**
+   * AUDIT-D6 — the canonical state fingerprint at the moment this generation finished.
+   * The launcher compares it across stall terminals: a changed fingerprint between two
+   * stalls is forward progress, so the "consecutive stall" guard restarts.
+   */
+  readonly fingerprint: string;
 }
 
 export interface AutonomyDriverDeps {
@@ -417,6 +423,7 @@ export const createGoalOutcomeAutonomyDriver = (deps: AutonomyDriverDeps) => {
         doctor,
         outcome,
         progress: projectGoalProgress(state),
+        fingerprint: state.fingerprint,
       });
     };
 

@@ -69,6 +69,8 @@ export interface DesktopAutonomyRunnerDeps {
 export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): DesktopAutonomyRunner => {
   const active = new Map<string, Promise<unknown>>();
   const stallResumes = new Map<string, number>();
+  /** AUDIT-D6 — the canonical fingerprint of each run's last stall terminal (consecutive-stall guard). */
+  const lastStallFingerprint = new Map<string, string>();
   const maxStallResumes = deps.maxStallResumes ?? 3;
   const stallResumeDelayMs = deps.stallResumeDelayMs ?? 30_000;
   const scheduleDelay =
@@ -135,6 +137,7 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
     if (read.kind === 'terminal' || read.kind === 'not_found') {
       // Canonically the state is KNOWN: stop the bounded mechanism and release the owner.
       stallResumes.delete(runId);
+      lastStallFingerprint.delete(runId);
       releaseRecoveryOwner(runId);
       return;
     }
@@ -218,7 +221,20 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
         // STAGE 4 — bounded stall-resume (see module doc). Only when durable truth still
         // shows the goal run non-terminal, and never past the counted guard.
         if (result.value.terminal === 'AUTONOMY_STALLED') {
+          /*
+           * AUDIT-D6: the guard counts CONSECUTIVE stalls without progress. A stall whose
+           * canonical fingerprint differs from the previous stall's means the Goal moved
+           * forward in between (the fingerprint covers task/run states, attempts, decisions
+           * and events), so the count restarts instead of exhausting over the run's lifetime.
+           */
+          const previous = lastStallFingerprint.get(runId);
+          if (previous !== undefined && previous !== result.value.fingerprint) stallResumes.delete(runId);
+          lastStallFingerprint.set(runId, result.value.fingerprint);
           await scheduleBoundedResume(companyId, runId, 'autonomy driver stall-resume scheduled');
+        } else {
+          // AUDIT-D6: any non-stall finish ends the consecutive-stall streak.
+          stallResumes.delete(runId);
+          lastStallFingerprint.delete(runId);
         }
       } else {
         deps.logger?.warn('autonomy driver refused', { runId, code: result.error.code });
