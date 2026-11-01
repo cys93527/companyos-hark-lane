@@ -62,8 +62,15 @@ export interface AuthorizationService {
   assign(input: AssignRoleInput): Promise<Result<RoleAssignment, DomainError>>;
   revoke(assignmentId: string): Promise<Result<boolean, DomainError>>;
   assignmentsOf(actorId: string): Promise<readonly RoleAssignment[]>;
+  /** AUDIT-E4: every assignment of one role (exhaustive). */
+  holdersOf(roleId: string): Promise<readonly RoleAssignment[]>;
   decide(input: { readonly actorId: string; readonly authority: string; readonly scopeId?: string }): Promise<Result<true, DomainError>>;
   effective(actorId: string): Promise<readonly string[]>;
+  /**
+   * AUDIT-E4: bring the BOOTSTRAP owner role (and only it) up to the given authority
+   * catalogue. Returns the stored role (unchanged when nothing was missing).
+   */
+  reconcileBootstrapRole(roleId: string, authorities: readonly string[]): Promise<Result<Role, DomainError>>;
 }
 
 export interface BootstrapOwnerOptions {
@@ -75,8 +82,22 @@ export interface BootstrapOwnerOutcome {
   /** True only on the run that actually provisioned the owner role. */
   readonly provisioned: boolean;
   readonly roleId: string | null;
-  readonly reason: 'provisioned' | 'roles_already_defined';
+  /**
+   * provisioned: first run. reconciled (AUDIT-E4): the existing bootstrap owner role was
+   * repaired (authorities added by an upgrade and/or the crash-lost assignment restored).
+   * roles_already_defined: nothing to do.
+   */
+  readonly reason: 'provisioned' | 'reconciled' | 'roles_already_defined';
+  /** AUDIT-E4: authorities granted to the bootstrap owner role on this run (sorted). */
+  readonly authoritiesAdded?: readonly string[];
+  /** AUDIT-E4: true when the crash-lost bootstrap assignment was restored on this run. */
+  readonly assignmentRestored?: boolean;
 }
+
+/** The bootstrap owner role's identity (key + name are written only by the bootstrap). */
+const BOOTSTRAP_ROLE_KEY = 'owner';
+const BOOTSTRAP_ROLE_NAME = 'Owner (bootstrap)';
+const BOOTSTRAP_ASSIGNER = 'system:bootstrap';
 
 /**
  * Sprint 7.1 MEDIUM-1: replace "empty role table = allow everything" with an explicit
@@ -84,21 +105,56 @@ export interface BootstrapOwnerOutcome {
  *
  * On the FIRST run (no roles at all) this provisions ONE owner role carrying every known
  * authority and assigns it to the given actor, so the permission model has an auditable
- * starting point. On every later run it does nothing: the caller's authorization path is
- * plain Role -> Authority, with no special window left open.
+ * starting point.
+ *
+ * AUDIT-E4: on every later run it RECONCILES that bootstrap owner role (never any other
+ * role, never any other actor):
+ *   - authorities added to the catalogue by an in-place upgrade are granted to it, so the
+ *     session owner is not locked out of every new gate;
+ *   - a crash between the role write and the assignment write (no transaction spans them)
+ *     left the role held by NOBODY; the assignment is restored to the bootstrap actor.
+ *     When the role is already held, no new actor ever gains it (the window stays closed).
+ * A role set defined without the bootstrap (no bootstrap owner role) is left untouched.
+ * Idempotent: a repeated boot converges and changes nothing, so a crash at any point of
+ * this sequence is repaired by the next boot.
  */
 export async function ensureBootstrapOwner(
   authz: AuthorizationService,
   options: BootstrapOwnerOptions,
 ): Promise<Result<BootstrapOwnerOutcome, DomainError>> {
+  const companyId = options.companyId ?? 'company_default';
   const roles = await authz.listRoles();
   if (roles.length > 0) {
-    return ok({ provisioned: false, roleId: null, reason: 'roles_already_defined' });
+    const owner = roles.find(
+      (role) => role.key === BOOTSTRAP_ROLE_KEY && role.name === BOOTSTRAP_ROLE_NAME && String(role.companyId) === companyId,
+    );
+    if (owner === undefined) {
+      return ok({ provisioned: false, roleId: null, reason: 'roles_already_defined' });
+    }
+    const before = new Set(owner.authority);
+    const reconciled = await authz.reconcileBootstrapRole(owner.id, AUTHORITIES);
+    if (!reconciled.ok) return reconciled;
+    const authoritiesAdded = reconciled.value.authority.filter((authority) => !before.has(authority)).sort();
+    const holders = await authz.holdersOf(owner.id);
+    let assignmentRestored = false;
+    if (holders.length === 0) {
+      const assigned = await authz.assign({ actorId: options.actorId, roleId: owner.id, assignedBy: BOOTSTRAP_ASSIGNER });
+      if (!assigned.ok) return assigned;
+      assignmentRestored = true;
+    }
+    const changed = authoritiesAdded.length > 0 || assignmentRestored;
+    return ok({
+      provisioned: false,
+      roleId: changed ? owner.id : null,
+      reason: changed ? 'reconciled' : 'roles_already_defined',
+      authoritiesAdded,
+      assignmentRestored,
+    });
   }
   const owner = await authz.defineRole({
-    companyId: options.companyId ?? 'company_default',
-    key: 'owner',
-    name: 'Owner (bootstrap)',
+    companyId,
+    key: BOOTSTRAP_ROLE_KEY,
+    name: BOOTSTRAP_ROLE_NAME,
     description: 'Provisioned once on first run; carries every authority for the session actor.',
     authorities: [...AUTHORITIES],
   });
@@ -106,7 +162,7 @@ export async function ensureBootstrapOwner(
   const assigned = await authz.assign({
     actorId: options.actorId,
     roleId: owner.value.id,
-    assignedBy: 'system:bootstrap',
+    assignedBy: BOOTSTRAP_ASSIGNER,
   });
   if (!assigned.ok) return assigned;
   return ok({ provisioned: true, roleId: owner.value.id, reason: 'provisioned' });
@@ -223,6 +279,33 @@ export function createAuthorizationService(deps: AuthorizationDeps): Authorizati
 
     async assignmentsOf(actorId: string): Promise<readonly RoleAssignment[]> {
       return (await loadAssignments()).filter((entry) => entry.actorId === actorId);
+    },
+
+    async holdersOf(roleId: string): Promise<readonly RoleAssignment[]> {
+      return (await loadAssignments()).filter((entry) => entry.roleId === roleId);
+    },
+
+    async reconcileBootstrapRole(roleId: string, authorities: readonly string[]): Promise<Result<Role, DomainError>> {
+      const role = await deps.roles.get(roleId);
+      if (role === null) {
+        return err(domainError('NOT_FOUND', `Role ${roleId} not found.`, { roleId }));
+      }
+      if (role.key !== BOOTSTRAP_ROLE_KEY || role.name !== BOOTSTRAP_ROLE_NAME) {
+        return err(
+          domainError('POLICY_DENIED', `Role ${roleId} is not the bootstrap owner role.`, {
+            reason: 'NOT_BOOTSTRAP_ROLE',
+            roleId,
+          }),
+        );
+      }
+      const held = new Set(role.authority);
+      const missing = authorities.filter((authority) => !held.has(authority));
+      if (missing.length === 0) return ok(role);
+      const next: Role = { ...role, authority: [...role.authority, ...missing], updatedAt: nowIso() };
+      const valid = validateRoleAuthorities(next);
+      if (!valid.ok) return valid;
+      await deps.roles.put(next);
+      return ok(next);
     },
 
     async decide(input: { readonly actorId: string; readonly authority: string; readonly scopeId?: string }) {
