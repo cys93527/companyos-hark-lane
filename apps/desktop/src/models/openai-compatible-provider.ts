@@ -354,20 +354,35 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
     return { status: response.status, json, retryAfterMs };
   };
 
+  /*
+   * AUDIT-E3 (desktop half): an ANSWERED client-error refusal (400/401/403/404/429) is a
+   * request the endpoint rejected before doing model work — nothing was generated, so the
+   * consumed usage is KNOWN to be zero. Carrying `usageStatus: 'KNOWN'` + zero
+   * `observedUsage` lets the Goal budget settle the reservation KNOWN instead of
+   * UNKNOWN-at-bound (which blocked every later attempt, including the retry policy's own
+   * 429 retries). 5xx/408, timeouts and transport failures stay UNKNOWN: the remote side
+   * may have done (and billed) work before failing.
+   */
+  const knownZeroUsage = (error: DomainError): DomainError =>
+    domainError(error.code, error.message, {
+      ...error.details,
+      usageStatus: 'KNOWN',
+      observedUsage: { inputTokens: 0, outputTokens: 0 },
+    });
   const mapHttpFailure = (status: number, retryAfterMs: number | null): DomainError => {
     if (status === 401 || status === 403) {
-      return err(providerFailure('auth_failed', 'The model endpoint rejected the credential.', { upstreamCode: String(status) })).error;
+      return knownZeroUsage(providerFailure('auth_failed', 'The model endpoint rejected the credential.', { upstreamCode: String(status) }));
     }
     if (status === 429) {
-      return err(providerFailure('rate_limited', 'The model endpoint is rate limiting requests.', { retryAfterMs, upstreamCode: '429' })).error;
+      return knownZeroUsage(providerFailure('rate_limited', 'The model endpoint is rate limiting requests.', { retryAfterMs, upstreamCode: '429' }));
     }
     if (status === 400) {
-      return err(providerFailure('invalid_request', 'The model endpoint rejected the request.', { upstreamCode: '400' })).error;
+      return knownZeroUsage(providerFailure('invalid_request', 'The model endpoint rejected the request.', { upstreamCode: '400' }));
     }
     if (status === 404) {
-      return err(providerFailure('invalid_request', 'The model endpoint or model was not found.', { upstreamCode: '404' })).error;
+      return knownZeroUsage(providerFailure('invalid_request', 'The model endpoint or model was not found.', { upstreamCode: '404' }));
     }
-    return err(providerFailure('unavailable', `The model endpoint answered HTTP ${String(status)}.`, { upstreamCode: String(status) })).error;
+    return providerFailure('unavailable', `The model endpoint answered HTTP ${String(status)}.`, { upstreamCode: String(status) });
   };
 
   return {
