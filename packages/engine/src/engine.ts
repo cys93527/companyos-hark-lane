@@ -220,12 +220,23 @@ export interface DriveResult {
   readonly stopReason: DriveStopReason;
 }
 
+/** AUDIT-E2: `recover` with the honoured-cancellation outcome made explicit. */
+export type RunRecoveryOutcome = 'resumed' | 'cancelled' | 'unrecoverable';
+
 export interface WorkflowEngine extends WorkflowEnginePort {
   dispatch(command: unknown): Promise<Result<DispatchOutcome, DomainError>>;
   readRun(runId: string): Promise<WorkflowRun | null>;
   runEvents(runId: string): Promise<readonly StoredEvent[]>;
   /** Deterministic driver used by tests and by the desktop shell's "continue" action. */
   drive(runId: string, options?: DriveOptions): Promise<Result<DriveResult, DomainError>>;
+  /**
+   * AUDIT-E2 — the precise crash-recovery verdict. The frozen Core port's `recover`
+   * can only say 'resumed' | 'unrecoverable'; startup recovery needs the third,
+   * NON-ERROR outcome 'cancelled': the run carried a durable cancel intent (the user
+   * cancelled, the process died before RUN.CANCEL committed), recovery HONOURED it and
+   * the run is now terminal. That is a successful recovery, never a safety failure.
+   */
+  recoverOutcome(runId: string): Promise<RunRecoveryOutcome>;
   /** Pure branch decision (Core semantics) exposed for callers/tests. */
   planBranch(
     branchSet: BranchSet,
@@ -1765,8 +1776,38 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     });
   }
 
+  async function recoverOutcome(runId: string): Promise<RunRecoveryOutcome> {
+    if (await deps.cancellation?.requested(runId) === true) {
+      // AUDIT-E2: a durable cancel intent is honoured, not "unrecoverable". Success is
+      // judged on the durable run row (terminal after cancel), so a cancel that throws
+      // or leaves the run live is reported unrecoverable instead of rejecting.
+      try {
+        await cancel(runId);
+      } catch (error) {
+        deps.logger?.warn('recovery could not honour a durable cancel intent', {
+          runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return 'unrecoverable';
+      }
+      const after = await deps.runs.get(runId);
+      return after !== null && isRunTerminal(after.state) ? 'cancelled' : 'unrecoverable';
+    }
+    return recoverLive(runId);
+  }
+
+  /**
+   * Frozen Core port (ADR-0002): only 'resumed' | 'unrecoverable'. A run whose durable
+   * cancellation was honoured is terminal and therefore not resumable through the port,
+   * so the port keeps reporting 'unrecoverable' there; startup recovery uses
+   * `recoverOutcome`, which distinguishes it.
+   */
   async function recover(runId: string): Promise<'resumed' | 'unrecoverable'> {
-    if (await deps.cancellation?.requested(runId)) { await cancel(runId); return 'unrecoverable'; }
+    const outcome = await recoverOutcome(runId);
+    return outcome === 'resumed' ? 'resumed' : 'unrecoverable';
+  }
+
+  async function recoverLive(runId: string): Promise<'resumed' | 'unrecoverable'> {
     const run = await deps.runs.get(runId);
     if (run === null || isRunTerminal(run.state)) return 'unrecoverable';
 
@@ -1789,6 +1830,7 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     advance,
     cancel,
     recover,
+    recoverOutcome,
     planBranch: (branchSet, context) => selectBranch(branchSet, context),
     async readRun(runId: string): Promise<WorkflowRun | null> {
       return deps.runs.get(runId);
