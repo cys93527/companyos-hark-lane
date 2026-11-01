@@ -147,6 +147,25 @@ const atomicWrite = (path: string, bytes: string | Uint8Array): void => {
   renameSync(tmp, path);
 };
 
+/*
+ * AUDIT-S10/D11: approvedBy is the local account name ($env:USERNAME). Windows allows apostrophes, parentheses, '#',
+ * '&', '!', '~', '{', '}' and combining marks (e.g. Hindi/Thai names) in it, so the old letters/digits-only pattern made
+ * setup fail for those users. Accept exactly what a Windows user name can be: 1-128 characters, no control characters
+ * (C0, DEL, C1), none of the characters Windows forbids (" / \ [ ] : ; | = , + * ? < >), and not only dots/spaces.
+ * The value only ever goes into JSON (JSON.stringify escapes it).
+ */
+const APPROVER_FORBIDDEN = new Set(['"', '/', '\\', '[', ']', ':', ';', '|', '=', ',', '+', '*', '?', '<', '>']);
+export const isValidSetupApprover = (v: unknown): v is string => {
+  if (typeof v !== 'string') return false;
+  const chars = [...v];
+  if (chars.length < 1 || chars.length > 128) return false;
+  for (const c of chars) {
+    const code = c.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || APPROVER_FORBIDDEN.has(c)) return false;
+  }
+  return !/^[. ]+$/u.test(v);
+};
+
 export const capCnyToMicros = (capCny: number): number => {
   if (typeof capCny !== 'number' || !Number.isFinite(capCny) || capCny < SETUP_CAP_CNY_MIN || capCny > SETUP_CAP_CNY_MAX) {
     throw new ProviderSetupWriteError('SETUP_CAP_INVALID', `cap must be between ${SETUP_CAP_CNY_MIN} and ${SETUP_CAP_CNY_MAX} CNY`);
@@ -157,7 +176,7 @@ export const capCnyToMicros = (capCny: number): number => {
 /** Write model.json + the user's budget approval and price proof. Throws typed errors; never touches the key file. */
 export const writeProviderSetup = (input: ProviderSetupWriteInput): ProviderSetupWriteResult => {
   const capMicros = capCnyToMicros(input.capCny);
-  if (typeof input.approvedBy !== 'string' || !/^[\p{L}\p{N} ._@$-]{1,128}$/u.test(input.approvedBy)) {
+  if (!isValidSetupApprover(input.approvedBy)) {
     throw new ProviderSetupWriteError('SETUP_APPROVER_INVALID', 'approvedBy must be the local account name');
   }
   const profile = parseProviderSetupProfile(input.profile);
