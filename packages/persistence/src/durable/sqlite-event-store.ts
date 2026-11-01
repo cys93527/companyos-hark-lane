@@ -81,6 +81,30 @@ export function createSqliteEventStore(db: Database): SqliteEventStore {
     ...params: readonly (string | number | null)[]
   ): readonly EventRow[] => db.prepare(sql).all(...params) as EventRow[];
 
+  const insertBatch = (events: readonly DomainEvent[]): number[] => {
+    let position = nextPosition();
+    const assigned: number[] = [];
+    for (const event of events) {
+      position += 1;
+      insert.run(
+        event.eventId,
+        event.type,
+        event.version,
+        event.occurredAt,
+        event.aggregateId,
+        event.aggregateType,
+        event.actorId,
+        event.traceId,
+        runIdOf(event),
+        null,
+        JSON.stringify(event.payload ?? null),
+        position,
+      );
+      assigned.push(position);
+    }
+    return assigned;
+  };
+
   return {
     async append(events: readonly DomainEvent[]): Promise<readonly number[]> {
       /*
@@ -91,27 +115,31 @@ export function createSqliteEventStore(db: Database): SqliteEventStore {
        * and silently erased by that unit's ROLLBACK.
        */
       return db.writeFence.immediate('events.append', async () => {
-        let position = nextPosition();
-        const assigned: number[] = [];
-        for (const event of events) {
-          position += 1;
-          insert.run(
-            event.eventId,
-            event.type,
-            event.version,
-            event.occurredAt,
-            event.aggregateId,
-            event.aggregateType,
-            event.actorId,
-            event.traceId,
-            runIdOf(event),
-            null,
-            JSON.stringify(event.payload ?? null),
-            position,
-          );
-          assigned.push(position);
+        /*
+         * AUDIT-P7 — a batch append is ONE atomic fact. Outside a unit each INSERT would be
+         * its own autocommit statement, so a failure on the k-th row (duplicate event_id,
+         * SQLITE_FULL, IOERR) left rows 1..k-1 durable while the caller saw an error. The
+         * whole burst runs inside a SAVEPOINT: standalone it is its own transaction (RELEASE
+         * commits), nested inside an outer unit it only scopes this batch (the outer unit
+         * still owns COMMIT/ROLLBACK). On any error the batch is rolled back to the savepoint
+         * and the ORIGINAL error propagates unchanged. The body is fully synchronous, so no
+         * other context can interleave between SAVEPOINT and RELEASE.
+         */
+        db.exec('SAVEPOINT events_append');
+        try {
+          const assigned = insertBatch(events);
+          db.exec('RELEASE SAVEPOINT events_append');
+          return assigned;
+        } catch (error) {
+          try {
+            db.exec('ROLLBACK TO SAVEPOINT events_append');
+            db.exec('RELEASE SAVEPOINT events_append');
+          } catch {
+            // The savepoint is already gone (e.g. the connection itself failed); the
+            // original error is the one the caller must see.
+          }
+          throw error;
         }
-        return assigned;
       });
     },
     async readFrom(globalPosition: number, limit: number): Promise<readonly StoredEvent[]> {
