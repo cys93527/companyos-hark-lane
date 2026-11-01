@@ -34,6 +34,9 @@ import type { CoreServices } from '../core-services.js';
 /** The canonical goal workflow id every desktop-created Goal belongs to. */
 const GOAL_WORKFLOW_ID = 'wf-companyos-goal';
 
+/** AUDIT-D5 — page size for the restart-resume sweep (the run store's own per-page clamp). */
+const RESUME_PAGE = 500;
+
 export interface DesktopAutonomyRunner {
   /** Start the driver for one run. Returns false when one is already active for it. */
   readonly start: (companyId: string, runId: string) => boolean;
@@ -253,9 +256,20 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
     activeRunIds: () => [...active.keys()],
 
     resumeNonTerminalGoalRuns: async (core) => {
-      const runs = (await core.database.runs.list({ limit: 500 })).items.filter(
-        (run) => run.workflowId === GOAL_WORKFLOW_ID && !isRunTerminal(run.state),
-      );
+      /*
+       * AUDIT-D5: page through EVERY run (the store clamps a page to 500, oldest first), as
+       * control-plane homeSummary does — a single page silently dropped every Goal created
+       * after the first ~500 runs from restart resume.
+       */
+      const runs: Awaited<ReturnType<typeof core.database.runs.list>>['items'][number][] = [];
+      for (let offset = 0; ; ) {
+        const page = await core.database.runs.list({ limit: RESUME_PAGE, offset });
+        for (const run of page.items) {
+          if (run.workflowId === GOAL_WORKFLOW_ID && !isRunTerminal(run.state)) runs.push(run);
+        }
+        offset += page.items.length;
+        if (page.items.length === 0 || offset >= page.total) break;
+      }
       const started: string[] = [];
       for (const run of runs) {
         if (start(deps.companyId, run.id)) started.push(run.id);
