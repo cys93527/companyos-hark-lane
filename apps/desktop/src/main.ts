@@ -45,6 +45,7 @@ import type { RouterAuditEmitter, RouterAuditPayload, HandoffAuditPayload } from
 import { composeCoreServices as composeCoreServicesImpl, lastCoreCompositionError, type ComposeCoreServicesOptions, type CoreServices } from './core-services.js';
 import { createDesktopAutonomyRunner, type DesktopAutonomyRunner } from './autonomy/desktop-autonomy-runner.js';
 import { recoveryFailurePolicy } from './startup-recovery-policy.js';
+import { createRuntimeStarter } from './startup-runtime.js';
 import {
   exportArtifactCopy,
   readArtifactPreview,
@@ -117,6 +118,9 @@ function bootstrapDatabase(activeLogger: Logger): DurableDatabase | null {
       chains: ['core', 'engine', 'lifecycle', 'provider', 'registry', 'selection', 'agent', 'tools', 'router', 'handoff', 'memory', 'artifact', 'pack'],
       logger: activeLogger,
     });
+    // AUDIT-D8: a database that opens (boot or retry) clears any earlier refusal.
+    databaseError = null;
+    databaseFailure = null;
     activeLogger.info('database ready', {
       path: opened.path,
       journalMode: opened.journalMode,
@@ -226,39 +230,153 @@ async function composeCoreServices(
   return composed as CoreServices;
 }
 
-async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | null> {  try {
-    // ONE durable handle for the whole app (Sprint 6 carry-over): the shell opened it with
-    // every chain enabled, so the workflow service and the provider registry share the
-    // same connection and the same transaction coordinator.
-    const opened: DurableDatabase | null =
-      shellDatabase ?? (isDatabaseBootstrapRetryable(databaseFailure) ? bootstrapDatabase(activeLogger) : null);
-    if (opened === null) {
-      workflowError = databaseError ?? 'durable database unavailable';
-      return null;
+/**
+ * AUDIT-D8 - the ONE startup sequence (startup-runtime.ts), shared by the boot and the lazy
+ * workflow path. Module state (shellDatabase, artifactFoundation, coreServices, autonomyRunner)
+ * is written only by these steps: the handle when it opens, the composition only after recovery.
+ */
+const runtimeStarter = createRuntimeStarter<DurableDatabase, Extract<ArtifactFoundation, { ok: true }>, CoreServices>({
+  openDatabase: () => {
+    const opened = bootstrapDatabase(logger);
+    if (opened !== null) shellDatabase = opened;
+    return opened;
+  },
+  databaseRetryable: () => isDatabaseBootstrapRetryable(databaseFailure),
+  // Sprint 13 (Task-13-11) - the CAS reconciliation gate runs in QUIESCENT STARTUP: no
+  // artifact write can be in flight. Fatal integrity (CAS missing/hash/size mismatch, reparse
+  // violation, chain disabled) fails startup CLOSED.
+  openFoundation: async (database) => {
+    const foundation = await openArtifactFoundation({
+      // User-local, restart-stable, main-process-only: a sibling of the `data` (SQLite)
+      // and `logs` directories under Electron's userData. Never cwd, never a temp dir,
+      // never renderer/IPC/caller supplied.
+      casRoot: join(app.getPath('userData'), 'artifacts'),
+      database,
+      logger,
+    });
+    if (!foundation.ok) {
+      logger.error('startup failed: artifact CAS integrity is fatal', {
+        casRoot: join(app.getPath('userData'), 'artifacts'),
+        reason: foundation.error.code,
+        detail: foundation.error.message,
+        fatalFindings: foundation.report.fatal.length,
+      });
+      return { ok: false, code: foundation.error.code, message: foundation.error.message };
     }
-    // Sprint 14 (Task-14-02): the core services were composed during quiescent
-    // startup (before recovery, before any exposure) whenever the database was up;
-    // reuse that instance — one composition, one set of stores, no double registry.
-    const core: CoreServices | null =
-      coreServices !== null && coreServices.database === opened
-        ? coreServices
-        : await composeCoreServices(opened, activeLogger, {
-            artifactFoundation,
-            // The ONE production wiring seam (BUG-BB-001 closeout): executor kinds,
-            // provider routing and repository capability come from
-            // productionCompositionOptions() — the same function the
-            // production-reachability tests exercise. The routed adapter id is a
-            // deployment value (COMPANYOS_EXECUTOR_PROVIDER); a missing or unknown
-            // adapter fails loud at dispatch, never a silent mock.
-            ...productionCompositionOptions(runtimeEnv, deploymentBudgetOptions()),
-            runtimeEnv,
-            usageReconciliationDir: join(app.getPath('userData'), 'budget'),
+    artifactFoundation = foundation;
+    return { ok: true, value: foundation };
+  },
+  compose: async (database, foundation) =>
+    composeCoreServices(database, logger, {
+      artifactFoundation: foundation,
+      // The ONE production wiring seam (BUG-BB-001 closeout): executor kinds, provider routing
+      // and repository capability come from productionCompositionOptions() - the same function
+      // the production-reachability tests exercise. A missing or unknown adapter fails loud at
+      // dispatch, never a silent mock.
+      ...productionCompositionOptions(runtimeEnv, deploymentBudgetOptions()),
+      runtimeEnv,
+      usageReconciliationDir: join(app.getPath('userData'), 'budget'),
       embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
       validatorTrustedStateRoot: app.getPath('userData'),
       embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
-          });
-    if (core === null) return null;
+    }),
+  // Sprint 14 (Task-14-02, ADR-0021): startup recovery - AFTER CAS integrity PASS, BEFORE any
+  // exposure. Manual states (PAUSED / WAITING_* / INTERRUPTED awaiting humans) are reported,
+  // never mutated.
+  recover: async (database, core) => {
+    const recovery = await createStartupRecoveryOrchestrator({
+      actorId: SESSION_ACTOR,
+      runtime: core.runtime,
+      tools: core.tools,
+      engine: core.sprint13.engine,
+      runs: database.runs,
+    }).run();
+    if (recovery.ok) {
+      logger.info('startup recovery complete', { ...recovery.value });
+      return { kind: 'ok' };
+    }
+    // AUDIT-E2: runs the engine could not recover are quarantined (untouched, no driver),
+    // every other recovery failure stays fatal.
+    const policy = recoveryFailurePolicy(recovery.error);
+    if (policy.kind === 'quarantine') {
+      for (const runId of policy.runIds) quarantinedRunIds.add(runId);
+      logger.error('startup recovery: runs could not be recovered; quarantined', {
+        code: recovery.error.code,
+        detail: recovery.error.message,
+        runIds: policy.runIds,
+      });
+      void dialog.showMessageBox({
+        type: 'warning',
+        title: 'CompanyOS',
+        message: `有 ${policy.runIds.length} 个运行在启动恢复时无法恢复，已保持原状且不会自动继续。`,
+        detail: `${policy.runIds.join('\n')}\n\n其他目标照常运行。详情见日志 desktop.log。`,
+      });
+      return { kind: 'ok' };
+    }
+    logger.error('startup failed: recovery safety failure', {
+      code: recovery.error.code,
+      detail: recovery.error.message,
+    });
+    return { kind: 'fatal', code: recovery.error.code, message: recovery.error.message };
+  },
+  commit: (_database, _foundation, core) => {
     coreServices = core;
+  },
+  // ---- STAGE 2 autonomy resume (canonical, main-process-owned) ----
+  // Every goal run that durable truth still shows as non-terminal gets its driver back. The
+  // driver re-reads canonical state at every step (never renderer memory).
+  startAutonomy: async (database, core) => {
+    if (core.autonomyDriver === null) {
+      logger.warn('autonomy driver not composed; manual advance remains required', {});
+      return;
+    }
+    autonomyRunner = createDesktopAutonomyRunner({
+      companyId: COMPANY_ID,
+      driver: core.autonomyDriver,
+      logger,
+      quarantinedRunIds,
+      goalRunState: async (runId: string) => {
+        const row = await database.runs.get(runId);
+        return row === null ? null : row.state;
+      },
+    });
+    const resumed = await autonomyRunner.resumeNonTerminalGoalRuns(core);
+    logger.info('autonomy resume complete', { resumedRuns: resumed.length, runIds: resumed });
+  },
+  // ---- DESKTOP STAGE 1 restart rehydration (operational context) ----
+  // Re-open the persisted workspace when it still exists. A vanished directory is downgraded
+  // to a cleared selection - the UI asks the user again; no hidden fallback directory.
+  rehydrate: async (core) => {
+    const persisted = readPersistedSelection(app.getPath('userData'));
+    if (persisted === null) return;
+    if (!isExistingDirectory(persisted.root)) {
+      clearPersistedSelection(app.getPath('userData'));
+      logger.warn('persisted workspace directory no longer exists; selection cleared', { root: persisted.root });
+      return;
+    }
+    const reopened = await core.repositoryRuntime.openWorkspace({ root: persisted.root, commandProfile: {} });
+    if (reopened.ok) logger.info('workspace rehydrated from persisted selection', { root: persisted.root });
+    else logger.warn('persisted workspace failed to re-open', { root: persisted.root, code: reopened.error.code });
+  },
+  closeDatabase: (database) => {
+    database.db.close();
+    if (shellDatabase === database) shellDatabase = null;
+    artifactFoundation = null;
+  },
+});
+
+async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | null> {
+  try {
+    // AUDIT-D8: the lazy path runs the SAME startup sequence as the boot (one database handle,
+    // CAS reconcile, composition, recovery, autonomy, rehydrate), resuming at the first step
+    // that has not succeeded yet; it never opens a second handle.
+    const started = await runtimeStarter.start();
+    if (started.kind !== 'ready') {
+      if (started.kind === 'fatal') workflowError = `${started.code}: ${started.message}`;
+      else if (started.stage === 'database') workflowError = databaseError ?? 'durable database unavailable';
+      return null;
+    }
+    const core = started.core;
     const { database, clock, ids, authz, sessionAuthorize, providers, models, policies, tools, runtime, sprint13, durableReferenceResolver } = core;
     void sprint13;
 
@@ -904,146 +1022,21 @@ async function main(): Promise<void> {
   });
 
   await applyInstalledProviderSetup();
-  shellDatabase = bootstrapDatabase(logger);
-  // Sprint 13 (Task-13-11) — the CAS reconciliation gate runs in QUIESCENT STARTUP:
-  // the window, the IPC handlers and the workflow API do not exist yet, so no artifact
-  // write can be in flight. Fatal integrity (CAS missing/hash/size mismatch, reparse
-  // violation, chain disabled) fails startup CLOSED — the window and the commands are
-  // never exposed, so the application runtime cannot become "partially healthy".
-  if (shellDatabase !== null) {
-    const foundation = await openArtifactFoundation({
-      // User-local, restart-stable, main-process-only: a sibling of the `data` (SQLite)
-      // and `logs` directories under Electron's userData. Never cwd, never a temp dir,
-      // never renderer/IPC/caller supplied.
-      casRoot: join(app.getPath('userData'), 'artifacts'),
-      database: shellDatabase,
-      logger,
-    });
-    if (!foundation.ok) {
-      logger.error('startup failed: artifact CAS integrity is fatal', {
-        casRoot: join(app.getPath('userData'), 'artifacts'),
-        reason: foundation.error.code,
-        detail: foundation.error.message,
-        fatalFindings: foundation.report.fatal.length,
-      });
-      shellDatabase.db.close();
-      // AUDIT-D4: a fatal startup is never silent - the user sees why before the app exits.
-      dialog.showErrorBox('CompanyOS 无法启动', `产物存储完整性检查失败（${foundation.error.code}）：${foundation.error.message}\n\n详情见日志 desktop.log。`);
-      app.exit(1);
-      return;
-    }
-    artifactFoundation = foundation;
-
-    // Sprint 14 (Task-14-02, ADR-0021): quiescent startup recovery — AFTER CAS
-    // integrity PASS, BEFORE any IPC handler / window / command exposure. The core
-    // services are the SAME instances the normal runtime will reuse (no double
-    // composition). A SAFETY FAILURE fails startup closed, exactly like a fatal CAS
-    // finding: no partially healthy runtime. Manual states (PAUSED / WAITING_* /
-    // INTERRUPTED awaiting humans) are reported, never mutated.
-    const core = await composeCoreServices(shellDatabase, logger, {
-      artifactFoundation,
-      // The ONE production wiring seam (BUG-BB-001 closeout) — identical to the
-      // workflow-API composition: this quiescent-startup instance is REUSED as the
-      // product instance whenever the database was up at boot, so both sites must
-      // carry the same wiring.
-      ...productionCompositionOptions(runtimeEnv, deploymentBudgetOptions()),
-      runtimeEnv,
-      usageReconciliationDir: join(app.getPath('userData'), 'budget'),
-      embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
-      validatorTrustedStateRoot: app.getPath('userData'),
-      embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
-    });
-    if (core === null) {
-      // Composition failure keeps the frozen Sprint 5/6 shell rule: the window may
-      // still open and the workflow surface reports the error lazily. Recovery is
-      // simply unavailable — there is nothing durable it could act on.
-      logger.error('core services composition failed; startup recovery skipped', {
-        error: workflowError,
-      });
-    } else {
-      coreServices = core;
-      const recovery = await createStartupRecoveryOrchestrator({
-        actorId: SESSION_ACTOR,
-        runtime: core.runtime,
-        tools: core.tools,
-        engine: core.sprint13.engine,
-        runs: shellDatabase.runs,
-      }).run();
-      // AUDIT-E2: runs the engine could not recover are quarantined (untouched, no driver),
-      // every other recovery failure stays fatal.
-      const policy = recovery.ok ? null : recoveryFailurePolicy(recovery.error);
-      if (!recovery.ok && policy?.kind === 'quarantine') {
-        for (const runId of policy.runIds) quarantinedRunIds.add(runId);
-        logger.error('startup recovery: runs could not be recovered; quarantined', {
-          code: recovery.error.code,
-          detail: recovery.error.message,
-          runIds: policy.runIds,
-        });
-        void dialog.showMessageBox({
-          type: 'warning',
-          title: 'CompanyOS',
-          message: `有 ${policy.runIds.length} 个运行在启动恢复时无法恢复，已保持原状且不会自动继续。`,
-          detail: `${policy.runIds.join('\n')}\n\n其他目标照常运行。详情见日志 desktop.log。`,
-        });
-      } else if (!recovery.ok) {
-        logger.error('startup failed: recovery safety failure', {
-          code: recovery.error.code,
-          detail: recovery.error.message,
-        });
-        shellDatabase.db.close();
-        dialog.showErrorBox('CompanyOS 无法启动', `启动恢复安全检查失败（${recovery.error.code}）：${recovery.error.message}\n\n详情见日志 desktop.log。`);
-        app.exit(1);
-        return;
-      }
-      if (recovery.ok) logger.info('startup recovery complete', { ...recovery.value });
-
-      // ---- STAGE 2 autonomy resume (canonical, main-process-owned) ----
-      // Every goal run that durable truth still shows as non-terminal gets its driver
-      // back. Nothing here reads renderer memory: the driver re-reads canonical state at
-      // every step and stops on terminal success/failure, PAUSED, an approval/authority
-      // decision, or a true external blocker.
-      if (core.autonomyDriver !== null) {
-        autonomyRunner = createDesktopAutonomyRunner({
-          companyId: COMPANY_ID,
-          driver: core.autonomyDriver,
-          logger,
-          quarantinedRunIds,
-          goalRunState: async (runId: string) => {
-            const row = await shellDatabase!.runs.get(runId);
-            return row === null ? null : row.state;
-          },
-        });
-        const resumed = await autonomyRunner.resumeNonTerminalGoalRuns(core);
-        logger.info('autonomy resume complete', { resumedRuns: resumed.length, runIds: resumed });
-      } else {
-        logger.warn('autonomy driver not composed; manual advance remains required', {});
-      }
-    }
-
-    // ---- DESKTOP STAGE 1 restart rehydration (operational context) ----
-    // Re-open the persisted workspace when it still exists. The GOALS themselves are
-    // durable canonical truth (nothing to rehydrate); only the directory binding is
-    // restored here. A vanished directory is downgraded to a cleared selection — the
-    // UI asks the user again; there is no hidden fallback to any other directory.
-    const persisted = readPersistedSelection(app.getPath('userData'));
-    if (persisted !== null && coreServices !== null) {
-      if (isExistingDirectory(persisted.root)) {
-        const reopened = await coreServices.repositoryRuntime.openWorkspace({
-          root: persisted.root,
-          commandProfile: {},
-        });
-        if (reopened.ok) {
-          logger.info('workspace rehydrated from persisted selection', { root: persisted.root });
-        } else {
-          logger.warn('persisted workspace failed to re-open', { root: persisted.root, code: reopened.error.code });
-        }
-      } else {
-        clearPersistedSelection(app.getPath('userData'));
-        logger.warn('persisted workspace directory no longer exists; selection cleared', {
-          root: persisted.root,
-        });
-      }
-    }
+  // Sprint 13/14 + AUDIT-D8: the quiescent startup sequence (DB -> CAS gate -> composition ->
+  // recovery -> autonomy -> rehydrate) runs BEFORE any IPC handler / window exists. A fatal
+  // finding fails startup CLOSED - never a partially healthy runtime.
+  const started = await runtimeStarter.start();
+  if (started.kind === 'fatal') {
+    // AUDIT-D4: a fatal startup is never silent - the user sees why before the app exits.
+    const what = started.stage === 'recovery' ? '启动恢复安全检查失败' : '产物存储完整性检查失败';
+    dialog.showErrorBox('CompanyOS 无法启动', `${what}（${started.code}）：${started.message}\n\n详情见日志 desktop.log。`);
+    app.exit(1);
+    return;
+  }
+  if (started.kind === 'unavailable' && started.stage === 'composition') {
+    // Composition failure keeps the frozen Sprint 5/6 shell rule: the window still opens and
+    // the workflow surface reports the error; the lazy path retries the remaining steps.
+    logger.error('core services composition failed; startup recovery skipped', { error: workflowError });
   }
   applyContentSecurityPolicy(logger);
   registerIpcHandlers();

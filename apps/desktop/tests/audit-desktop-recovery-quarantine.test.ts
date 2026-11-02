@@ -32,8 +32,10 @@ describe('AUDIT-E2 desktop recovery policy', () => {
   });
   it('main.ts quarantines per-run failures and keeps other failures fatal', () => {
     const main = readFileSync(join(__dirname, '../src/main.ts'), 'utf8');
-    expect(main).toContain("if (!recovery.ok && policy?.kind === 'quarantine') {");
+    // AUDIT-D8 moved recovery into the one startup step `recover` (fatal -> the boot exits).
+    expect(main).toContain("if (policy.kind === 'quarantine') {");
     expect(main).toContain('quarantinedRunIds,');
-    expect(main).toMatch(/} else if \(!recovery\.ok\) \{[\s\S]{0,400}app\.exit\(1\);/);
+    expect(main).toMatch(/if \(policy\.kind === 'quarantine'\) \{[\s\S]{0,900}return \{ kind: 'ok' \};[\s\S]{0,300}return \{ kind: 'fatal'/);
+    expect(main).toMatch(/if \(started\.kind === 'fatal'\) \{[\s\S]{0,400}app\.exit\(1\);/);
   });
 });

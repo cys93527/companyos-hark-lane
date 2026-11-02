@@ -58,7 +58,7 @@ describe('AUDIT-D4 open/reveal use a read-only copy', () => {
     expect(main).not.toContain('shell.showItemInFolder(target.value.absolutePath)');
     expect(main).toContain("exportArtifactCopy(target.value, artifactFoundation.contentStore, join(tmpdir(), 'companyos-open'))");
     const exits = main.split('app.exit(1)').length - 1;
-    expect(exits).toBe(2);
+    expect(exits).toBe(1); // AUDIT-D8: CAS + recovery fatals share the one startup exit
     for (const chunk of main.split('app.exit(1)').slice(0, -1)) expect(chunk.slice(-400)).toContain('dialog.showErrorBox(');
   });
 });

@@ -12,8 +12,10 @@ describe('database bootstrap retry policy', () => {
     expect(isDatabaseBootstrapRetryable(null)).toBe(true);
   });
   it('the lazy workflow bootstrap consults the policy before re-opening', () => {
+    // AUDIT-D8: boot and lazy retry share ONE startup sequence (startup-runtime.ts), which asks
+    // this policy before re-opening a refused database (behaviour tested in audit-desktop-startup-runtime).
     const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-    expect(main).toMatch(/shellDatabase \?\? \(isDatabaseBootstrapRetryable\(databaseFailure\) \? bootstrapDatabase\(activeLogger\) : null\)/u);
-    expect(main.match(/bootstrapDatabase\(/gu)?.length).toBe(3); // definition + startup + guarded lazy retry
+    expect(main).toMatch(/databaseRetryable: \(\) => isDatabaseBootstrapRetryable\(databaseFailure\)/u);
+    expect(main.match(/bootstrapDatabase\(/gu)?.length).toBe(2); // definition + the one startup step
   });
 });

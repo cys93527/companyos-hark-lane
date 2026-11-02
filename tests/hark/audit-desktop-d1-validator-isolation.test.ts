@@ -98,6 +98,6 @@ describe('AUDIT-D1 validator runs inside the isolation boundary', () => {
     expect(src).toContain('isolation: options.embeddedDshIsolation');
     expect(src).toContain('trustedStateRoot: options.validatorTrustedStateRoot');
     const main = readFileSync(join(__dirname, '../../apps/desktop/src/main.ts'), 'utf8');
-    expect(main.match(/validatorTrustedStateRoot: app\.getPath\('userData'\)/g)?.length).toBe(2);
+    expect(main.match(/validatorTrustedStateRoot: app\.getPath\('userData'\)/g)?.length).toBe(1); // AUDIT-D8: one composition site
   });
 });

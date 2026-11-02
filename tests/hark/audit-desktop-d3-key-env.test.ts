@@ -61,7 +61,7 @@ describe('AUDIT-D3 provider key stays out of the host environment', () => {
     expect(main).not.toMatch(/applyProviderSetupOverlay\(\s*process\.env/);
     expect(main).not.toMatch(/productionCompositionOptions\(\s*process\.env/);
     expect(main).toMatch(/captureRuntimeEnv\(process\.env\)/);
-    expect((main.match(/productionCompositionOptions\(runtimeEnv/g) ?? []).length).toBe(2);
+    expect((main.match(/productionCompositionOptions\(runtimeEnv/g) ?? []).length).toBe(1); // AUDIT-D8: one composition site
     const core = readFileSync(join(__dirname, '../../apps/desktop/src/core-services.ts'), 'utf8');
     expect(core).not.toMatch(/env:\s*process\.env/);
     expect(core).not.toMatch(/resolveOpenAiCompatibleConfig\(\)/);
