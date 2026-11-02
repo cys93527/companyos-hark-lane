@@ -7,15 +7,34 @@
  * see LAW 2 in scripts/check-boundaries.mjs). Compatibility is asserted by
  * `packages/observability/tests/logger.test.ts`.
  */
-export { MASK, SENSITIVE_KEY_PATTERN, isSensitiveKey, redactFields, redactValue } from './redact.js';
+export { MASK, SENSITIVE_KEY_PATTERN, isSensitiveKey, redactFields, redactValue, scrubString } from './redact.js';
 export {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_FILES,
+  ROTATION_RETRY_INITIAL_MS,
+  ROTATION_RETRY_MAX_MS,
   createConsoleSink,
   createMemorySink,
   createRotatingFileSink,
   totalSizeOfRotations,
 } from './sinks.js';
 export type { ConsoleSinkOptions, LogSink, MemorySink, RotatingFileSinkOptions, WritableLike } from './sinks.js';
-export { LOG_LEVELS, createLogger, levelRank, nullLogger, parseLogLine, toJsonLine } from './logger.js';
-export type { CreateLoggerOptions, LogFields, LogLevelName, LogRecord, Logger, LoggerClock } from './logger.js';
+export {
+  INTERNAL_ERROR_REPORT_INTERVAL_MS,
+  LOG_LEVELS,
+  RESERVED_RECORD_KEYS,
+  createLogger,
+  levelRank,
+  nullLogger,
+  parseLogLine,
+  toJsonLine,
+} from './logger.js';
+export type {
+  CreateLoggerOptions,
+  LogFields,
+  LogLevelName,
+  LogRecord,
+  Logger,
+  LoggerClock,
+  LoggerInternalError,
+} from './logger.js';

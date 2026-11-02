@@ -8,6 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -106,6 +107,8 @@ describe('CAS integrity (fail closed)', () => {
     const { store, root } = makeStore();
     const stored = await store.put(text('tamper target'));
     const hex = stored.contentRef.slice('sha256:'.length);
+    // Published objects are sealed read-only (AUDIT-D4): a tamperer must clear the seal first.
+    chmodSync(finalPathFor(root, hex), 0o644);
     writeFileSync(finalPathFor(root, hex), text('TAMPERED'));
 
     await expect(store.get(stored.contentRef)).rejects.toMatchObject({

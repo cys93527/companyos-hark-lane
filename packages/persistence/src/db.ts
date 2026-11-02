@@ -141,6 +141,15 @@ export function openDatabase(options: OpenDatabaseOptions): Database {
   const quiescentWaiters: (() => void)[] = [];
   let connectionState: 'ok' | 'indeterminate' | 'closed' = 'ok';
 
+  /**
+   * AUDIT-P9 — the ONLY transition into `indeterminate`, and only from `ok`: `closed` is
+   * terminal and sticky, so a unit whose COMMIT/ROLLBACK fails because the connection was
+   * closed under it can never relabel the connection as "state uncertain" (retryable).
+   */
+  const markIndeterminate = (): void => {
+    if (connectionState === 'ok') connectionState = 'indeterminate';
+  };
+
   const refuseIfNotHealthy = (operation: string): void => {
     if (connectionState === 'ok') return;
     throw domainError(
@@ -276,14 +285,30 @@ export function openDatabase(options: OpenDatabaseOptions): Database {
       openTransactionOwner = null;
       return ok(value);
     } catch (error) {
+      if (connectionState === 'closed') {
+        // AUDIT-P9 — the connection was CLOSED while this unit was mid-await (shutdown,
+        // app.exit). Closing a SQLite handle discards its open transaction, so there is
+        // nothing to roll back and no uncertainty: report the typed CONNECTION_CLOSED
+        // refusal (never retryable "state uncertain"), and keep `closed` sticky.
+        openTransactionOwner = null;
+        rollbacks += 1;
+        return err(
+          domainError('PERSISTENCE_FAILED', `The transaction "${unit.unitId}" was abandoned: the connection was closed.`, {
+            reason: 'CONNECTION_CLOSED',
+            operation: unit.operation,
+            cause: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
       let rollbackKnown = true;
       try {
         raw.exec('ROLLBACK');
       } catch {
         // N314-REC1 — if the ROLLBACK also fails, the connection's transaction state is
         // UNKNOWN: fail CLOSED instead of clearing the owner and accepting new writes.
+        // AUDIT-P9 — only a HEALTHY connection degrades to indeterminate; `closed` is sticky.
         rollbackKnown = false;
-        connectionState = 'indeterminate';
+        markIndeterminate();
       }
       rollbacks += 1;
       openTransactionOwner = null;
@@ -549,7 +574,7 @@ export function openDatabase(options: OpenDatabaseOptions): Database {
           } catch {
             rollbackKnown = false;
           }
-          if (!rollbackKnown) connectionState = 'indeterminate';
+          if (!rollbackKnown) markIndeterminate();
           rollbacks += 1;
           settled = true;
           if (rollbackKnown) openTransactionOwner = null;
@@ -573,7 +598,7 @@ export function openDatabase(options: OpenDatabaseOptions): Database {
           // state is UNKNOWN. It is never reported as recovered, and every later mutation is
           // refused typed until a controlled reopen proves a safe state.
           rollbackKnown = false;
-          connectionState = 'indeterminate';
+          markIndeterminate();
         }
         rollbacks += 1;
         if (rollbackKnown) openTransactionOwner = null;
@@ -602,6 +627,10 @@ export function openDatabase(options: OpenDatabaseOptions): Database {
       }
     },
     close: (): void => {
+      // AUDIT-P9 — idempotent: a second close (shutdown paths racing) is a no-op, never a
+      // driver throw. Work still queued on the FIFO is refused typed CONNECTION_CLOSED when
+      // it reaches the connection; an in-flight unit reports CONNECTION_CLOSED as well.
+      if (connectionState === 'closed') return;
       connectionState = 'closed';
       raw.close();
     },
