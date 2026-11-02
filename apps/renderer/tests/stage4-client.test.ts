@@ -314,7 +314,7 @@ describe('S4-17..21 autonomy + recovery invariants', () => {
       usage: { knownInputTokens: 0, knownOutputTokens: 0, estimatedInputTokens: 0, estimatedOutputTokens: 0, unknownDispatchCount: 0, totalDispatchCount: 0, coverageRatio: null, complete: false },
       speed: { state: 'UNKNOWN', samples: [], note: '' },
       cacheHit: { state: 'UNKNOWN', reason: '' },
-      cost: { state: 'UNKNOWN', knownScopeCost: null, coverageComplete: false, note: '' },
+      cost: { state: 'UNKNOWN', knownScopeCost: null, currency: null, coverageComplete: false, note: '' },
       contextRemaining: { state: 'UNKNOWN', reason: '' },
     };
     const view = projectTelemetry(usage, 128_000);

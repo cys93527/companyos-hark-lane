@@ -47,6 +47,23 @@ const tokenOrNull = (value: unknown): number | null =>
 const textOrNull = (value: unknown): string | null =>
   typeof value === 'string' && value.length > 0 ? value : null;
 
+/**
+ * AUDIT session cost: model_records.pricing stores the core ModelPricing shape
+ * {inputPerMillion, outputPerMillion, currency}. The reader used to read `input`/`output`,
+ * so every declared price came back null.
+ */
+export const pricingFromRecord = (
+  pricing: Row | null,
+): { inputPerMillion: number | null; outputPerMillion: number | null; currency: string | null } | null => {
+  if (pricing === null) return null;
+  const currency = pricing['currency'];
+  return {
+    inputPerMillion: numberOrNull(pricing['inputPerMillion']),
+    outputPerMillion: numberOrNull(pricing['outputPerMillion']),
+    currency: typeof currency === 'string' && currency !== '' ? currency : null,
+  };
+};
+
 export const createDurableUsageReader = (database: DurableLike, companyId: string): UsageReader => {
   const allRows = (sql: string, params: readonly unknown[]): readonly Row[] =>
     database.db.prepare(sql).all(...params).map(asRow);
@@ -151,9 +168,7 @@ export const createDurableUsageReader = (database: DurableLike, companyId: strin
     modelPricing: async (modelKey) => {
       if (modelKey === null) return null;
       const row = oneRow('SELECT pricing FROM model_records WHERE model_key = ?', [modelKey]);
-      const pricing = parse(String(row['pricing'] ?? ''));
-      if (pricing === null) return null;
-      return { inputPerMillion: numberOrNull(pricing['input']), outputPerMillion: numberOrNull(pricing['output']) };
+      return pricingFromRecord(parse(String(row['pricing'] ?? '')));
     },
   };
 };

@@ -1017,6 +1017,8 @@ export function App() {
         speedSamples: usage === null ? [] : usage.speed.samples,
         inputTokens: knownInput,
         outputTokens: knownOutput,
+        // AUDIT session cost: a cost is only computed over complete usage coverage.
+        usageComplete: usage !== null && usage.usage.complete,
       };
     }, [modelOptions, modelStatus, usageProjection]);
 

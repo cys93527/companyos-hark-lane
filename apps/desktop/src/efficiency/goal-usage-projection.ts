@@ -59,7 +59,7 @@ export interface UsageReader {
     readonly { readonly outputTokens: number; readonly latencyMs: number }[]
   >;
   /** Declared pricing of the selected model(s), per million tokens. */
-  modelPricing(modelKey: string | null): Promise<{ inputPerMillion: number | null; outputPerMillion: number | null } | null>;
+  modelPricing(modelKey: string | null): Promise<{ inputPerMillion: number | null; outputPerMillion: number | null; currency?: string | null } | null>;
   modelKeyOf(runId: string): Promise<string | null>;
 }
 
@@ -84,6 +84,8 @@ export interface GoalUsageProjection {
   readonly cost: {
     readonly state: 'KNOWN' | 'ESTIMATED' | 'UNKNOWN';
     readonly knownScopeCost: number | null;
+    /** The declared price's currency; a cost is never shown without one. */
+    readonly currency: string | null;
     readonly coverageComplete: boolean;
     readonly note: string;
   };
@@ -164,7 +166,7 @@ const UNKNOWN_PROJECTION = (goalRunId: string, note: string): GoalUsageProjectio
   },
   speed: { state: 'UNKNOWN', samples: [], note },
   cacheHit: { state: 'UNKNOWN', reason: note },
-  cost: { state: 'UNKNOWN', knownScopeCost: null, coverageComplete: false, note },
+  cost: { state: 'UNKNOWN', knownScopeCost: null, currency: null, coverageComplete: false, note },
   contextRemaining: { state: 'UNKNOWN', reason: note },
 });
 
@@ -204,11 +206,14 @@ const readGoalUsage = async (
     .filter((invocation) => invocation.latencyMs > 0)
     .map((invocation) => Math.round((invocation.outputTokens / (invocation.latencyMs / 1000)) * 10) / 10);
 
+  // AUDIT session cost: a cost exists only with BOTH declared prices and a currency; a missing
+  // price is unknown, never 0.
+  const currency = pricing?.currency ?? null;
   const knownCost =
-    pricing === null
+    pricing === null || pricing.inputPerMillion === null || pricing.outputPerMillion === null || currency === null
       ? null
-      : (summary.knownInputTokens / 1_000_000) * (pricing.inputPerMillion ?? 0) +
-        (summary.knownOutputTokens / 1_000_000) * (pricing.outputPerMillion ?? 0);
+      : (summary.knownInputTokens / 1_000_000) * pricing.inputPerMillion +
+        (summary.knownOutputTokens / 1_000_000) * pricing.outputPerMillion;
 
   return {
     goalRunId,
@@ -233,10 +238,11 @@ const readGoalUsage = async (
     },
     cost:
       knownCost === null
-        ? { state: 'UNKNOWN', knownScopeCost: null, coverageComplete: summary.complete, note: '未配置可信定价。' }
+        ? { state: 'UNKNOWN', knownScopeCost: null, currency: null, coverageComplete: summary.complete, note: '未配置完整的可信定价（输入/输出价格与币种）。' }
         : {
             state: 'ESTIMATED',
             knownScopeCost: Math.round(knownCost * 1000) / 1000,
+            currency,
             coverageComplete: summary.complete,
             note: summary.complete
               ? '按已知用量 × 已声明价格估算。'

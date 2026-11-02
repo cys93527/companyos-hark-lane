@@ -281,7 +281,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
       displayName: 'deepseek-v4-flash',
       providerId: 'p',
       contextWindow: 1_000_000,
-      price: { inputPerMillion: 0.5, outputPerMillion: 1.5 },
+      price: { inputPerMillion: 0.5, outputPerMillion: 1.5, currency: 'CNY' },
       availability: 'available',
     },
     usedTokens: 31_212,
@@ -289,6 +289,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
     speedSamples: [28.4, 28.4],
     inputTokens: 31_212,
     outputTokens: 1_024,
+    usageComplete: true,
   };
 
   it('UX-08 known values render correctly (context/tokens/speed/cache/cost)', () => {
@@ -300,7 +301,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
     expect(view.used).toBe('31,212');
     expect(view.speed).toBe('28.4/s');
     expect(view.cacheHit).toBe('68%');
-    expect(view.cost).toBe('0.017');
+    expect(view.cost).toBe('0.017 CNY'); // AUDIT session cost: the currency is part of the value
     expect(view.telemetryUnavailable).toBe(false);
     const proven = projectModelRuntime({ ...KNOWN_SNAPSHOT, contextUsedTokens: 31_212 });
     expect(proven.remaining).toBe('97%');
