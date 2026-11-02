@@ -244,7 +244,7 @@ switch ($Action) {
       schema = $SCHEMA; account = $AccountName; sid = $sid; profilePath = $profilePath; brokerPort = $BrokerPort; installedAt = (Get-Date).ToString('o')
       workspaceDirs = @($WorkspaceDirs)
       grants = @($grants); ancestorGrants = @($ancestorGrants)
-      wfp = [ordered]@{ provider = [CompanyOSWfp]::PROVIDER_KEY.ToString(); sublayer = [CompanyOSWfp]::SUBLAYER_KEY.ToString(); v4 = [CompanyOSWfp]::FILTER_V4_KEY.ToString(); v6 = [CompanyOSWfp]::FILTER_V6_KEY.ToString() }
+      wfp = [ordered]@{ provider = [CompanyOSWfp]::PROVIDER_KEY.ToString(); sublayer = [CompanyOSWfp]::SUBLAYER_KEY.ToString(); v4 = [CompanyOSWfp]::FILTER_V4_KEY.ToString(); permitV4 = [CompanyOSWfp]::PERMIT_V4_KEY.ToString(); v6 = [CompanyOSWfp]::FILTER_V6_KEY.ToString() }
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $StatePath) | Out-Null
     ($state | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StatePath -Encoding utf8
