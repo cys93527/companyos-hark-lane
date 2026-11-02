@@ -1,6 +1,6 @@
 {
   "name": "@companyos/contracts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "CompanyOS shared contracts — zod schemas for event envelopes, correlation ids and pack manifests.",
   "type": "module",

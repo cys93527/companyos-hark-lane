@@ -1,3 +1,6 @@
+## Hark lane — v0.1.1 audit fixes (2026-11-02)
+- Post-release full audit (56 findings, lane evidence AUDIT/*.md) fixed at the root with a regression test per ID on branches fix/audit-{desktop,engine,corep,renderer,scripts}, merged into hark-lane; version 0.1.1. Summary docs/hark-lane/V011_AUDIT_FIXES.md. Hark self-review only; real-PC acceptance and independent review NOT RUN.
+
 ## Hark lane — H18 tag + release (2026-10-31)
 - Tag hark-v0.1.0 → b916b99 (every workflow success on that commit: hark-windows 41201842077, hark-ubuntu 41201842083, hark-installer 41201842095, hark-isolation 41203624277, hark-restart 41203288148, hark-upgrade 41203288149).
 - Prerelease https://github.com/cys93527/companyos-hark-lane/releases/tag/hark-v0.1.0 — unsigned CompanyOS-Hark-Setup-0.1.0-x64.exe (sha256 9cadbd7f17951599fcaea0e47851aafc7d0bc441143bab45035b0bd30a31be84, equal to installer-sha256.txt of 41201842095), SHA256SUMS, shop-inventory.zip; attached by .github/workflows/hark-release-assets.yml run 41204116236 (test tests/hark/h18-release-assets.test.ts).
