@@ -127,6 +127,9 @@ export function App() {
   const [version, setVersion] = useState<string>(FALLBACK_APP_VERSION);
   const [database, setDatabase] = useState<DatabaseStatus | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+  // AUDIT-R5: the current workspace for the submit seam (a stable callback must not read a stale closure).
+  const workspaceRootRef = useRef<string | null>(null);
+  workspaceRootRef.current = workspaceRoot;
   const workspaceIdentity = useRef(workspaceRoot);
   workspaceIdentity.current = workspaceRoot;
   const [view, setView] = useState<ShellView>('home');
@@ -338,8 +341,17 @@ export function App() {
 
   /* ------------------------------------------------- submission intents --- */
   const submitGoal = useCallback(
-    async (input: { intentId: string; objective: string; workspaceRoot: string; structured?: Readonly<Record<string, unknown>> }): Promise<{ runId: string } | { error: string }> => {
+    async (input: { intentId: string; objective: string; workspaceRoot: string; structured?: Readonly<Record<string, unknown>>; accessPolicy?: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS' }): Promise<{ runId: string } | { error: string; code?: string }> => {
       if (controlPlane === null) return { error: 'CONTROL_PLANE_UNAVAILABLE' };
+      // AUDIT-R5: a submission replays with the policy and workspace it was made with - never the current
+      // chip or another workspace. A record without its policy (older build) or for another workspace is
+      // refused here (typed, so the outbox is cleared and nothing reaches main) and the user resubmits.
+      if (input.accessPolicy === undefined) {
+        return { code: 'INTENT_POLICY_MISSING', error: '上一次未确认的提交缺少访问策略记录，已放弃；请重新提交。' };
+      }
+      if (workspaceRootRef.current !== null && input.workspaceRoot !== workspaceRootRef.current) {
+        return { code: 'INTENT_WORKSPACE_MISMATCH', error: `上一次未确认的提交属于另一个工作空间（${input.workspaceRoot}），已放弃；请在当前工作空间重新提交。` };
+      }
       const response = (await controlPlane.controlPlaneRequest({
         operation: 'goal.create',
         payload: {
@@ -347,7 +359,7 @@ export function App() {
           objective: input.objective,
           ...(input.structured === undefined ? {} : { structured: input.structured }),
           commandId: input.intentId,
-          accessPolicy: selectedAccessPolicy,
+          accessPolicy: input.accessPolicy,
         },
       })) as BridgeEnvelope<{ readonly runId: string }>;
       if (!response.ok || response.value === undefined) {
@@ -360,7 +372,7 @@ export function App() {
       }
       return { runId: response.value.runId };
     },
-    [controlPlane, selectedAccessPolicy],
+    [controlPlane],
   );
 
   const controller: SubmissionController | null = useMemo(
@@ -489,7 +501,7 @@ export function App() {
       }
       let result: Awaited<ReturnType<SubmissionController['submitObjective']>>;
       try {
-        result = await active.submitObjective(draft, workspaceRoot, structured);
+        result = await active.submitObjective(draft, workspaceRoot, structured, selectedAccessPolicy);
       } catch {
         setSubmissionFailure({ code: 'SUBMISSION_UNCONFIRMED', message: '本地提交存储或主进程通信失败，提交结果未确认。' });
         return;
@@ -501,7 +513,7 @@ export function App() {
       submissionInFlight.current = false;
       setSubmissionBusy(false);
     }
-  }, [draft, workspaceRoot, syncPending, deliveryPath, deliveryText, applySubmissionResult]);
+  }, [draft, workspaceRoot, syncPending, deliveryPath, deliveryText, applySubmissionResult, selectedAccessPolicy]);
 
   /* ------------------------------------------------- canonical projections --- */
   const loadRecent = useCallback(async () => {
@@ -727,9 +739,24 @@ export function App() {
   // STAGE 3 — the effective authority presentation. The MODE is display-only (no canonical
   // per-Goal access-mode write seam exists, so the renderer must not invent one), but the
   // pending canonical approval behind it IS actionable through approval.respond.
+  // AUDIT-R9: the approval card / badge / authority of the OPEN Goal only show that Goal's own runs
+  // (the goal run, its overview run and its execution runs). Another Goal's pending approval used to land
+  // on whatever Goal was open, and 批准 approved B's action while the user looked at A.
+  const ownRunIds = useMemo(() => {
+    const owned = new Set<string>();
+    if (runtimeWorkspace === null || openGoalRunId === null || runtimeWorkspace.runId !== openGoalRunId) return owned;
+    owned.add(runtimeWorkspace.runId);
+    if (typeof runtimeWorkspace.overview?.runId === 'string') owned.add(runtimeWorkspace.overview.runId);
+    for (const run of runtimeWorkspace.executionRuns ?? []) owned.add(run.runId);
+    return owned;
+  }, [runtimeWorkspace, openGoalRunId]);
   const pendingApprovalDecision = useMemo(
-    () => pendingDecisions.find((decision) => pendingApprovalOf(decision) !== null) ?? null,
-    [pendingDecisions],
+    () => pendingDecisions.find((decision) => ownRunIds.has(decision.runId) && pendingApprovalOf(decision) !== null) ?? null,
+    [pendingDecisions, ownRunIds],
+  );
+  const otherPendingApprovals = useMemo(
+    () => pendingDecisions.filter((decision) => !ownRunIds.has(decision.runId) && pendingApprovalOf(decision) !== null),
+    [pendingDecisions, ownRunIds],
   );
   const authorityMode = useMemo(
     () =>
@@ -1079,6 +1106,14 @@ export function App() {
                       failure: approvalFailure,
                       onDecide: (decision: ApprovalDecision) => void decideApproval(decision),
                     }),
+                otherPendingApprovals.length === 0
+                  ? null
+                  : h(
+                      'div',
+                      { className: 'other-approvals', role: 'status', 'data-testid': 'other-goal-approvals' },
+                      h('p', null, `其他目标待批准 · ${otherPendingApprovals.length} 项（在左侧打开对应目标后处理）`),
+                      h('ul', null, otherPendingApprovals.map((decision) => h('li', { key: decision.runId }, `${pendingApprovalOf(decision)?.reason ?? '需要批准'} · 范围 Run ${decision.runId}`))),
+                    ),
                 h(GoalCancelControl, {
                   visible: openGoalRunId !== null && runtimeWorkspace?.runId === openGoalRunId &&
                     runtimeWorkspace.overview != null && !isRunEnded(runtimeWorkspace.overview),

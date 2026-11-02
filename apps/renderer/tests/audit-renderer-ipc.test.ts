@@ -86,15 +86,33 @@ describe('AUDIT R7 — IPC rejection handling', () => {
       id: 'apr_1', runId: 'run_exec_1', taskId: null, riskLevel: 'HIGH', status: 'pending', reason: 'write file',
       requestedBy: 'agent', requestedAt: 'now', decidedBy: null, decidedAt: null, decisionNote: null,
     };
+    // AUDIT-R9: the approval card belongs to the OPEN Goal (its execution run), so the Goal is opened first.
+    const workspace = {
+      runId: 'run_goal_1', goal: { objective: 'Goal 1' }, planningRun: { state: 'COMPLETED', revision: 1 },
+      overview: {
+        runId: 'run_exec_1', state: 'WAITING_APPROVAL', revision: 1, reworkCount: 0, maxRework: 3, failureReason: null, resumePoint: null,
+        pinnedVersion: null, stages: [], executing: [], attempts: { active: 0, interrupted: 0, completed: 0, failed: 0 },
+        validation: { requiredValidatorIds: [], completed: [], failed: false, missing: [] }, correctiveActivity: null, handoffCount: 0,
+        progress: { stagesTotal: 0, stagesTerminalSuccessful: 0, tasksTotal: 0, tasksDone: 0, tasksActive: 0, tasksBlocked: 0 }, artifacts: [],
+      },
+      blockers: [], executionRuns: [{ runId: 'run_exec_1', state: 'WAITING_APPROVAL' }],
+    };
     const bridge = baseBridge(async (request) => {
-      if (request.operation === 'home.summary') return { ok: true, value: { goals: [] } };
+      if (request.operation === 'home.summary') return { ok: true, value: { goals: [{ runId: 'run_goal_1', state: 'EXECUTING', objective: 'Goal 1' }] } };
       if (request.operation === 'decisions.pending') {
         return { ok: true, value: { pending: [{ runId: 'run_exec_1', runState: 'WAITING_APPROVAL', approvals: [approval] }] } };
       }
+      if (request.operation === 'goal.workspace') return { ok: true, value: workspace };
+      if (request.operation === 'run.timeline') return { ok: true, value: { entries: [] } };
+      if (request.operation === 'run.artifacts') return { ok: true, value: { artifacts: [] } };
       if (request.operation === 'approval.respond') throw new Error('main threw');
       return { ok: true, value: null };
     });
     const view = await mount(bridge);
+    await act(async () => {
+      dispatchMiniEvent(clickableWithText(view, 'Goal 1') as MiniElement, 'click');
+    });
+    await settle();
     const approve = clickableWithText(view, '批准');
     expect(approve).not.toBeNull();
     await act(async () => {

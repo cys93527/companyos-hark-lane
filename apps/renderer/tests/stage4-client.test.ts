@@ -199,7 +199,10 @@ describe('S4-06..09 selector behavior + restart display', () => {
       const source = readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8');
       expect(/localStorage|sessionStorage/.test(source), name).toBe(false);
     }
-    expect(intentStore).not.toMatch(/authority|permission|accessPolicy/iu);
+    // AUDIT-R5: the outbox records the access policy CHOSEN for the unconfirmed submission (validated, replayed
+    // with it); it is the user's choice for that command, not authority truth. No authority/permission value.
+    expect(intentStore).not.toMatch(/authority|permission/iu);
+    expect(intentStore).toContain("SUBMISSION_ACCESS_POLICIES.includes(record['accessPolicy'] as SubmissionAccessPolicy)");
   });
 
   it('S4-04/S4-09b restart rehydration is read-back only (no client persistence of policy)', () => {

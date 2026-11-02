@@ -18,11 +18,17 @@
 
 export type SubmissionIntentState = 'pending' | 'acknowledged';
 
+/** AUDIT-R5: the access policy the user chose for THIS submission (replayed with it, never the current chip). */
+export type SubmissionAccessPolicy = 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS';
+export const SUBMISSION_ACCESS_POLICIES: readonly SubmissionAccessPolicy[] = ['ASK_PERMISSION', 'READ_ONLY', 'WORKSPACE_OPERATIONS'];
+
 export interface SubmissionIntentRecord {
   readonly intentId: string;
   readonly objective: string;
   readonly structured?: Readonly<Record<string, unknown>>;
   readonly workspaceRoot: string;
+  /** AUDIT-R5: chosen at submission time; a retry/replay sends exactly this (absent = legacy record). */
+  readonly accessPolicy?: SubmissionAccessPolicy;
   readonly state: SubmissionIntentState;
   readonly goalRunId?: string;
   readonly createdAt: string;
@@ -51,6 +57,7 @@ export interface SubmissionSubmit {
     readonly objective: string;
     readonly structured?: Readonly<Record<string, unknown>>;
     readonly workspaceRoot: string;
+    readonly accessPolicy?: SubmissionAccessPolicy;
   }): Promise<{ readonly runId: string } | { readonly error: string; readonly code?: string }>;
 }
 
@@ -87,7 +94,7 @@ export interface SubmissionController {
    * cannot duplicate, and one that did replays into the same Goal.
    */
   readonly resolvePending: () => Promise<SubmissionResult | null>;
-  readonly submitObjective: (objective: string, workspaceRoot: string | null, structured?: Readonly<Record<string, unknown>>) => Promise<SubmissionResult>;
+  readonly submitObjective: (objective: string, workspaceRoot: string | null, structured?: Readonly<Record<string, unknown>>, accessPolicy?: SubmissionAccessPolicy) => Promise<SubmissionResult>;
   /** Retry the pending intent with the SAME identity (transport failure path). */
   readonly retry: () => Promise<SubmissionResult | null>;
   /** Drop a pending intent whose failure is terminal for that text (user changed their mind). */
@@ -120,6 +127,7 @@ export const createSubmissionController = (options: SubmissionControllerOptions)
       objective: intent.objective,
       ...(intent.structured === undefined ? {} : { structured: intent.structured }),
       workspaceRoot: intent.workspaceRoot,
+      ...(intent.accessPolicy === undefined ? {} : { accessPolicy: intent.accessPolicy }),
     });
     if ('runId' in outcome) return acknowledge(intent, outcome.runId);
     if (!isUnknownOutcome(outcome.code)) {
@@ -141,7 +149,7 @@ export const createSubmissionController = (options: SubmissionControllerOptions)
       return runIntent(intent);
     },
 
-    submitObjective: async (objective, workspaceRoot, structured) => {
+    submitObjective: async (objective, workspaceRoot, structured, accessPolicy) => {
       const text = objective.trim();
       if (text === '') return { status: 'blocked', reason: 'empty' };
       if (workspaceRoot === null) return { status: 'blocked', reason: 'no-workspace' };
@@ -154,6 +162,7 @@ export const createSubmissionController = (options: SubmissionControllerOptions)
         objective: text.slice(0, MAX_OBJECTIVE),
         ...(structured === undefined ? {} : { structured: JSON.parse(JSON.stringify(structured)) as Readonly<Record<string, unknown>> }),
         workspaceRoot,
+        ...(accessPolicy === undefined ? {} : { accessPolicy }),
         state: 'pending',
         createdAt: now(),
       };

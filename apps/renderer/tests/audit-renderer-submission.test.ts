@@ -77,7 +77,8 @@ describe('AUDIT R2 — submission refusal vs unknown outcome', () => {
     const storage = memoryStorage();
     storage.setItem(
       SUBMISSION_INTENT_STORAGE_KEY,
-      JSON.stringify({ intentId: 'si-old', objective: '旧目标', workspaceRoot: WORKSPACE, state: 'pending', createdAt: '', attempted: true }),
+      // AUDIT-R5: the outbox now carries the policy the submission was made with.
+      JSON.stringify({ intentId: 'si-old', objective: '旧目标', workspaceRoot: WORKSPACE, state: 'pending', createdAt: '', attempted: true, accessPolicy: 'READ_ONLY' }),
     );
     const app = await mountApp({
       storage,
@@ -89,6 +90,21 @@ describe('AUDIT R2 — submission refusal vs unknown outcome', () => {
     const creates = app.callsOf('goal.create');
     expect(creates).toHaveLength(1);
     expect(creates[0]?.payload['commandId']).toBe('si-old');
+    // AUDIT-R5: replayed with ITS policy, not the current chip (default ASK_PERMISSION).
+    expect(creates[0]?.payload['accessPolicy']).toBe('READ_ONLY');
+    expect(app.view.textContent).not.toContain('上一次提交尚未确认');
+  });
+
+  it('AUDIT-R5 App: a legacy pending intent without its policy is refused on 重试 (nothing sent, outbox cleared)', async () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      SUBMISSION_INTENT_STORAGE_KEY,
+      JSON.stringify({ intentId: 'si-legacy', objective: '旧目标', workspaceRoot: WORKSPACE, state: 'pending', createdAt: '', attempted: true }),
+    );
+    const app = await mountApp({ storage, control: (call) => (call.operation === 'goal.create' ? { ok: true, value: { runId: 'x' } } : undefined) });
+    await app.click('重试');
+    expect(app.callsOf('goal.create')).toHaveLength(0);
+    expect(app.view.textContent).toContain('缺少访问策略记录');
     expect(app.view.textContent).not.toContain('上一次提交尚未确认');
   });
 
