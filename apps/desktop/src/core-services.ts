@@ -30,7 +30,7 @@ import {
   createRepoTestCheckPort,
   createRepoTestCheckRecord,
 } from '@companyos/engine';
-import { runRepoTestContract } from './repo-test-process.js';
+import { createRepoTestContractRunner, runRepoTestContract } from './repo-test-process.js';
 import type { KernelHealthReport } from './executor/kernel-health.js';
 import {
   REPOSITORY_GIT_TOOL_SPEC,
@@ -557,6 +557,11 @@ export interface ComposeCoreServicesOptions {
    * resource. Absent = the managed root (dev materialization layout).
    */
   readonly embeddedDshStateRoot?: string;
+  /**
+   * AUDIT-D1: <userData> — the validator (agent-written `npm test`) restores and fails on any change to the
+   * trusted state files under it (budget approvals/proofs, provider setup, isolation). Absent in tests.
+   */
+  readonly validatorTrustedStateRoot?: string;
   /**
    * H16b-3: Windows file/network isolation for the embedded kernel (executor/isolation/*). Absent = the
    * kernel launches as the signed-in user (tests, dev). Production passes productionIsolationLaunchConfig.
@@ -1234,12 +1239,20 @@ export async function composeCoreServices(
       compositionError = `repository test contract validator registration failed: ${testCheckRegistered.error.message}`;
       return null;
     }
+    const repoTestContractRunner = createRepoTestContractRunner({
+      run: runRepoTestContract,
+      ...(options.embeddedDshIsolation === undefined ? {} : { isolation: options.embeddedDshIsolation }),
+      ...(options.embeddedDshStateRoot === undefined ? {} : { isolatedStateRoot: options.embeddedDshStateRoot }),
+      ...(options.validatorTrustedStateRoot === undefined ? {} : { trustedStateRoot: options.validatorTrustedStateRoot }),
+    });
     toolAdapters.set(REPO_TEST_CHECK_TOOL_ID, createRepoTestCheckPort(REPO_TEST_CHECK_SPEC, {
       // F3/F4: the run-scoped canonical context — Goal binding + accessPolicy + mismatch
       // check. The validator never executes against the global current workspace.
       resolveRunContext: (runId) => resolveRunWorkspaceContext(runId),
+      // AUDIT-D1: agent-written `npm test` runs inside the isolation boundary when it is configured
+      // (refused when degraded); unconfigured runs are labelled 未隔离 and guard the trusted state.
       runTestContract: async (input) =>
-        runRepoTestContract({ cwd: input.cwd, timeoutMs: REPO_TEST_CHECK_SPEC.timeoutMs }),
+        repoTestContractRunner({ cwd: input.cwd, timeoutMs: REPO_TEST_CHECK_SPEC.timeoutMs }),
       clock,
     }));
 

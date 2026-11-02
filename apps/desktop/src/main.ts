@@ -244,6 +244,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
             runtimeEnv,
             usageReconciliationDir: join(app.getPath('userData'), 'budget'),
       embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
+      validatorTrustedStateRoot: app.getPath('userData'),
       embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
           });
     if (core === null) return null;
@@ -927,6 +928,7 @@ async function main(): Promise<void> {
       runtimeEnv,
       usageReconciliationDir: join(app.getPath('userData'), 'budget'),
       embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
+      validatorTrustedStateRoot: app.getPath('userData'),
       embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
     });
     if (core === null) {
