@@ -57,6 +57,7 @@ import { productionIsolationLaunchConfig } from './executor/isolation/isolation-
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
 import { CSP, createWindowOptions, denyAllPermissions } from './security.js';
 import { createWorkflowApi, type WorkflowApi } from './workflows.js';
+import { createControlPlaneIpcHandler, neverReject } from './control-plane-ipc.js';
 import { openArtifactFoundation, type ArtifactFoundation } from './artifact-stack.js';
 import {
   clearPersistedSelection,
@@ -587,6 +588,25 @@ function deploymentBudgetOptions(): { trustedBudgetProofs?: NonNullable<ReturnTy
   return { trustedBudgetProofs: deployment.source, budgetCap: deployment.cap };
 }
 
+let controlPlaneIpcHandler: ((request: unknown) => Promise<unknown>) | null = null;
+let controlPlaneIpcCore: CoreServices | null = null;
+/** AUDIT-D7: one wrapper per composed core (single-flight approval resume lives in it). */
+function controlPlaneIpc(core: CoreServices): (request: unknown) => Promise<unknown> {
+  if (controlPlaneIpcHandler === null || controlPlaneIpcCore !== core) {
+    controlPlaneIpcCore = core;
+    controlPlaneIpcHandler = createControlPlaneIpcHandler({
+      companyId: COMPANY_ID,
+      handle: async (request) => core.controlPlane!.handle(request as never),
+      autonomy: () => (autonomyRunner === null ? null : {
+        start: (companyId: string, runId: string) => autonomyRunner?.start(companyId, runId),
+        resumeNonTerminalGoalRuns: async () => (autonomyRunner === null ? [] : autonomyRunner.resumeNonTerminalGoalRuns(core)),
+      }),
+      logger,
+    });
+  }
+  return controlPlaneIpcHandler;
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(CHANNELS.appVersion, (): string => app.getVersion());
 
@@ -602,7 +622,8 @@ function registerIpcHandlers(): void {
           error: { code: 'PERSISTENCE_FAILED', message: workflowError ?? 'workflow service unavailable', details: {} },
         };
       }
-      return api.handle(withSessionActor(request));
+      // AUDIT-D7/R7: never reject the renderer's invoke.
+      return neverReject(async () => api.handle(withSessionActor(request)), 'WORKFLOW_HANDLER_FAILED', logger);
     },
   );
 
@@ -623,22 +644,9 @@ function registerIpcHandlers(): void {
           },
         };
       }
-      // STAGE 2 — after a canonical Goal is created the main process starts its autonomy
-      // driver, so the operator never has to press 继续 again. The renderer only asked for
-      // the Goal; the loop below lives here, outside the untrusted renderer.
-      const response = await core.controlPlane.handle(withSessionActor(request));
-      if (
-        autonomyRunner !== null &&
-        isRecord(request) &&
-        request['operation'] === 'goal.create' &&
-        isRecord(response) &&
-        response['ok'] === true &&
-        isRecord(response['value']) &&
-        typeof response['value']['runId'] === 'string'
-      ) {
-        autonomyRunner.start(COMPANY_ID, response['value']['runId'] as string);
-      }
-      return response;
+      // STAGE 2 + AUDIT-D7: goal.create starts the Goal's autonomy driver, an approve resumes the
+      // waiting Goals, and a throwing handler answers with the typed envelope (control-plane-ipc.ts).
+      return controlPlaneIpc(core)(withSessionActor(request));
     },
   );
 
