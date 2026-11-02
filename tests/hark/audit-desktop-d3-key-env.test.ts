@@ -10,7 +10,7 @@ import { MODEL_PROVIDER_ENV } from '../../apps/desktop/src/models/openai-compati
  * (inherited by ShellExecute 打开/链接, execFile without env, Chromium children). It lives only
  * in a private runtime env handed to composition (vault, model config, attempt timeout).
  */
-const KEY = 'sk-AUDITSECRET123456';
+const KEY = 'sk-mock-audit-d3-key-0001';
 const CONFIGURED: ProviderSetupState = {
   state: 'CONFIGURED',
   apiKey: KEY,
