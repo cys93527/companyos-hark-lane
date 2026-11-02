@@ -1036,13 +1036,12 @@ describe('T18-07 autonomous supervisor — loop core (1–10)', () => {
     const result = await f.autonomous.run(runOf({ runId, taskId: work, identity: 'none' }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // F1 closure: the loop now advances the EXECUTING gate (all work terminal →
-    // EXECUTION.COMPLETE → REVIEWING → VALIDATING) and stops at the FIRST gate that
-    // has no legal semantics — a more truthful terminal than a bare no_legal_action.
-    expect(result.value.stopReason).toBe('validation_requirements_missing');
-    // The two gate effects (EXECUTION.COMPLETE + REVIEW.PASS via engine.dispatch, never
-    // an agent advance) are recorded as applied gate effects; no WORK was executed and
-    // no provider round ran for them.
+    // AUDIT-E5: the 'review' stage has no task at all, so the execution domain is NOT complete under the
+    // engine's own rule (every pinned stage needs tasks, all terminal, >= 1 DONE). The old supervisor gate
+    // ("all tasks terminal + one DONE anywhere") advanced EXECUTION.COMPLETE -> REVIEWING here, on a stage
+    // that never ran (the asserted 'validation_requirements_missing' encoded that divergence). The loop
+    // now ends with no legal action and no gate effect.
+    expect(result.value.stopReason).toBe('no_legal_action');
     expect(f.advanceCalls()).toBe(0);
   });
 

@@ -59,6 +59,7 @@ import {
   FaultCrashError,
 } from '@companyos/core';
 
+import { executionDomainVerdict } from '../execution-domain.js';
 import type { ArtifactService } from '../artifact/artifact-service.js';
 import type { StageHandlerReturn } from '../handlers.js';
 import type { CorrectiveProvisioner } from './corrective-provisioner.js';
@@ -710,28 +711,26 @@ export function createAutonomousSupervisorRuntime(
        * run whose corrective round completed outside a fresh stage execution spins on
        * CONTINUE turns forever (no runnable unit, no gate advance, no re-validation).
        */
-      const pinned = new Set(nodes.map((node) => String(node.id)));
-      const inGraph = deps.tasks.listByRun
-        ? (await deps.tasks.listByRun(input.run.id)).filter((task) => pinned.has(String(task.stageId)))
-        : [];
-      if (inGraph.length > 0) {
-        const allTerminal = inGraph.every((task) => TERMINAL_TASK_STATES.includes(task.state));
-        const anyDone = inGraph.some((task) => task.state === 'DONE');
-        if (allTerminal && anyDone) {
-          const completed = await deps.engine.dispatch({
-            commandId: `generic-gate:${String(input.run.id)}:${String(input.run.revision)}:execution:complete`,
-            runId: input.run.id,
-            type: 'EXECUTION.COMPLETE',
-            expectedRevision: input.run.revision,
-            actorId: input.actorId,
-            traceId: input.traceId ?? `generic-gate:${String(input.run.id)}`,
-            issuedAt: deps.clock.nowIso(),
-          });
-          if (!completed.ok) {
-            return err(completed.error ?? domainError('PERSISTENCE_FAILED', 'EXECUTION.COMPLETE was refused.'));
-          }
-          return ok({ effect: 'gate:execution:complete' });
+      // AUDIT-E5: the engine's own execution-domain rule (execution-domain.ts): every pinned stage has
+      // tasks, all terminal, >= 1 DONE per stage -> EXECUTION.COMPLETE; all terminal but a stage without
+      // any DONE -> EXECUTION.FAIL (nothing can run any more; never REVIEWING on a failed stage).
+      const verdict = executionDomainVerdict(nodes.map((node) => String(node.id)), runTasks);
+      if (verdict.kind === 'complete' || verdict.kind === 'failed') {
+        const complete = verdict.kind === 'complete';
+        const dispatched = await deps.engine.dispatch({
+          commandId: `generic-gate:${String(input.run.id)}:${String(input.run.revision)}:execution:${complete ? 'complete' : 'fail'}`,
+          runId: input.run.id,
+          type: complete ? 'EXECUTION.COMPLETE' : 'EXECUTION.FAIL',
+          ...(complete ? {} : { payload: { reason: `stage(s) ${verdict.stageIds.join(', ')} ended without a DONE task` } }),
+          expectedRevision: input.run.revision,
+          actorId: input.actorId,
+          traceId: input.traceId ?? `generic-gate:${String(input.run.id)}`,
+          issuedAt: deps.clock.nowIso(),
+        });
+        if (!dispatched.ok) {
+          return err(dispatched.error ?? domainError('PERSISTENCE_FAILED', `${complete ? 'EXECUTION.COMPLETE' : 'EXECUTION.FAIL'} was refused.`));
         }
+        return ok({ effect: complete ? 'gate:execution:complete' : 'gate:execution:fail' });
       }
       return ok(null);
     }

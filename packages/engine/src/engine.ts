@@ -15,6 +15,7 @@
  * imports are `@companyos/core` contracts/ports (AGENTS.md §1.3). A real Agent
  * Runtime is plugged in behind `StageHandlerRegistry` in a later sprint.
  */
+import { executionDomainVerdict } from './execution-domain.js';
 import {
   DomainError,
   applyRunEvent,
@@ -36,7 +37,6 @@ import {
   FAULT_CHECKPOINTS,
   STAGE_OUTPUT_TASK_KEY,
 
-  isTaskTerminal,
   createExecutionAttempt,
   executionAttemptIdOf,
   type ExecutionAttempt,
@@ -1505,15 +1505,9 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     // Sprint21 corrective: the EXECUTION DOMAIN is EVERY pinned stage — no stage-class
     // filter, no phase exception. The pinned DAG alone decides ordering; EXECUTION.COMPLETE
     // fires when the whole graph's work is terminal-successful.
-    const domainStages = graph.value.nodes.map((node) => node.id);
+    // AUDIT-E5: the same predicate the supervisor's EXECUTING gate uses (execution-domain.ts).
     const tasks = await deps.tasksOfRun!(runId);
-    for (const stageId of domainStages) {
-      const stageTasks = tasks.filter((task) => String(task.stageId) === String(stageId));
-      if (stageTasks.length === 0) return ok(false);
-      if (stageTasks.some((task) => !isTaskTerminal(task.state))) return ok(false);
-      if (!stageTasks.some((task) => task.state === 'DONE')) return ok(false);
-    }
-    return ok(true);
+    return ok(executionDomainVerdict(graph.value.nodes.map((node) => String(node.id)), tasks).kind === 'complete');
   }
 
   /**
