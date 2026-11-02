@@ -30,6 +30,8 @@ export interface GoalUsageProjection {
   readonly cost: {
     readonly state: UsageState;
     readonly knownScopeCost: number | null;
+    /** AUDIT session cost: the price currency from main; no currency -> the cost renders "--". */
+    readonly currency: string | null;
     readonly coverageComplete: boolean;
     readonly note: string;
   };
@@ -81,6 +83,7 @@ export const loadGoalUsage = async (
     cost: {
       state: cost['state'] === 'KNOWN' || cost['state'] === 'ESTIMATED' ? (cost['state'] as 'KNOWN' | 'ESTIMATED') : 'UNKNOWN',
       knownScopeCost: num(cost['knownScopeCost']),
+      currency: typeof cost['currency'] === 'string' && cost['currency'] !== '' ? (cost['currency'] as string) : null,
       coverageComplete: cost['coverageComplete'] === true,
       note: typeof cost['note'] === 'string' ? (cost['note'] as string) : '',
     },
@@ -136,6 +139,7 @@ export const projectTelemetry = (
     usage.usage.coverageRatio === null
       ? '--'
       : `${Math.round(usage.usage.coverageRatio * 100)}%`;
+  const costShown = usage.cost.state !== 'UNKNOWN' && usage.cost.knownScopeCost !== null && usage.cost.currency !== null;
   const speedSample = usage.speed.samples.length === 0 ? null : usage.speed.samples[usage.speed.samples.length - 1]!;
   return {
     tokens,
@@ -145,11 +149,8 @@ export const projectTelemetry = (
     speed: speedSample === null || usage.speed.state !== 'KNOWN' ? '--' : `${speedSample}/s`,
     speedNote: usage.speed.note,
     cacheHit: '--',
-    cost:
-      usage.cost.state === 'UNKNOWN' || usage.cost.knownScopeCost === null
-        ? '--'
-        : `$${usage.cost.knownScopeCost}`,
-    costLabel: usage.cost.state === 'UNKNOWN' ? null : (usage.cost.state as 'KNOWN' | 'ESTIMATED'),
+    cost: costShown ? `${usage.cost.knownScopeCost} ${usage.cost.currency}` : '--',
+    costLabel: costShown ? (usage.cost.state as 'KNOWN' | 'ESTIMATED') : null,
     contextRemaining: contextWindow === null ? '--' : '--',
     note:
       usage.usage.complete === false && usage.usage.unknownDispatchCount > 0

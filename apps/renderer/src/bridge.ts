@@ -119,3 +119,48 @@ export async function resolveDatabaseStatus(
     return null;
   }
 }
+
+/* ------------------------------------------------- AUDIT R7: IPC rejections --- */
+
+/** Typed code for a bridge call whose promise rejected (main threw / IPC broke). */
+export const IPC_FAILED = 'IPC_FAILED';
+
+export interface IpcFailureEnvelope {
+  readonly ok: false;
+  readonly error: { readonly code: typeof IPC_FAILED; readonly message: string };
+}
+
+const describeError = (error: unknown): string => {
+  if (error instanceof Error && error.message.length > 0) return error.message;
+  if (typeof error === 'string' && error.length > 0) return error;
+  return 'UNKNOWN';
+};
+
+export const ipcFailureEnvelope = (error: unknown): IpcFailureEnvelope => ({
+  ok: false,
+  error: {
+    code: IPC_FAILED,
+    message: `与主进程通信失败（${describeError(error)}），操作结果未确认。`,
+  },
+});
+
+export const isIpcFailure = (value: unknown): value is IpcFailureEnvelope => {
+  const record = asRecord(value);
+  if (record === null || record['ok'] !== false) return false;
+  const error = asRecord(record['error']);
+  return error !== null && error['code'] === IPC_FAILED;
+};
+
+/**
+ * Run one bridge call and turn ANY rejection (or synchronous throw) into the typed
+ * `{ ok:false, error:{ code:'IPC_FAILED' } }` envelope. Every renderer bridge call goes
+ * through this so a main-process throw can never surface as an unhandled rejection or
+ * leave a busy flag / spinner stuck.
+ */
+export async function safeRequest<T>(call: () => Promise<T>): Promise<T | IpcFailureEnvelope> {
+  try {
+    return await call();
+  } catch (error) {
+    return ipcFailureEnvelope(error);
+  }
+}

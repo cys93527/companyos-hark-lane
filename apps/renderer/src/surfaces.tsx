@@ -77,7 +77,7 @@ export function ToolsSurfaceView(props: {
 }): JSX.Element {
   return h(
     'section',
-    { className: 'card surface', 'aria-label': 'tools-surface' },
+    { className: 'card surface', 'data-testid': 'tools-surface', 'aria-label': '工具' },
     h('h2', null, '工具'),
     props.failure === null
       ? null
@@ -88,7 +88,7 @@ export function ToolsSurfaceView(props: {
         ? h('p', { className: 'muted' }, '尚无注册工具。')
         : h(
             'ul',
-            { className: 'surface__list', 'aria-label': 'tool-rows' },
+            { className: 'surface__list', 'data-testid': 'tool-rows', 'aria-label': '工具列表' },
             props.rows.map((row) =>
               h(
                 'li',
@@ -162,7 +162,7 @@ export function KnowledgeSurfaceView(props: {
 }): JSX.Element {
   return h(
     'section',
-    { className: 'card surface', 'aria-label': 'knowledge-surface' },
+    { className: 'card surface', 'data-testid': 'knowledge-surface', 'aria-label': '知识' },
     h('h2', null, '知识库'),
     props.failure === null
       ? null
@@ -173,7 +173,7 @@ export function KnowledgeSurfaceView(props: {
         ? h('p', { className: 'muted' }, '暂无记忆条目。')
         : h(
             'ul',
-            { className: 'surface__list', 'aria-label': 'knowledge-rows' },
+            { className: 'surface__list', 'data-testid': 'knowledge-rows', 'aria-label': '知识列表' },
             props.rows.map((row) =>
               h(
                 'li',
@@ -223,18 +223,19 @@ export function AgentsSurfaceView(props: {
 }): JSX.Element {
   return h(
     'section',
-    { className: 'card surface', 'aria-label': 'agents-surface' },
+    { className: 'card surface', 'data-testid': 'agents-surface', 'aria-label': '智能体' },
     h('h2', null, '智能体'),
     props.failure === null
       ? null
       : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
-    props.rows === null
+    // AUDIT R13: a failure replaces the spinner (same guard as Tools / Knowledge).
+    props.failure !== null ? null : props.rows === null
       ? h('p', { className: 'muted' }, '加载中…')
       : props.rows.length === 0
         ? h('p', { className: 'muted' }, '尚无执行记录。')
         : h(
             'ul',
-            { className: 'surface__list', 'aria-label': 'agent-rows' },
+            { className: 'surface__list', 'data-testid': 'agent-rows', 'aria-label': '智能体列表' },
             props.rows.map((row) =>
               h(
                 'li',

@@ -88,17 +88,30 @@ export const cacheHitRate = (cachedTokens: number | null, totalTokens: number | 
   return knownTelemetry(Math.round((cachedTokens / totalTokens) * 100), '%');
 };
 
-/** Cost is KNOWN only from authoritative token counts × the declared price. */
+export interface ModelPriceView {
+  readonly inputPerMillion: number | null;
+  readonly outputPerMillion: number | null;
+  /** The declared currency; without one no cost is ever shown. */
+  readonly currency?: string | null;
+}
+
+/**
+ * Cost is KNOWN only from authoritative, COMPLETE token counts × BOTH declared prices in a
+ * declared currency. AUDIT session cost: a missing price used to count as 0, the result had no
+ * currency and incomplete usage still produced a "KNOWN" total.
+ */
 export const sessionCost = (
   inputTokens: number | null,
   outputTokens: number | null,
-  price: { readonly inputPerMillion: number | null; readonly outputPerMillion: number | null } | null,
+  price: ModelPriceView | null,
+  usageComplete: boolean,
 ): TelemetryValue => {
-  if (inputTokens === null || outputTokens === null || price === null) return UNKNOWN;
-  const inputPrice = price.inputPerMillion ?? 0;
-  const outputPrice = price.outputPerMillion ?? 0;
-  const cost = (inputTokens / 1_000_000) * inputPrice + (outputTokens / 1_000_000) * outputPrice;
-  return knownTelemetry(Math.round(cost * 1000) / 1000, '');
+  if (!usageComplete || inputTokens === null || outputTokens === null || price === null) return UNKNOWN;
+  if (price.inputPerMillion === null || price.outputPerMillion === null) return UNKNOWN;
+  const currency = price.currency ?? null;
+  if (currency === null || currency === '') return UNKNOWN;
+  const cost = (inputTokens / 1_000_000) * price.inputPerMillion + (outputTokens / 1_000_000) * price.outputPerMillion;
+  return knownTelemetry(Math.round(cost * 1000) / 1000, ` ${currency}`);
 };
 
 /** The popover's model line: the canonical display name, never a nickname invented in the UI. */
@@ -107,7 +120,7 @@ export interface ModelRuntimeRow {
   readonly displayName: string;
   readonly providerId: string;
   readonly contextWindow: number | null;
-  readonly price: { readonly inputPerMillion: number | null; readonly outputPerMillion: number | null } | null;
+  readonly price: ModelPriceView | null;
   readonly availability: string;
 }
 
@@ -124,6 +137,8 @@ export interface ModelRuntimeSnapshot {
   readonly speedSamples: readonly number[];
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
+  /** True only when every dispatch's usage is known; anything else keeps the cost UNKNOWN. */
+  readonly usageComplete?: boolean;
 }
 
 export interface ModelRuntimeView {
@@ -144,7 +159,7 @@ export const projectModelRuntime = (snapshot: ModelRuntimeSnapshot): ModelRuntim
   const used = snapshot.usedTokens === null ? UNKNOWN : knownTelemetry(snapshot.usedTokens);
   const speed = tokensPerSecond(snapshot.speedSamples);
   const cacheHit = cacheHitRate(snapshot.cachedTokens, snapshot.usedTokens);
-  const cost = sessionCost(snapshot.inputTokens, snapshot.outputTokens, model?.price ?? null);
+  const cost = sessionCost(snapshot.inputTokens, snapshot.outputTokens, model?.price ?? null, snapshot.usageComplete === true);
   const slots = [remaining, used, speed, cacheHit, cost];
   return {
     modelLabel: model === null ? '未选择模型' : model.displayName,

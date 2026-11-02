@@ -6,7 +6,7 @@ export interface LocalDraft {
   readonly objective: string;
 }
 
-export type DraftStorage = Pick<Storage, 'getItem' | 'setItem'>;
+export type DraftStorage = Pick<Storage, 'getItem' | 'setItem'> & { readonly removeItem?: (key: string) => void };
 const PREFIX = 'companyos.local-draft.v1:';
 const keyOf = (companyId: string, workspaceRoot: string): string => {
   if (!companyId || !workspaceRoot || companyId.length > 128 || workspaceRoot.length > 2048) throw new Error('LOCAL_DRAFT_SCOPE_INVALID');
@@ -37,6 +37,25 @@ export const createLocalDraftStore = (storage: DraftStorage | null) => ({
     const r = value as Record<string, unknown>;
     if (Object.keys(r).sort().join(',') !== 'companyId,objective,state,workspaceRoot' || r['state'] !== 'LOCAL_DRAFT' || r['companyId'] !== companyId || r['workspaceRoot'] !== workspaceRoot) throw new Error('LOCAL_DRAFT_RECORD_INVALID');
     return { state: 'LOCAL_DRAFT', companyId, workspaceRoot, objective: checkObjective(r['objective']) };
+  },
+  /**
+   * AUDIT R6: drop the saved draft once that exact text has been SUBMITTED (Goal created or
+   * replayed), so it is never auto-restored and labelled 「尚未提交」 again. A saved draft
+   * with different text is the user's other work and is kept. Returns true when removed.
+   */
+  clearIfSubmitted(companyId: string, workspaceRoot: string, submittedObjective: string): boolean {
+    const key = keyOf(companyId, workspaceRoot);
+    if (storage === null) throw new Error('LOCAL_DRAFT_STORAGE_UNAVAILABLE');
+    let saved: LocalDraft | null;
+    try {
+      saved = this.load(companyId, workspaceRoot);
+    } catch {
+      return false; // unreadable record: left alone (the controls already report it)
+    }
+    if (saved === null || saved.objective.trim() !== submittedObjective.trim()) return false;
+    if (typeof storage.removeItem !== 'function') throw new Error('LOCAL_DRAFT_STORAGE_UNAVAILABLE');
+    storage.removeItem(key);
+    return true;
   },
 });
 

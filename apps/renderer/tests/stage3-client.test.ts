@@ -474,7 +474,7 @@ const USAGE: GoalUsageProjection = {
   },
   speed: { state: 'KNOWN', samples: [28.4], note: '按单次 provider 调用的输出 token / 调用耗时计算。' },
   cacheHit: { state: 'UNKNOWN', reason: '无权威 cached-token 证据' },
-  cost: { state: 'ESTIMATED', knownScopeCost: 0.017, coverageComplete: false, note: '按已知用量估算' },
+  cost: { state: 'ESTIMATED', knownScopeCost: 0.017, currency: 'CNY', coverageComplete: false, note: '按已知用量估算' },
   contextRemaining: { state: 'UNKNOWN', reason: '无逐次上下文占位证据；累计 Goal token 不代表模型当前上下文占用。' },
 };
 
@@ -483,7 +483,7 @@ describe('S3-19..27 honest telemetry', () => {
     const view = projectTelemetry(USAGE, 1_000_000);
     expect(view.tokens).toBe('32.2K');
     expect(view.speed).toBe('28.4/s');
-    expect(view.cost).toBe('$0.017');
+    expect(view.cost).toBe('0.017 CNY'); // AUDIT session cost: was a hard-coded '$' (the bug)
     expect(view.costLabel).toBe('ESTIMATED');
     expect(knownTelemetry(0, '%')).toEqual({ state: 'KNOWN', value: 0, unit: '%' });
   });
@@ -531,7 +531,7 @@ describe('S3-19..27 honest telemetry', () => {
   });
 
   it('S3-25 unknown cost renders --', () => {
-    const view = projectTelemetry({ ...USAGE, cost: { state: 'UNKNOWN', knownScopeCost: null, coverageComplete: false, note: '' } }, null);
+    const view = projectTelemetry({ ...USAGE, cost: { state: 'UNKNOWN', knownScopeCost: null, currency: null, coverageComplete: false, note: '' } }, null);
     expect(view.cost).toBe('--');
     expect(view.costLabel).toBeNull();
   });

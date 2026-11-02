@@ -18,6 +18,7 @@
  * the canonical loaders). The pure loaders are exported too, so tests can assert the
  * canonical reads directly.
  */
+import { safeRequest } from './bridge.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isRunEnded, runStateLabel, runStateModifier, terminalOutcomeOf, type RunEndInput } from './run-outcome.js';
 
@@ -53,7 +54,9 @@ export async function controlPlaneRead<T>(
   operation: string,
   payload: Readonly<Record<string, unknown>>,
 ): Promise<ControlPlaneEnvelope<T>> {
-  return (await bridge.controlPlaneRequest({ operation, payload })) as ControlPlaneEnvelope<T>;
+  // AUDIT R7: a rejected IPC call becomes the typed IPC_FAILED envelope, so no loader
+  // (GoalList, GoalWorkspace, …) can be left on 「加载中…」 by an unhandled rejection.
+  return (await safeRequest(() => bridge.controlPlaneRequest({ operation, payload }))) as ControlPlaneEnvelope<T>;
 }
 
 /* --------------------------------------------------- pure canonical loaders --- */
@@ -163,16 +166,36 @@ export function WorkspaceSelector({
         return;
       }
       const currentRoot = await selection.workspaceCurrent().catch(() => null);
-      if (!cancelled) {
-        setCurrent(currentRoot);
+      if (cancelled) return;
+      if (currentRoot === null) {
+        setCurrent(null);
         setLoaded(true);
-        if (currentRoot !== null) onWorkspaceOpened(currentRoot);
+        return;
+      }
+      // AUDIT R10: workspaceCurrent may report a PERSISTED root that main could not re-open
+      // at startup. Confirm it through the trusted open seam (re-opening the open root is
+      // accepted) and only treat it as current on success; otherwise show a typed failure
+      // and keep the chooser, instead of a composer whose first Send is refused.
+      const opened = await selection
+        .workspaceOpen(currentRoot)
+        .catch((error: unknown) => ({ ok: false, root: currentRoot, error: String((error as Error)?.message ?? error) }));
+      if (cancelled) return;
+      setLoaded(true);
+      if (opened.ok) {
+        setCurrent(opened.root);
+        onWorkspaceOpened(opened.root);
+      } else {
+        setCurrent(null);
+        setFailure({
+          code: opened.error ?? 'WORKSPACE_REOPEN_FAILED',
+          message: `上次的工作空间（${currentRoot}）无法重新打开，请重新选择工作空间。`,
+        });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [selection, onWorkspaceOpened]);
+  }, [selection, onWorkspaceOpened, setFailure]);
 
   const choose = useCallback(async () => {
     if (selection === null || pending) return;
@@ -198,7 +221,7 @@ export function WorkspaceSelector({
   }, [selection, pending, setFailure, onWorkspaceOpened]);
 
   return (
-    <section className="card" aria-label="workspace-selector">
+    <section className="card" data-testid="workspace-selector" aria-label="工作空间选择">
       <h2>工作空间</h2>
       {failure !== null ? <ControlPlaneErrorView failure={failure} /> : null}
       {loaded ? (
@@ -266,10 +289,10 @@ export function GoalEntry({
   }, [objective, onGoalCreated, pending, workspaceReady, setFailure]);
 
   return (
-    <section className="card" aria-label="goal-entry">
+    <section className="card" data-testid="goal-entry" aria-label="新建目标">
       <h2>你想把什么事情变成现实？</h2>
       <textarea
-        aria-label="goal-objective"
+        data-testid="goal-objective" aria-label="目标描述"
         className="goal-entry__textarea"
         placeholder="用自然语言描述你想达成的目标…"
         rows={4}
@@ -330,7 +353,7 @@ export function GoalListView({
   readonly onOpen: (runId: string) => void;
 }) {
   return (
-    <section className="card" aria-label="goal-list">
+    <section className="card" data-testid="goal-list" aria-label="目标列表">
       <h2>目标</h2>
       {failure !== null ? <ControlPlaneErrorView failure={failure} /> : null}
       {goals === null ? (
@@ -444,7 +467,7 @@ export function GoalWorkspaceView({
   const failed = outcome === 'FAILED' || outcome === 'TIMED_OUT' || validation?.failed === true;
 
   return (
-    <section className="card" aria-label="goal-workspace">
+    <section className="card" data-testid="goal-workspace" aria-label="目标详情">
       <h2>目标工作区</h2>
       <p className="goal-workspace__objective">{goalObjective ?? '(未命名目标)'}</p>
       <dl className="kv">
@@ -606,7 +629,7 @@ export function GoalWorkspace({ bridge, runId, onBack }: { readonly bridge: Cont
 
   if (failure !== null && workspace === null) {
     return (
-      <section className="card" aria-label="goal-workspace">
+      <section className="card" data-testid="goal-workspace" aria-label="目标详情">
         <h2>目标工作区</h2>
         <ControlPlaneErrorView failure={failure} />
         {onBack !== undefined ? <button className="goal-back" onClick={onBack}>← 返回目标列表</button> : null}
@@ -615,7 +638,7 @@ export function GoalWorkspace({ bridge, runId, onBack }: { readonly bridge: Cont
   }
   if (workspace === null) {
     return (
-      <section className="card" aria-label="goal-workspace">
+      <section className="card" data-testid="goal-workspace" aria-label="目标详情">
         <h2>目标工作区</h2>
         <p className="muted">加载中…</p>
       </section>

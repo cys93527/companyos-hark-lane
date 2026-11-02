@@ -18,11 +18,17 @@
 
 export type SubmissionIntentState = 'pending' | 'acknowledged';
 
+/** AUDIT-R5: the access policy the user chose for THIS submission (replayed with it, never the current chip). */
+export type SubmissionAccessPolicy = 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS';
+export const SUBMISSION_ACCESS_POLICIES: readonly SubmissionAccessPolicy[] = ['ASK_PERMISSION', 'READ_ONLY', 'WORKSPACE_OPERATIONS'];
+
 export interface SubmissionIntentRecord {
   readonly intentId: string;
   readonly objective: string;
   readonly structured?: Readonly<Record<string, unknown>>;
   readonly workspaceRoot: string;
+  /** AUDIT-R5: chosen at submission time; a retry/replay sends exactly this (absent = legacy record). */
+  readonly accessPolicy?: SubmissionAccessPolicy;
   readonly state: SubmissionIntentState;
   readonly goalRunId?: string;
   readonly createdAt: string;
@@ -39,7 +45,10 @@ export interface SubmissionIntentStore {
 export type SubmissionResult =
   | { readonly status: 'created'; readonly runId: string; readonly intentId: string }
   | { readonly status: 'replayed'; readonly runId: string; readonly intentId: string }
+  /** Outcome UNKNOWN (transport/internal failure): the intent stays pending for an explicit retry. */
   | { readonly status: 'failed'; readonly intentId: string; readonly error: string }
+  /** Main answered with a typed refusal: nothing was created, the intent is cleared. */
+  | { readonly status: 'refused'; readonly intentId: string; readonly code: string; readonly error: string }
   | { readonly status: 'blocked'; readonly reason: 'pending' | 'empty' | 'no-workspace' };
 
 export interface SubmissionSubmit {
@@ -48,8 +57,27 @@ export interface SubmissionSubmit {
     readonly objective: string;
     readonly structured?: Readonly<Record<string, unknown>>;
     readonly workspaceRoot: string;
-  }): Promise<{ readonly runId: string } | { readonly error: string }>;
+    readonly accessPolicy?: SubmissionAccessPolicy;
+  }): Promise<{ readonly runId: string } | { readonly error: string; readonly code?: string }>;
 }
+
+/**
+ * AUDIT R2 — error codes whose outcome is UNKNOWN: main may or may not have committed the
+ * Goal (the IPC broke, main threw, or persistence failed after the run row was written).
+ * Only these keep the intent pending so a retry replays the SAME commandId. Every other
+ * typed code is a canonical refusal: nothing was created and the intent is cleared, so a
+ * refusal can never lock the composer or replay on the next start. A failure WITHOUT a
+ * code is treated as unknown (fail safe against duplicate Goals).
+ */
+export const UNKNOWN_OUTCOME_CODES: ReadonlySet<string> = new Set([
+  'IPC_FAILED',
+  'INTERNAL_ERROR',
+  'PERSISTENCE_FAILED',
+  'TIMEOUT',
+]);
+
+export const isUnknownOutcome = (code: string | undefined): boolean =>
+  code === undefined || UNKNOWN_OUTCOME_CODES.has(code);
 
 export interface SubmissionControllerOptions {
   readonly store: SubmissionIntentStore;
@@ -66,7 +94,7 @@ export interface SubmissionController {
    * cannot duplicate, and one that did replays into the same Goal.
    */
   readonly resolvePending: () => Promise<SubmissionResult | null>;
-  readonly submitObjective: (objective: string, workspaceRoot: string | null, structured?: Readonly<Record<string, unknown>>) => Promise<SubmissionResult>;
+  readonly submitObjective: (objective: string, workspaceRoot: string | null, structured?: Readonly<Record<string, unknown>>, accessPolicy?: SubmissionAccessPolicy) => Promise<SubmissionResult>;
   /** Retry the pending intent with the SAME identity (transport failure path). */
   readonly retry: () => Promise<SubmissionResult | null>;
   /** Drop a pending intent whose failure is terminal for that text (user changed their mind). */
@@ -99,9 +127,16 @@ export const createSubmissionController = (options: SubmissionControllerOptions)
       objective: intent.objective,
       ...(intent.structured === undefined ? {} : { structured: intent.structured }),
       workspaceRoot: intent.workspaceRoot,
+      ...(intent.accessPolicy === undefined ? {} : { accessPolicy: intent.accessPolicy }),
     });
     if ('runId' in outcome) return acknowledge(intent, outcome.runId);
-    // Failed: keep the record pending so a retry replays the same identity.
+    if (!isUnknownOutcome(outcome.code)) {
+      // Canonically refused: main answered and created nothing. Clear the outbox so the
+      // next explicit submission is accepted and nothing replays on the next start.
+      store.save(null);
+      return { status: 'refused', intentId: intent.intentId, code: outcome.code as string, error: outcome.error };
+    }
+    // Unknown outcome: keep the record pending so an explicit retry replays the same identity.
     return { status: 'failed', intentId: intent.intentId, error: outcome.error };
   };
 
@@ -114,7 +149,7 @@ export const createSubmissionController = (options: SubmissionControllerOptions)
       return runIntent(intent);
     },
 
-    submitObjective: async (objective, workspaceRoot, structured) => {
+    submitObjective: async (objective, workspaceRoot, structured, accessPolicy) => {
       const text = objective.trim();
       if (text === '') return { status: 'blocked', reason: 'empty' };
       if (workspaceRoot === null) return { status: 'blocked', reason: 'no-workspace' };
@@ -127,6 +162,7 @@ export const createSubmissionController = (options: SubmissionControllerOptions)
         objective: text.slice(0, MAX_OBJECTIVE),
         ...(structured === undefined ? {} : { structured: JSON.parse(JSON.stringify(structured)) as Readonly<Record<string, unknown>> }),
         workspaceRoot,
+        ...(accessPolicy === undefined ? {} : { accessPolicy }),
         state: 'pending',
         createdAt: now(),
       };

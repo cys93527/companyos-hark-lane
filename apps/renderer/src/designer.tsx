@@ -107,7 +107,7 @@ export function WorkflowLibrary(props: {
   };
 
   return (
-    <section aria-label="workflow-library">
+    <section data-testid="workflow-library" aria-label="工作流库">
       <h2>Workflow Library</h2>
       <button type="button" onClick={() => void createDraft()}>
         Create Draft
@@ -156,7 +156,7 @@ export function WorkflowLibrary(props: {
         </tbody>
       </table>
       {compare === null ? null : (
-        <table aria-label="version-compare">
+        <table data-testid="version-compare" aria-label="版本对比">
           <tbody>
             {compare.map((entry) => (
               <tr key={entry.label}>
@@ -257,7 +257,7 @@ export function WorkflowDesigner(props: {
 
   if (view === null) {
     return (
-      <section aria-label="workflow-designer">
+      <section data-testid="workflow-designer" aria-label="工作流设计器">
         <button type="button" onClick={onBack}>
           Back to library
         </button>
@@ -269,7 +269,7 @@ export function WorkflowDesigner(props: {
   const readOnly = !view.editable;
 
   return (
-    <section aria-label="workflow-designer">
+    <section data-testid="workflow-designer" aria-label="工作流设计器">
       <button type="button" onClick={onBack}>
         Back to library
       </button>
@@ -280,7 +280,7 @@ export function WorkflowDesigner(props: {
       </p>
       {view.readOnlyReason === null ? null : <p role="alert">{view.readOnlyReason}</p>}
       {readOnly || view.validation.valid ? null : (
-        <ul aria-label="validation-issues">
+        <ul data-testid="validation-issues" aria-label="校验问题">
           {view.validation.issues.map((issue) => (
             <li key={issue}>{issue}</li>
           ))}
@@ -289,7 +289,7 @@ export function WorkflowDesigner(props: {
       {message === null ? null : <p role="alert">{message}</p>}
 
       <h3>Stages</h3>
-      <ul aria-label="stage-list">
+      <ul data-testid="stage-list" aria-label="阶段列表">
         {view.stages.map((stage) => (
           <li key={stage.id}>
             <button
@@ -318,7 +318,7 @@ export function WorkflowDesigner(props: {
 
       {readOnly ? null : (
         <form
-          aria-label="stage-form"
+          data-testid="stage-form" aria-label="阶段表单"
           onSubmit={(event) => {
             event.preventDefault();
             const base = [
@@ -440,7 +440,7 @@ export function WorkflowDesigner(props: {
       )}
 
       <h3>Connections</h3>
-      <ul aria-label="edge-list">
+      <ul data-testid="edge-list" aria-label="连接列表">
         {view.edges.map((edge) => (
           <li key={`${edge.from}->${edge.to}`}>
             {edge.from} -&gt; {edge.to}
@@ -458,7 +458,7 @@ export function WorkflowDesigner(props: {
 
       {readOnly ? null : (
         <form
-          aria-label="connection-form"
+          data-testid="connection-form" aria-label="连接表单"
           onSubmit={(event) => {
             event.preventDefault();
             void apply([{ op: 'CONNECT_STAGE', from: edgeFrom, to: edgeTo }]);
@@ -477,7 +477,7 @@ export function WorkflowDesigner(props: {
       )}
 
       {readOnly ? null : (
-        <section aria-label="draft-actions">
+        <section data-testid="draft-actions" aria-label="草稿操作">
           <h3>Draft actions</h3>
           <label>
             Change rationale

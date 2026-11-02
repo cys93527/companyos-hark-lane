@@ -41,7 +41,7 @@ export function LocalDraftControls(props: LocalDraftControlsProps): JSX.Element 
       setFailed(false); setNotice('已保存本地未提交草稿（LOCAL_DRAFT）；未创建 Goal，未开始执行。');
     } catch { setFailed(true); setNotice('保存失败：存储不可用、内容过长或包含凭据；未提交、未执行。'); }
   };
-  return h('section', { 'aria-label': 'local-draft' },
+  return h('section', { 'data-testid': 'local-draft', 'aria-label': '本地草稿' },
     h('button', { type: 'button', disabled: props.busy || workspaceRoot === null, onClick: save }, '保存草稿'),
     h('button', { type: 'button', disabled: props.busy || workspaceRoot === null, onClick: restore }, '恢复草稿'),
     h('p', { role: failed ? 'alert' : 'status' }, notice));

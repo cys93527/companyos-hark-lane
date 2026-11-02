@@ -24,7 +24,8 @@ export type ChatEntry =
   | { readonly kind: 'artifacts'; readonly artifacts: readonly { readonly artifactId: string; readonly kind: string }[] }
   | { readonly kind: 'outcome'; readonly delivered: boolean }
   | { readonly kind: 'failed'; readonly reason: string | null; readonly blockerCodes: readonly string[] }
-  | { readonly kind: 'cancelled' };
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'cancel-requested' };
 
 /**
  * Project the canonical state of ONE goal run into the conversation surface.
@@ -48,6 +49,8 @@ export const projectConversation = (
   // H12b: a cancelled Goal is its own typed ending, never "目标失败".
   const outcome = terminalOutcomeOf(workspace.overview);
   if (outcome === 'CANCELLED') entries.push({ kind: 'cancelled' });
+  // AUDIT-R1: a durable cancel intent on a Goal that has not ended yet.
+  else if (workspace.cancellationRequested === true && outcome === null) entries.push({ kind: 'cancel-requested' });
   const failed = outcome === 'FAILED' || outcome === 'TIMED_OUT';
   if (failed) {
     entries.push({
@@ -90,14 +93,18 @@ export function ChatView(props: ChatViewProps): JSX.Element {
   if (props.objective === null) {
     return h(
       'div',
-      { className: 'chat chat--empty', 'aria-label': 'conversation' },
+      { className: 'chat chat--empty', 'data-testid': 'conversation', 'aria-label': '对话' },
       h('h1', { className: 'chat__title' }, '你想把什么事情变成现实？'),
       h('p', { className: 'chat__subtitle muted' }, '用一句话描述目标，CompanyOS 会规划、执行并交付。'),
+      // AUDIT R3: a failure is never swallowed by the empty state.
+      props.failure === null
+        ? null
+        : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
     );
   }
   return h(
     'div',
-    { className: 'chat', 'aria-label': 'conversation' },
+    { className: 'chat', 'data-testid': 'conversation', 'aria-label': '对话' },
     props.loading ? h('p', { className: 'muted' }, '读取 canonical 状态…') : null,
     props.failure === null
       ? null
@@ -124,7 +131,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
           return h(
             'div',
             { key: `v${index}`, className: 'chat__row' },
-            `验证 · 完成 ${entry.completed} · 失败 ${entry.failed ? 1 : 0} · 缺失 ${entry.failed === true ? 1 : 0}`,
+            `验证 · 完成 ${entry.completed} · 失败 ${entry.failed ? 1 : 0} · 缺失 ${entry.missing}`,
           );
         case 'artifacts':
           return h(
@@ -140,6 +147,8 @@ export function ChatView(props: ChatViewProps): JSX.Element {
           );
         case 'cancelled':
           return h('div', { key: `c${index}`, className: 'chat__row chat__row--cancelled' }, '目标已取消 · 不再启动新的工作或模型调用');
+        case 'cancel-requested':
+          return h('div', { key: `q${index}`, className: 'chat__row chat__row--cancelled', role: 'status' }, '已请求取消，不再启动新的工作；正在收尾');
         case 'failed':
           return h(
             'div',

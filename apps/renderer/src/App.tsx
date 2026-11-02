@@ -16,6 +16,8 @@ import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, u
 import {
   FALLBACK_APP_VERSION,
   bridgeAvailability,
+  IPC_FAILED,
+  safeRequest,
   getBridge,
   resolveAppVersion,
   resolveDatabaseStatus,
@@ -41,9 +43,10 @@ import {
   type ModelSelectionStatus,
   type SelectionExplanation,
 } from './models.js';
-import { createSubmissionController, type SubmissionController } from './submission-intent.js';
+import { createSubmissionController, type SubmissionController, type SubmissionResult } from './submission-intent.js';
 import { createSubmissionIntentStore } from './intent-store.js';
 import { LocalDraftControls } from './local-draft-controls.js';
+import { browserDraftStorage, createLocalDraftStore } from './local-draft-store.js';
 import { fileDeliveryConstraints } from './file-delivery-input.js';
 import {
   RuntimePanelView,
@@ -88,6 +91,7 @@ import type { ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
 import { isRunEnded } from './run-outcome.js';
+import { GoalCancelControl } from './cancel-control.js';
 import { DatabaseFailureBanner, readDatabaseFailure } from './database-failure.js';
 
 /** Bounded, read-only, lifecycle-bound polling — never workflow authority. */
@@ -100,10 +104,32 @@ interface BridgeEnvelope<T> {
   readonly error?: { readonly code?: string; readonly message?: string };
 }
 
+/**
+ * AUDIT R3: the typed failure of the last ACTION (submit, workspace change, model choice),
+ * rendered in the composer dock so it is visible on every view (Home with no Goal open,
+ * Settings, Tools, …) and independent of the open Goal's read failures.
+ */
+function ActionFailureLine(props: {
+  readonly failures: readonly ({ readonly code: string; readonly message: string } | null)[];
+}) {
+  const shown = props.failures.filter((entry): entry is { code: string; message: string } => entry !== null);
+  if (shown.length === 0) return null;
+  return h(
+    'div',
+    { className: 'typed-error action-failure', role: 'alert', 'data-testid': 'action-failure' },
+    shown.map((failure) =>
+      h('p', { key: failure.code, className: 'typed-error__message' }, `${failure.code} ${failure.message}`),
+    ),
+  );
+}
+
 export function App() {
   const [version, setVersion] = useState<string>(FALLBACK_APP_VERSION);
   const [database, setDatabase] = useState<DatabaseStatus | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+  // AUDIT-R5: the current workspace for the submit seam (a stable callback must not read a stale closure).
+  const workspaceRootRef = useRef<string | null>(null);
+  workspaceRootRef.current = workspaceRoot;
   const workspaceIdentity = useRef(workspaceRoot);
   workspaceIdentity.current = workspaceRoot;
   const [view, setView] = useState<ShellView>('home');
@@ -121,8 +147,11 @@ export function App() {
   const [modelStatus, setModelStatus] = useState<ModelSelectionStatus>({ kind: 'no-models' });
   const [modelExplanation, setModelExplanation] = useState<SelectionExplanation | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
+  // AUDIT R3: model-selection failures have their own surface (onboarding card + dock).
+  const [modelFailure, setModelFailure] = useState<{ code: string; message: string } | null>(null);
   const [catalogueCount, setCatalogueCount] = useState(0);
   const [pendingIntent, setPendingIntent] = useState(false);
+  const [pendingObjective, setPendingObjective] = useState<string | null>(null);
   const [popover, setPopover] = useState<'model' | 'authority' | 'runtime' | null>(null);
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
   const [runtimeTab, setRuntimeTab] = useState<RuntimeTab>('run');
@@ -145,6 +174,12 @@ export function App() {
   >('ASK_PERMISSION');
   const [pendingDecisions, setPendingDecisions] = useState<readonly PendingDecision[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
+  // AUDIT-R1: cancel control state of the OPEN Goal (reset on Goal switch).
+  const [cancelConfirming, setCancelConfirming] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelRequestedFor, setCancelRequestedFor] = useState<string | null>(null);
+  const [cancelFailure, setCancelFailure] = useState<{ code: string; message: string } | null>(null);
+  const cancelInFlight = useRef(false);
   const [approvalFailure, setApprovalFailure] = useState<{ code: string; message: string } | null>(null);
   const [usageProjection, setUsageProjection] = useState<Awaited<ReturnType<typeof loadGoalUsage>>>(null);
   // H11: the boss's budget/spend + previewed-plan projection for the selected Goal.
@@ -168,14 +203,14 @@ export function App() {
   const workflow: WorkflowBridge | null = useMemo(
     () =>
       bridge !== null && typeof bridge.workflowRequest === 'function'
-        ? { workflowRequest: (request) => (bridge.workflowRequest as NonNullable<typeof bridge.workflowRequest>)(request) }
+        ? { workflowRequest: (request) => safeRequest(() => (bridge.workflowRequest as NonNullable<typeof bridge.workflowRequest>)(request)) }
         : null,
     [bridge],
   );
   const controlPlane: ControlPlaneBridge | null = useMemo(
     () =>
       bridge !== null && typeof bridge.controlPlaneRequest === 'function'
-        ? { controlPlaneRequest: (request) => (bridge.controlPlaneRequest as NonNullable<typeof bridge.controlPlaneRequest>)(request) }
+        ? { controlPlaneRequest: (request) => safeRequest(() => (bridge.controlPlaneRequest as NonNullable<typeof bridge.controlPlaneRequest>)(request)) }
         : null,
     [bridge],
   );
@@ -188,9 +223,18 @@ export function App() {
       typeof bridge.workspaceSwitch === 'function'
         ? {
             workspaceSelect: () => (bridge.workspaceSelect as NonNullable<typeof bridge.workspaceSelect>)(),
-            workspaceOpen: (root) => (bridge.workspaceOpen as NonNullable<typeof bridge.workspaceOpen>)(root),
-            workspaceCurrent: () => (bridge.workspaceCurrent as NonNullable<typeof bridge.workspaceCurrent>)(),
-            workspaceSwitch: (root) => (bridge.workspaceSwitch as NonNullable<typeof bridge.workspaceSwitch>)(root),
+            // AUDIT R7: a rejected open/switch is a typed refusal ({ok:false, error:IPC_FAILED}),
+            // never an unhandled rejection; a rejected current-read means "nothing open".
+            workspaceOpen: (root) =>
+              (bridge.workspaceOpen as NonNullable<typeof bridge.workspaceOpen>)(root).catch(
+                () => ({ ok: false, root, error: IPC_FAILED }) as const,
+              ),
+            workspaceCurrent: () =>
+              (bridge.workspaceCurrent as NonNullable<typeof bridge.workspaceCurrent>)().catch(() => null),
+            workspaceSwitch: (root) =>
+              (bridge.workspaceSwitch as NonNullable<typeof bridge.workspaceSwitch>)(root).catch(
+                () => ({ ok: false, root, error: IPC_FAILED }) as const,
+              ),
           }
         : null,
     [bridge],
@@ -229,7 +273,7 @@ export function App() {
   }, [workflow]);
 
   useEffect(() => {
-    void refreshModels();
+    void refreshModels().catch(() => undefined);
   }, [refreshModels]);
 
   const chooseModel = useCallback(
@@ -237,21 +281,29 @@ export function App() {
       if (workflow === null) return;
       setModelBusy(true);
       setModelExplanation(null);
-      const result = await establishCompanySelection(workflow, {
-        providerId: option.providerId,
-        providerModelId: option.providerModelId,
-        modelKey: option.modelKey,
-      });
-      if (result.ok) {
-        setModelExplanation(result.explanation);
-        setModelStatus({ kind: 'selected', modelKey: result.modelKey, displayName: option.displayName });
-        setSubmissionFailure(null);
-      } else {
-        setSubmissionFailure({ code: result.code, message: result.message });
+      setModelFailure(null);
+      try {
+        const result = await establishCompanySelection(workflow, {
+          providerId: option.providerId,
+          providerModelId: option.providerModelId,
+          modelKey: option.modelKey,
+        });
+        if (result.ok) {
+          setModelExplanation(result.explanation);
+          setModelStatus({ kind: 'selected', modelKey: result.modelKey, displayName: option.displayName });
+          setSubmissionFailure(null);
+        } else {
+          setModelFailure({ code: result.code, message: result.message });
+        }
+      } catch {
+        setModelFailure({ code: 'MODEL_SELECTION_FAILED', message: '模型选择未完成（读取或保存失败），请重试。' });
+      } finally {
+        // AUDIT R7: the busy flag is released on EVERY path, so a throw can never leave
+        // the model buttons disabled forever.
+        setModelBusy(false);
+        setPopover(null);
       }
-      setModelBusy(false);
-      setPopover(null);
-      await refreshModels();
+      await refreshModels().catch(() => undefined);
     },
     [workflow, refreshModels],
   );
@@ -263,7 +315,13 @@ export function App() {
   const changeWorkspace = useCallback(() => {
     if (workspaceSelection === null) return;
     void (async () => {
-      const picked = await workspaceSelection.workspaceSelect().catch(() => null);
+      let picked: string | null;
+      try {
+        picked = await workspaceSelection.workspaceSelect();
+      } catch {
+        setSubmissionFailure({ code: 'WORKSPACE_SELECT_FAILED', message: '无法打开目录选择器。已保持在当前工作空间。' });
+        return;
+      }
       if (picked === null) return; // user cancelled the chooser — not an error
       const switched = await workspaceSelection.workspaceSwitch(picked).catch(
         (error: unknown) =>
@@ -283,8 +341,17 @@ export function App() {
 
   /* ------------------------------------------------- submission intents --- */
   const submitGoal = useCallback(
-    async (input: { intentId: string; objective: string; workspaceRoot: string; structured?: Readonly<Record<string, unknown>> }): Promise<{ runId: string } | { error: string }> => {
+    async (input: { intentId: string; objective: string; workspaceRoot: string; structured?: Readonly<Record<string, unknown>>; accessPolicy?: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS' }): Promise<{ runId: string } | { error: string; code?: string }> => {
       if (controlPlane === null) return { error: 'CONTROL_PLANE_UNAVAILABLE' };
+      // AUDIT-R5: a submission replays with the policy and workspace it was made with - never the current
+      // chip or another workspace. A record without its policy (older build) or for another workspace is
+      // refused here (typed, so the outbox is cleared and nothing reaches main) and the user resubmits.
+      if (input.accessPolicy === undefined) {
+        return { code: 'INTENT_POLICY_MISSING', error: '上一次未确认的提交缺少访问策略记录，已放弃；请重新提交。' };
+      }
+      if (workspaceRootRef.current !== null && input.workspaceRoot !== workspaceRootRef.current) {
+        return { code: 'INTENT_WORKSPACE_MISMATCH', error: `上一次未确认的提交属于另一个工作空间（${input.workspaceRoot}），已放弃；请在当前工作空间重新提交。` };
+      }
       const response = (await controlPlane.controlPlaneRequest({
         operation: 'goal.create',
         payload: {
@@ -292,15 +359,20 @@ export function App() {
           objective: input.objective,
           ...(input.structured === undefined ? {} : { structured: input.structured }),
           commandId: input.intentId,
-          accessPolicy: selectedAccessPolicy,
+          accessPolicy: input.accessPolicy,
         },
       })) as BridgeEnvelope<{ readonly runId: string }>;
       if (!response.ok || response.value === undefined) {
-        return { error: response.error?.message ?? 'goal.create failed' };
+        // AUDIT R2: pass main's typed code through, so the controller can tell a canonical
+        // refusal (cleared) from an unknown outcome (kept pending for an explicit retry).
+        return {
+          error: response.error?.message ?? 'goal.create failed',
+          ...(typeof response.error?.code === 'string' ? { code: response.error.code } : {}),
+        };
       }
       return { runId: response.value.runId };
     },
-    [controlPlane, selectedAccessPolicy],
+    [controlPlane],
   );
 
   const controller: SubmissionController | null = useMemo(
@@ -320,27 +392,92 @@ export function App() {
   controllerRef.current = controller;
 
   const syncPending = useCallback(() => {
-    setPendingIntent(controllerRef.current?.pending() !== null && controllerRef.current?.pending() !== undefined);
+    let record: ReturnType<SubmissionController['pending']> = null;
+    try {
+      record = controllerRef.current?.pending() ?? null;
+    } catch {
+      record = null;
+    }
+    setPendingIntent(record !== null);
+    setPendingObjective(record === null ? null : record.objective);
   }, []);
 
-  // STAGE 2 case C: resolve an intent that survived a remount/reload BEFORE any new
-  // submission is accepted, so an unacknowledged submission replays instead of duplicating.
+  // STAGE 2 case C / AUDIT R2: an intent that survived a remount/reload still owns the next
+  // submission (so it can never be duplicated), but it is NOT replayed silently any more:
+  // the composer shows it with explicit 重试 (same intent id) / 放弃 actions.
   useEffect(() => {
     syncPending();
-    const active = controllerRef.current;
-    if (active === null) return;
-    void (async () => {
-      const result = await active.resolvePending();
-      if (result !== null && (result.status === 'created' || result.status === 'replayed')) {
-        setOpenGoalRunId(result.runId);
-        setRefreshKey((key) => key + 1);
+  }, [syncPending, controller]);
+
+  /** One place that turns a submission result into UI state (send + explicit retry). */
+  const draftStore = useMemo(() => createLocalDraftStore(browserDraftStorage()), []);
+  const applySubmissionResult = useCallback((
+    result: SubmissionResult,
+    submitted: { readonly objective: string; readonly workspaceRoot: string } | null,
+  ) => {
+    if (result.status === 'created' || result.status === 'replayed') {
+      // AUDIT R6: the submitted text is no longer an unsubmitted draft.
+      if (submitted !== null) {
+        try {
+          draftStore.clearIfSubmitted(COMPANY_ID, submitted.workspaceRoot, submitted.objective);
+        } catch {
+          // Storage unavailable: nothing was persisted that could be restored either.
+        }
       }
+      setDraft('');
+      // AUDIT R12: the file-delivery requirement belongs to the submitted Goal only.
+      setDeliveryPath('');
+      setDeliveryText('');
+      setOpenGoalRunId(result.runId);
+      setRefreshKey((key) => key + 1);
+      // Autonomy continues in the main process; the client only observes canonical state.
+    } else if (result.status === 'refused') {
+      setSubmissionFailure({ code: result.code, message: result.error });
+    } else if (result.status === 'failed') {
+      setSubmissionFailure({
+        code: 'SUBMISSION_UNCONFIRMED',
+        message: `提交结果未确认（${result.error}）。可点击「重试」以同一提交标识重试，或「放弃」。`,
+      });
+    } else if (result.status === 'blocked' && result.reason === 'pending') {
+      setSubmissionFailure({ code: 'SUBMISSION_PENDING', message: '上一次提交尚未确认：请先「重试」或「放弃」。' });
+    }
+  }, [draftStore]);
+
+  const retryPending = useCallback(async () => {
+    const active = controllerRef.current;
+    if (active === null || submissionInFlight.current) return;
+    submissionInFlight.current = true;
+    setSubmissionBusy(true);
+    setSubmissionFailure(null);
+    try {
+      const intent = active.pending();
+      const result = await active.retry();
+      if (result !== null) {
+        applySubmissionResult(
+          result,
+          intent === null ? null : { objective: intent.objective, workspaceRoot: intent.workspaceRoot },
+        );
+      }
+    } catch {
+      setSubmissionFailure({ code: 'SUBMISSION_UNCONFIRMED', message: '本地提交存储或主进程通信失败，提交结果未确认。' });
+    } finally {
       syncPending();
-    })();
-    // Mount-only on purpose: resolving an unacknowledged intent is a STARTUP action, so it
-    // must never re-run because some unrelated state changed (that was the hot-replay loop
-    // the real-boot smoke caught: 4095 replays of one submission intent).
-  }, []);
+      submissionInFlight.current = false;
+      setSubmissionBusy(false);
+    }
+  }, [applySubmissionResult, syncPending]);
+
+  const discardPending = useCallback(() => {
+    if (submissionInFlight.current) return;
+    // The editor text is the user's; it is kept.
+    setSubmissionFailure(null);
+    try {
+      controllerRef.current?.discard();
+    } catch {
+      setSubmissionFailure({ code: 'SUBMISSION_STORE_UNAVAILABLE', message: '本地提交存储不可用，无法放弃该提交。' });
+    }
+    syncPending();
+  }, [syncPending]);
 
   const sendGoal = useCallback(async () => {
     const active = controllerRef.current;
@@ -349,27 +486,34 @@ export function App() {
     setSubmissionBusy(true);
     setSubmissionFailure(null);
     try {
-      const structured = await fileDeliveryConstraints(deliveryPath, deliveryText);
-      if (workspaceIdentity.current !== workspaceRoot) throw new Error('WORKSPACE_CHANGED_BEFORE_SUBMIT');
-      const result = await active.submitObjective(draft, workspaceRoot, structured);
-      syncPending();
-      if (result.status === 'created' || result.status === 'replayed') {
-        setDraft('');
-        setOpenGoalRunId(result.runId);
-        setRefreshKey((key) => key + 1);
-        // Autonomy continues in the main process; the client only observes canonical state.
-      } else if (result.status === 'failed') {
-        setSubmissionFailure({ code: 'GOAL_CREATE_FAILED', message: result.error });
-      } else if (result.status === 'blocked' && result.reason === 'pending') {
-        setSubmissionFailure({ code: 'SUBMISSION_PENDING', message: '上一次提交尚未确认，请稍候。' });
+      // AUDIT R7: only a failure to BUILD the file-delivery requirement is a delivery-input
+      // error; a store/IPC failure of the submission itself is reported as what it is.
+      let structured: Awaited<ReturnType<typeof fileDeliveryConstraints>>;
+      try {
+        structured = await fileDeliveryConstraints(deliveryPath, deliveryText);
+      } catch {
+        setSubmissionFailure({ code: 'DELIVERY_INPUT_INVALID', message: '文件要求无效；请检查相对路径与期望内容。未提交。' });
+        return;
       }
-    } catch {
-      setSubmissionFailure({ code: 'DELIVERY_INPUT_INVALID', message: '文件要求或本地提交存储不可用；请检查相对路径与期望内容。未确认提交。' });
+      if (workspaceIdentity.current !== workspaceRoot) {
+        setSubmissionFailure({ code: 'WORKSPACE_CHANGED_BEFORE_SUBMIT', message: '提交前工作空间已变化，未提交。' });
+        return;
+      }
+      let result: Awaited<ReturnType<SubmissionController['submitObjective']>>;
+      try {
+        result = await active.submitObjective(draft, workspaceRoot, structured, selectedAccessPolicy);
+      } catch {
+        setSubmissionFailure({ code: 'SUBMISSION_UNCONFIRMED', message: '本地提交存储或主进程通信失败，提交结果未确认。' });
+        return;
+      } finally {
+        syncPending();
+      }
+      applySubmissionResult(result, { objective: draft, workspaceRoot });
     } finally {
       submissionInFlight.current = false;
       setSubmissionBusy(false);
     }
-  }, [draft, workspaceRoot, syncPending, deliveryPath, deliveryText]);
+  }, [draft, workspaceRoot, syncPending, deliveryPath, deliveryText, applySubmissionResult, selectedAccessPolicy]);
 
   /* ------------------------------------------------- canonical projections --- */
   const loadRecent = useCallback(async () => {
@@ -411,6 +555,15 @@ export function App() {
     setRuntimeTimeline([]);
     setRuntimeArtifacts([]);
     setRuntimeReadFailure(null);
+    // AUDIT R8: every other Goal-scoped projection belongs to the Goal it was read for,
+    // so it is cleared before the new selection paints (no Goal-A preview/spend on B).
+    setArtifactPreview(null);
+    setArtifactFailure(null);
+    setBudgetRead(null);
+    setUsageProjection(null);
+    setApprovalFailure(null);
+    setCancelConfirming(false);
+    setCancelFailure(null);
   }, [openGoalRunId]);
   useLayoutEffect(() => {
     currentWorkspace.current = runtimeWorkspace?.runId === openGoalRunId ? runtimeWorkspace : null;
@@ -483,7 +636,7 @@ export function App() {
   }, [controlPlane, openGoalRunId]);
 
   useEffect(() => {
-    void loadRecent();
+    void loadRecent().catch(() => undefined);
   }, [loadRecent, refreshKey]);
 
   // The current Goal's runtime projections ride the SAME controlled refresh as every
@@ -586,9 +739,24 @@ export function App() {
   // STAGE 3 — the effective authority presentation. The MODE is display-only (no canonical
   // per-Goal access-mode write seam exists, so the renderer must not invent one), but the
   // pending canonical approval behind it IS actionable through approval.respond.
+  // AUDIT-R9: the approval card / badge / authority of the OPEN Goal only show that Goal's own runs
+  // (the goal run, its overview run and its execution runs). Another Goal's pending approval used to land
+  // on whatever Goal was open, and 批准 approved B's action while the user looked at A.
+  const ownRunIds = useMemo(() => {
+    const owned = new Set<string>();
+    if (runtimeWorkspace === null || openGoalRunId === null || runtimeWorkspace.runId !== openGoalRunId) return owned;
+    owned.add(runtimeWorkspace.runId);
+    if (typeof runtimeWorkspace.overview?.runId === 'string') owned.add(runtimeWorkspace.overview.runId);
+    for (const run of runtimeWorkspace.executionRuns ?? []) owned.add(run.runId);
+    return owned;
+  }, [runtimeWorkspace, openGoalRunId]);
   const pendingApprovalDecision = useMemo(
-    () => pendingDecisions.find((decision) => pendingApprovalOf(decision) !== null) ?? null,
-    [pendingDecisions],
+    () => pendingDecisions.find((decision) => ownRunIds.has(decision.runId) && pendingApprovalOf(decision) !== null) ?? null,
+    [pendingDecisions, ownRunIds],
+  );
+  const otherPendingApprovals = useMemo(
+    () => pendingDecisions.filter((decision) => !ownRunIds.has(decision.runId) && pendingApprovalOf(decision) !== null),
+    [pendingDecisions, ownRunIds],
   );
   const authorityMode = useMemo(
     () =>
@@ -615,7 +783,7 @@ export function App() {
   }, [controlPlane]);
 
   useEffect(() => {
-    void loadPendingDecisionsNow();
+    void loadPendingDecisionsNow().catch(() => undefined);
   }, [loadPendingDecisionsNow, refreshKey]);
 
   // The Goal usage projection (E1 semantics) for the selected Goal.
@@ -626,7 +794,7 @@ export function App() {
     }
     let cancelled = false;
     void (async () => {
-      const projection = await loadGoalUsage(controlPlane, openGoalRunId);
+      const projection = await loadGoalUsage(controlPlane, openGoalRunId).catch(() => null);
       if (!cancelled) setUsageProjection(projection);
     })();
     return () => {
@@ -655,7 +823,9 @@ export function App() {
     if (workflow === null || view !== 'settings') return;
     let cancelled = false;
     void (async () => {
-      const response = (await workflow.workflowRequest({ operation: 'runtime.readiness' })) as {
+      const response = (await workflow
+        .workflowRequest({ operation: 'runtime.readiness' })
+        .catch(() => ({ ok: false }))) as {
         readonly ok: boolean;
         readonly value?: unknown;
       };
@@ -691,7 +861,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const info = await bridge?.platformInfo?.();
+      const info = await bridge?.platformInfo?.().catch(() => undefined);
       if (cancelled || info === undefined || info === null) return;
       setPlatformInfo({ electron: info.electron, nodeVersion: info.node });
     })();
@@ -708,17 +878,51 @@ export function App() {
       if (approval === null) return;
       setApprovalBusy(true);
       setApprovalFailure(null);
-      const result = await respondToApproval(controlPlane, {
-        runId: approval.runId,
-        decision,
-      });
-      if (!result.ok) setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: result.message ?? '审批提交失败。' });
-      setApprovalBusy(false);
-      await loadPendingDecisionsNow();
+      try {
+        const result = await respondToApproval(controlPlane, {
+          runId: approval.runId,
+          decision,
+        });
+        if (!result.ok) setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: result.message ?? '审批提交失败。' });
+      } catch {
+        setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: '审批提交结果未确认（通信失败），请刷新后重试。' });
+      } finally {
+        // AUDIT R7: never leave 批准/拒绝 disabled forever.
+        setApprovalBusy(false);
+      }
+      await loadPendingDecisionsNow().catch(() => undefined);
       setRefreshKey((key) => key + 1);
     },
     [controlPlane, pendingApprovalDecision, loadPendingDecisionsNow],
   );
+
+  /** AUDIT-R1: the ONE cancel command for the open Goal (single-flight; main records the durable intent). */
+  const cancelGoal = useCallback(async () => {
+    const goalRunId = openGoalRunId;
+    if (controlPlane === null || goalRunId === null || cancelInFlight.current) return;
+    cancelInFlight.current = true;
+    setCancelBusy(true);
+    setCancelFailure(null);
+    try {
+      const response = (await controlPlane.controlPlaneRequest({
+        operation: 'goal.cancel',
+        payload: { companyId: COMPANY_ID, runId: goalRunId },
+      })) as BridgeEnvelope<{ readonly accepted?: boolean }>;
+      if (selectedGoal.current !== goalRunId) return;
+      if (response.ok === true) {
+        setCancelRequestedFor(goalRunId);
+        setCancelConfirming(false);
+      } else {
+        setCancelFailure({ code: response.error?.code ?? 'GOAL_CANCEL_FAILED', message: response.error?.message ?? '取消请求未被接受。' });
+      }
+    } catch {
+      if (selectedGoal.current === goalRunId) setCancelFailure({ code: 'IPC_FAILED', message: '取消请求结果未确认（通信失败），请刷新后查看。' });
+    } finally {
+      cancelInFlight.current = false;
+      setCancelBusy(false);
+      setRefreshKey((key) => key + 1);
+    }
+  }, [controlPlane, openGoalRunId]);
 
   /** Bounded artifact actions: the renderer names a canonical artifact id only. */
   const runArtifact = useCallback(
@@ -728,11 +932,21 @@ export function App() {
         return;
       }
       setArtifactFailure(null);
+      // AUDIT R8: a response that returns after the user opened another Goal is dropped.
+      const owner = selectedGoal.current;
       const result = await runArtifactAction(
-        { artifactAction: (request) => bridge.artifactAction!(request) },
+        {
+          artifactAction: (request) =>
+            bridge.artifactAction!(request).catch((error: unknown) => ({
+              ok: false,
+              code: IPC_FAILED,
+              message: `与主进程通信失败（${error instanceof Error ? error.message : 'UNKNOWN'}），操作结果未确认。`,
+            })),
+        },
         operation,
         { artifactId, kind },
       );
+      if (selectedGoal.current !== owner) return;
       if (!result.ok) {
         setArtifactPreview(null);
         setArtifactFailure({ code: result.code ?? 'ARTIFACT_ACTION_FAILED', message: result.message ?? '操作失败。' });
@@ -803,6 +1017,8 @@ export function App() {
         speedSamples: usage === null ? [] : usage.speed.samples,
         inputTokens: knownInput,
         outputTokens: knownOutput,
+        // AUDIT session cost: a cost is only computed over complete usage coverage.
+        usageComplete: usage !== null && usage.usage.complete,
       };
     }, [modelOptions, modelStatus, usageProjection]);
 
@@ -846,7 +1062,7 @@ export function App() {
     options: modelOptions,
     selectedProviderModelId: null,
     busy: modelBusy,
-    failure: null,
+    failure: modelFailure,
     explanation: modelExplanation,
     onSelect: (option: ModelOptionRow) => void chooseModel(option),
     onOpenSettings: () => setView('settings'),
@@ -892,11 +1108,32 @@ export function App() {
                       failure: approvalFailure,
                       onDecide: (decision: ApprovalDecision) => void decideApproval(decision),
                     }),
+                otherPendingApprovals.length === 0
+                  ? null
+                  : h(
+                      'div',
+                      { className: 'other-approvals', role: 'status', 'data-testid': 'other-goal-approvals' },
+                      h('p', null, `其他目标待批准 · ${otherPendingApprovals.length} 项（在左侧打开对应目标后处理）`),
+                      h('ul', null, otherPendingApprovals.map((decision) => h('li', { key: decision.runId }, `${pendingApprovalOf(decision)?.reason ?? '需要批准'} · 范围 Run ${decision.runId}`))),
+                    ),
+                h(GoalCancelControl, {
+                  visible: openGoalRunId !== null && runtimeWorkspace?.runId === openGoalRunId &&
+                    runtimeWorkspace.overview != null && !isRunEnded(runtimeWorkspace.overview),
+                  requested: runtimeWorkspace?.cancellationRequested === true || (openGoalRunId !== null && cancelRequestedFor === openGoalRunId),
+                  confirming: cancelConfirming,
+                  busy: cancelBusy,
+                  failure: cancelFailure,
+                  onRequest: () => setCancelConfirming(true),
+                  onConfirm: () => void cancelGoal(),
+                  onDismiss: () => setCancelConfirming(false),
+                }),
                 h(ChatView, {
                   objective: selectedObjective,
                   entries: conversation,
                   loading: runtimeWorkspace === null && openGoalRunId !== null && runtimeReadFailure === null,
-                  failure: submissionFailure ?? runtimeReadFailure,
+                  // AUDIT R3: only the open Goal's read failure here; action failures
+                  // (submission / workspace / model) have their own line in the dock.
+                  failure: runtimeReadFailure,
                 }),
                 h(GoalList, {
                   bridge: controlPlane,
@@ -941,9 +1178,10 @@ export function App() {
           setSelectedAccessPolicy(policy);
           setPopover(null);
         },
+        onClose: () => setPopover(null),
+        // AUDIT-R4: only the open Goal's canonical read-back - never a default when it is unknown.
         effectiveGoalPolicy:
-          ACCESS_POLICY_OPTIONS.find((option) => option.value === (runtimeWorkspace?.accessPolicy ?? 'ASK_PERMISSION'))
-            ?.label ?? null,
+          ACCESS_POLICY_OPTIONS.find((option) => option.value === runtimeWorkspace?.accessPolicy)?.label ?? null,
       }),
       h(ModelSelectorView, {
         options: modelOptions,
@@ -964,20 +1202,31 @@ export function App() {
         onToggle: () => setPopover(popover === 'runtime' ? null : 'runtime'),
         usageNote: telemetryNote,
       }),
-      h('fieldset', { disabled: submissionBusy, 'aria-label': 'file-delivery-requirement' },
+      h('fieldset', { disabled: submissionBusy, 'data-testid': 'file-delivery-requirement', 'aria-label': '文件交付要求' },
         h('legend', null, '文件交付要求（可选）'),
-        h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'aria-label': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
-        h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'aria-label': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
+        h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'data-testid': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
+        h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'data-testid': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
         h('p', null, '文件要求仅随明确提交发送，不包含在本地文字草稿中。')),
       h(LocalDraftControls, { companyId: COMPANY_ID, workspaceRoot, objective: draft, busy: submissionBusy, onRestore: setDraft }),
+      h(ActionFailureLine, {
+        failures: [
+          submissionFailure,
+          // The chat column already shows the model failure in the onboarding card.
+          view === 'home' || view === 'chat' ? null : modelFailure,
+        ],
+      }),
       h(ComposerView, {
         draft,
         ready: modelReady && workspaceRoot !== null && !pendingIntent,
         busy: submissionBusy,
         authority,
+        nextPolicy: selectedAccessPolicy,
         modelLabel,
         workspaceLabel: workspaceRoot,
         pendingIntent,
+        pendingObjective,
+        onRetryPending: () => void retryPending(),
+        onDiscardPending: discardPending,
         onDraftChange: setDraft,
         onSubmit: () => void sendGoal(),
         onChangeWorkspace: changeWorkspace,

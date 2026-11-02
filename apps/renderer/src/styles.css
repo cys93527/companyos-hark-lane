@@ -1039,3 +1039,9 @@ button:disabled {
 .readiness-row dt {
   font-weight: 500;
 }
+
+/* AUDIT-R1: cancel control of the open Goal */
+.goal-cancel { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.goal-cancel--requested { color: var(--muted, #6b7280); }
+.goal-cancel--confirm p { flex-basis: 100%; margin: 0 0 4px; }
+.btn--danger { border-color: #b42318; color: #b42318; }

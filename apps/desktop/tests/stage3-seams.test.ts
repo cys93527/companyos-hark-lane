@@ -144,7 +144,7 @@ describe('STAGE 3 usage projection (E1 semantics)', () => {
       providerDispatches: async () => [{ attemptId: 'att_1', providerKey: 'p' }],
       providerInvocations: async () => [{ outputTokens: 200, latencyMs: 1000 }],
       modelKeyOf: async () => 'model.m',
-      modelPricing: async () => ({ inputPerMillion: 1, outputPerMillion: 2 }),
+      modelPricing: async () => ({ inputPerMillion: 1, outputPerMillion: 2, currency: 'CNY' }),
     }
   );
 

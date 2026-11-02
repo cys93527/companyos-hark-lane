@@ -249,7 +249,7 @@ export function ModelOnboardingView(props: ModelOnboardingViewProps): JSX.Elemen
   if (status.kind === 'provider-not-configured') {
     return h(
       'section',
-      { className: 'card model-onboarding', 'aria-label': 'model-onboarding' },
+      { className: 'card model-onboarding', 'data-testid': 'model-onboarding', 'aria-label': '模型设置' },
       h('h2', null, '模型'),
       h('p', { className: 'muted' }, '尚未配置模型提供商'),
       h(
@@ -263,7 +263,7 @@ export function ModelOnboardingView(props: ModelOnboardingViewProps): JSX.Elemen
 
   return h(
     'section',
-    { className: 'card model-onboarding', 'aria-label': 'model-onboarding' },
+    { className: 'card model-onboarding', 'data-testid': 'model-onboarding', 'aria-label': '模型设置' },
     h('h2', null, '模型'),
     status.kind === 'selected'
       ? h(
@@ -274,7 +274,7 @@ export function ModelOnboardingView(props: ModelOnboardingViewProps): JSX.Elemen
       : h('p', { className: 'muted' }, '尚未选择公司模型 — 选择后即可创建目标。'),
     h(
       'ul',
-      { className: 'model-onboarding__list', 'aria-label': 'model-options' },
+      { className: 'model-onboarding__list', 'data-testid': 'model-options', 'aria-label': '可用模型' },
       props.options.map((option) =>
         h(
           'li',

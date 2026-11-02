@@ -6,7 +6,7 @@
  * canonical command has not acknowledged yet, which is what makes a reload before the ack
  * safe (see submission-intent.ts).
  */
-import type { SubmissionIntentRecord, SubmissionIntentStore } from './submission-intent.js';
+import { SUBMISSION_ACCESS_POLICIES, type SubmissionAccessPolicy, type SubmissionIntentRecord, type SubmissionIntentStore } from './submission-intent.js';
 
 export const SUBMISSION_INTENT_STORAGE_KEY = 'companyos.submission-intent.v1';
 
@@ -25,6 +25,12 @@ const parseRecord = (raw: string | null): SubmissionIntentRecord | null => {
       objective: record['objective'],
       ...(record['structured'] === undefined ? {} : { structured: record['structured'] as Readonly<Record<string, unknown>> }),
       workspaceRoot: typeof record['workspaceRoot'] === 'string' ? record['workspaceRoot'] : '',
+      // AUDIT-R5: round-trip the chosen policy (validated) and the attempt/ack facts, so a reload replays
+      // the same submission (and reports it as replayed) instead of a weaker or different one.
+      ...(SUBMISSION_ACCESS_POLICIES.includes(record['accessPolicy'] as SubmissionAccessPolicy)
+        ? { accessPolicy: record['accessPolicy'] as SubmissionAccessPolicy } : {}),
+      ...(record['attempted'] === true ? { attempted: true } : {}),
+      ...(typeof record['goalRunId'] === 'string' ? { goalRunId: record['goalRunId'] } : {}),
       state: record['state'] === 'acknowledged' ? 'acknowledged' : 'pending',
       createdAt: typeof record['createdAt'] === 'string' ? record['createdAt'] : '',
     };

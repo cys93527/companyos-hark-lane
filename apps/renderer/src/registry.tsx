@@ -202,7 +202,7 @@ export function ModelRegistry(props: { readonly bridge: WorkflowBridge }): JSX.E
   };
 
   return (
-    <section aria-label="model-registry">
+    <section data-testid="model-registry" aria-label="模型注册表">
       <p>
         <label>
           <input
@@ -217,7 +217,7 @@ export function ModelRegistry(props: { readonly bridge: WorkflowBridge }): JSX.E
         </button>
       </p>
       {message === null ? null : <p role="alert">{message}</p>}
-      <table aria-label="model-registry-table">
+      <table data-testid="model-registry-table" aria-label="模型列表">
         <thead>
           <tr>
             <th>Model Key</th>
@@ -258,7 +258,7 @@ export function ModelRegistry(props: { readonly bridge: WorkflowBridge }): JSX.E
       </table>
 
       <form
-        aria-label="alias-form"
+        data-testid="alias-form" aria-label="别名表单"
         onSubmit={(event) => {
           event.preventDefault();
           void bind();
@@ -279,7 +279,7 @@ export function ModelRegistry(props: { readonly bridge: WorkflowBridge }): JSX.E
         the bound model is disabled or unavailable, the request is refused.
       </p>
 
-      <section aria-label="selection-mode">
+      <section data-testid="selection-mode" aria-label="选择模式">
         <h3>Model Selection Mode</h3>
         <form
           onSubmit={(event) => {
@@ -377,7 +377,7 @@ export function ModelRegistry(props: { readonly bridge: WorkflowBridge }): JSX.E
           <button type="submit">Save selection policy</button>
         </form>
         {explanation.length === 0 ? null : (
-          <ul aria-label="policy-explanation">
+          <ul data-testid="policy-explanation" aria-label="策略说明">
             {explanation.map((line) => (
               <li key={line}>{line}</li>
             ))}

@@ -175,10 +175,10 @@ const renderShell = () =>
 describe('UX-01..05 chat-first shell', () => {
   it('UX-01 the three-area shell renders: sidebar nav, centre, runtime panel', () => {
     const html = renderShell();
-    expect(html).toContain('aria-label="app-shell"');
-    expect(html).toContain('aria-label="sidebar"');
-    expect(html).toContain('aria-label="composer"');
-    expect(html).toContain('aria-label="runtime-panel"');
+    expect(html).toContain('data-testid="app-shell"');
+    expect(html).toContain('data-testid="sidebar"');
+    expect(html).toContain('data-testid="composer"');
+    expect(html).toContain('data-testid="runtime-panel"');
     expect(html).toContain('CompanyOS');
     expect(html).toContain('+ 新建对话 / 新建目标');
     // Every nav item maps to a real canonical surface (nothing decorative).
@@ -214,7 +214,9 @@ describe('UX-01..05 chat-first shell', () => {
     const html = renderToString(
       h(AuthorityPopover, { authority: { mode: 'ask-permission', basis: 'blocker:APPROVAL_REQUIRED', mutable: false }, open: true }),
     );
-    expect(html).toContain('询问权限');
+    // AUDIT-R4: the run-state projection is a STATUS ('等待批准'), never shown as the permission itself
+    // (the old assertion that it read '询问权限' encoded the defect).
+    expect(html).toContain('等待批准');
     expect(html).toContain('blocker:APPROVAL_REQUIRED');
     // The UI states plainly that it cannot switch authority.
     expect(html).toContain('只读展示');
@@ -249,7 +251,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
         providerConfigured: true,
       }),
     );
-    expect(html).toContain('aria-label="model-selector-popover"');
+    expect(html).toContain('data-testid="model-selector-popover"');
     expect(html).toContain('model-selector');
   });
 
@@ -279,7 +281,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
       displayName: 'deepseek-v4-flash',
       providerId: 'p',
       contextWindow: 1_000_000,
-      price: { inputPerMillion: 0.5, outputPerMillion: 1.5 },
+      price: { inputPerMillion: 0.5, outputPerMillion: 1.5, currency: 'CNY' },
       availability: 'available',
     },
     usedTokens: 31_212,
@@ -287,6 +289,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
     speedSamples: [28.4, 28.4],
     inputTokens: 31_212,
     outputTokens: 1_024,
+    usageComplete: true,
   };
 
   it('UX-08 known values render correctly (context/tokens/speed/cache/cost)', () => {
@@ -298,7 +301,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
     expect(view.used).toBe('31,212');
     expect(view.speed).toBe('28.4/s');
     expect(view.cacheHit).toBe('68%');
-    expect(view.cost).toBe('0.017');
+    expect(view.cost).toBe('0.017 CNY'); // AUDIT session cost: the currency is part of the value
     expect(view.telemetryUnavailable).toBe(false);
     const proven = projectModelRuntime({ ...KNOWN_SNAPSHOT, contextUsedTokens: 31_212 });
     expect(proven.remaining).toBe('97%');
@@ -442,7 +445,7 @@ describe('UX-13..17 runtime panel projections', () => {
       }),
     );
     expect(html).toContain('已收起');
-    expect(html).not.toContain('aria-label="runtime-lifecycle"');
+    expect(html).not.toContain('data-testid="runtime-lifecycle"');
     expect(RUNTIME_TABS.map((tab) => tab.label)).toEqual(['运行', '文件', '产出', '详情']);
   });
 

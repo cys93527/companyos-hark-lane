@@ -18,6 +18,26 @@ import { createElement as h, type JSX } from 'react';
 import type { ModelOptionRow } from './models.js';
 import { projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
 
+/**
+ * AUDIT-R14: a popover dialog takes focus when it opens and closes on Escape, so keyboard and
+ * screen-reader users are not left on the trigger with an unannounced dialog.
+ */
+export const popoverDialogProps = (onClose: (() => void) | undefined): {
+  readonly tabIndex: number;
+  readonly ref: (element: { focus?: () => void } | null) => void;
+  readonly onKeyDown: (event: { readonly key: string; readonly stopPropagation?: () => void }) => void;
+} => ({
+  tabIndex: -1,
+  ref: (element) => {
+    if (element !== null && typeof element.focus === 'function') element.focus();
+  },
+  onKeyDown: (event) => {
+    if (event.key !== 'Escape' || onClose === undefined) return;
+    event.stopPropagation?.();
+    onClose();
+  },
+});
+
 /** Canonical, display-only authority modes derived from run state + blocker codes. */
 export type EffectiveAuthorityMode = 'read-only' | 'workspace-operations' | 'ask-permission';
 
@@ -56,6 +76,24 @@ export const projectEffectiveAuthority = (input: {
 
 export const authorityLabel = (mode: EffectiveAuthorityMode): string => AUTHORITY_LABELS[mode];
 
+/**
+ * AUDIT-R4: the run-state projection above is a STATUS of the open Goal, never a permission: shown as such
+ * ("等待批准 / 执行中 / 未在执行") so it can't be read as the access policy. The chip shows the policy the NEXT
+ * Goal will be created with (the real selection).
+ */
+const AUTHORITY_STATUS_LABELS: Readonly<Record<EffectiveAuthorityMode, string>> = {
+  'ask-permission': '等待批准',
+  'workspace-operations': '执行中',
+  'read-only': '未在执行',
+};
+export const authorityStatusLabel = (authority: { readonly mode: string; readonly basis: string }): string =>
+  authority.basis === 'no-active-run'
+    ? '没有打开的目标'
+    : (AUTHORITY_STATUS_LABELS as Readonly<Record<string, string>>)[authority.mode] ?? authority.mode;
+
+export const accessPolicyLabel = (policy: string | null | undefined): string | null =>
+  ACCESS_POLICY_OPTIONS.find((option) => option.value === policy)?.label ?? null;
+
 /* ------------------------------------------------------- model selector --- */
 
 export interface ModelSelectorViewProps {
@@ -74,7 +112,7 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
   const label = selected === null ? '选择模型' : selected.displayName;
   return h(
     'div',
-    { className: 'composer__model', 'aria-label': 'model-selector' },
+    { className: 'composer__model', 'data-testid': 'model-selector', 'aria-label': '模型选择' },
     h(
       'button',
       { type: 'button', className: 'composer__model-button', onClick: props.onToggle, disabled: props.busy },
@@ -84,7 +122,7 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
     props.open
       ? h(
           'div',
-          { className: 'popover', role: 'dialog', 'aria-label': 'model-selector-popover' },
+          { className: 'popover', role: 'dialog', 'data-testid': 'model-selector-popover', 'aria-label': '选择模型', ...popoverDialogProps(props.onToggle) },
           props.providerConfigured
             ? h(
                 'ul',
@@ -136,7 +174,7 @@ export function ModelRuntimePopover(props: ModelRuntimePopoverProps): JSX.Elemen
   const view = projectModelRuntime(props.snapshot);
   return h(
     'div',
-    { className: 'composer__runtime', 'aria-label': 'model-runtime' },
+    { className: 'composer__runtime', 'data-testid': 'model-runtime', 'aria-label': '模型运行状态' },
     h(
       'button',
       { type: 'button', className: 'composer__model-button', onClick: props.onToggle, 'aria-expanded': props.open },
@@ -146,7 +184,7 @@ export function ModelRuntimePopover(props: ModelRuntimePopoverProps): JSX.Elemen
     props.open
       ? h(
           'div',
-          { className: 'popover popover--runtime', role: 'dialog', 'aria-label': 'model-runtime-popover' },
+          { className: 'popover popover--runtime', role: 'dialog', 'data-testid': 'model-runtime-popover', 'aria-label': '模型运行详情', ...popoverDialogProps(props.onToggle) },
           h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '上下文'), h('span', null, view.contextWindow)),
           h(
             'div',
@@ -181,9 +219,15 @@ export interface ComposerViewProps {
   readonly ready: boolean;
   readonly busy: boolean;
   readonly authority: EffectiveAuthority;
+  /** AUDIT-R4: the access policy the next Goal is created with (the chip's label). */
+  readonly nextPolicy?: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS' | null;
   readonly modelLabel: string;
   readonly workspaceLabel: string | null;
   readonly pendingIntent: boolean;
+  /** AUDIT R2: the objective of the unconfirmed submission, shown with 重试 / 放弃. */
+  readonly pendingObjective?: string | null;
+  readonly onRetryPending?: () => void;
+  readonly onDiscardPending?: () => void;
   readonly onDraftChange: (value: string) => void;
   readonly onSubmit: () => void;
   readonly onChangeWorkspace: () => void;
@@ -197,7 +241,7 @@ export interface ComposerViewProps {
 export function ComposerView(props: ComposerViewProps): JSX.Element {
   return h(
     'div',
-    { className: 'composer', 'aria-label': 'composer' },
+    { className: 'composer', 'data-testid': 'composer', 'aria-label': '目标输入区' },
     h(
       'div',
       { className: 'composer__left' },
@@ -209,16 +253,35 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
       h(
         'button',
         { type: 'button', className: 'composer__chip', onClick: props.onOpenAuthority, 'aria-expanded': props.authorityOpen },
-        `${authorityLabel(props.authority.mode)} ▾`,
+        `${accessPolicyLabel(props.nextPolicy) ?? '访问权限'} ▾`,
       ),
       h('button', { type: 'button', className: 'composer__chip', onClick: props.onOpenTools }, '工具'),
     ),
     h(
       'div',
       { className: 'composer__center' },
+      props.pendingIntent
+        ? h(
+            'div',
+            { className: 'composer__pending', role: 'status', 'data-testid': 'pending-submission' },
+            h(
+              'p',
+              null,
+              props.pendingObjective === null || props.pendingObjective === undefined
+                ? '上一次提交尚未确认。'
+                : `上一次提交尚未确认：「${props.pendingObjective}」`,
+            ),
+            props.onRetryPending === undefined
+              ? null
+              : h('button', { type: 'button', disabled: props.busy, onClick: props.onRetryPending }, '重试'),
+            props.onDiscardPending === undefined
+              ? null
+              : h('button', { type: 'button', disabled: props.busy, onClick: props.onDiscardPending }, '放弃'),
+          )
+        : null,
       h('textarea', {
         className: 'composer__input',
-        'aria-label': 'goal-objective',
+        'data-testid': 'goal-objective', 'aria-label': '目标描述',
         placeholder: '用自然语言描述你想达成的目标…',
         rows: 3,
         value: props.draft,
@@ -254,6 +317,8 @@ export interface AuthorityPopoverProps {
   readonly onSelectPolicy?: (policy: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS') => void;
   /** The current Goal's canonical policy (read-back), shown as effective truth. */
   readonly effectiveGoalPolicy?: string | null;
+  /** AUDIT-R14: Escape closes the popover. */
+  readonly onClose?: () => void;
 }
 
 /** The three canonical policies with their user-facing labels (Section A vocabulary). */
@@ -268,8 +333,10 @@ export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
   const selectable = typeof props.onSelectPolicy === 'function';
   return h(
     'div',
-    { className: 'popover', role: 'dialog', 'aria-label': 'authority-popover' },
-    h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '当前权限'), h('span', null, authorityLabel(props.authority.mode))),
+    { className: 'popover', role: 'dialog', 'data-testid': 'authority-popover', 'aria-label': '访问权限', ...popoverDialogProps(props.onClose) },
+    // AUDIT-R4: the next Goal's policy is the selection; the open Goal's run state is a status, not a permission.
+    h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '下一个目标'), h('span', null, accessPolicyLabel(props.selectedPolicy) ?? '访问权限')),
+    h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '当前目标状态'), h('span', null, authorityStatusLabel(props.authority))),
     h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '依据'), h('span', null, props.authority.basis)),
     props.effectiveGoalPolicy === undefined || props.effectiveGoalPolicy === null
       ? null
@@ -282,7 +349,7 @@ export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
     selectable
       ? h(
           'div',
-          { className: 'authority-options', 'aria-label': 'authority-options' },
+          { className: 'authority-options', 'data-testid': 'authority-options', 'aria-label': '访问权限选项' },
           ACCESS_POLICY_OPTIONS.map((option) =>
             h(
               'button',

@@ -156,7 +156,7 @@ describe('R4-F1 canonical tool pages', () => {
       .flatMap(function walk(node): typeof dom.childNodes {
         return [node, ...node.childNodes.flatMap(walk)];
       })
-      .find((node) => (node as MiniElement).getAttribute?.('aria-label') === 'tool-rows');
+      .find((node) => (node as MiniElement).getAttribute?.('data-testid') === 'tool-rows');
     expect(toolList?.childNodes).toHaveLength(18);
     expect(dom.textContent).toContain('Tool 17');
     expect(dom.textContent).toContain('disabled');
