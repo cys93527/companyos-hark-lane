@@ -42,6 +42,16 @@ jobs:
       H10_WATCHDOG_MS: '300000'
     steps:
       - uses: actions/checkout@v4
+      - name: verify the installer run belongs to this commit (AUDIT-S12)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.installer_run_id }}
+        run: |
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RUN_ID" > installer-run.json
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node scripts/hark/verify-workflow-runs.mjs --mode installer --sha "$env:GITHUB_SHA" --installer-run "$env:RUN_ID" --runs installer-run.json
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/download-artifact@v4
         with:
           name: hark-installer
