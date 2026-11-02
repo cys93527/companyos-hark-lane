@@ -33,8 +33,14 @@ describe('AUDIT-S11 MAX_PATH guard also for silent installs', () => {
     expect(code).toMatch(/function PrepareToInstall\(var NeedsRestart: Boolean\): String;\s+begin\s+Result := InstallDirTooLongMessage\(ExpandConstant\('\{app\}'\)\);/);
     expect(code.match(/Limit := 259 - \{#MaxRelPath\} - 1;/g)).toHaveLength(1);
   });
-  it('the installer smoke asserts a silent too-long /DIR exits 7 and writes nothing', () => {
-    expect(smoke).toContain("Check 's11-silent-toolong-refused' (($pl.ExitCode -eq 7) -and (-not $longLeft))");
+  it('the installer smoke asserts a silent too-long /DIR is refused by the guard and writes nothing', () => {
+    // v0.1.1 CI (installer 41471460403): Inno 6.7 runs NextButtonClick(wpSelectDir) in silent
+    // mode too, so the dir-page check refuses first (SuppressibleMsgBox -> EAbort -> exit 1);
+    // PrepareToInstall (exit 7) is the second line. Either exit is a refusal only together
+    // with the guard's own message in the setup log and nothing written.
+    expect(smoke).toContain("Check 's11-silent-toolong-refused' ((@(1, 7) -contains $pl.ExitCode) -and $tooLongMsg -and (-not $longLeft))");
+    expect(smoke).toContain("$tooLongMsg = $tooLongLog -match '\\u5B89\\u88C5\\u8DEF\\u5F84\\u592A\\u957F'");
+    expect(code).not.toContain('/DIR= skips the page');
     expect(smoke.indexOf('s11-silent-toolong-refused')).toBeLessThan(smoke.indexOf("Check 'install-exit-0'"));
   });
 });

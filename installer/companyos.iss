@@ -88,7 +88,8 @@ chs.IsolationRemoveFailed=移除 CompanyOS 隔离失败（退出码 %1）。若�
 chs.InstallDirTooLong=安装路径太长（%1 个字符）。CompanyOS 自带的文件最深 {#MaxRelPath} 个字符，Windows 路径上限为 260，请选择不超过 %2 个字符的安装位置（例如默认位置）。
 
 [Code]
-{ AUDIT-S11: one MAX_PATH rule for the wizard page AND silent installs (/DIR= skips the page). }
+{ AUDIT-S11: one MAX_PATH rule for the wizard page AND silent installs. Inno also runs NextButtonClick(wpSelectDir)
+  for silent /DIR= installs (refusal -> exit 1, CI 41471460403); PrepareToInstall is the second, independent line. }
 function InstallDirTooLongMessage(Dir: String): String;
 var
   Limit: Integer;

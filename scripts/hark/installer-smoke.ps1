@@ -7,11 +7,15 @@ $dir = Join-Path $env:LOCALAPPDATA 'Programs\CompanyOS-HarkSmoke'
 $result = [ordered]@{ setup = $Setup; installDir = $dir; checks = [ordered]@{} }
 function Check($name, $ok, $detail) { $result.checks[$name] = [ordered]@{ ok = [bool]$ok; detail = "$detail" } }
 
-# AUDIT-S11: a silent install into a too-long /DIR must refuse up front (PrepareToInstall, exit 7) and write nothing.
+# AUDIT-S11: a silent install into a too-long /DIR must refuse up front (dir-page guard or PrepareToInstall) and write nothing.
 $longDir = Join-Path $env:LOCALAPPDATA ('Programs\CompanyOS-TooLong-' + ('x' * 150))  # ~210 chars: under MAX_PATH itself, far above 259 - MaxRelPath - 1
 $pl = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$longDir`"","/LOG=`"$Evidence\install-toolong.log`"" -PassThru -Wait
 $longLeft = [IO.Directory]::Exists('\\?\' + $longDir) -and @([IO.Directory]::EnumerateFileSystemEntries('\\?\' + $longDir)).Count -gt 0
-Check 's11-silent-toolong-refused' (($pl.ExitCode -eq 7) -and (-not $longLeft)) "exit=$($pl.ExitCode) filesLeft=$longLeft"
+# Inno runs NextButtonClick(wpSelectDir) in silent mode too: the dir-page check refuses first (exit 1, EAbort);
+# PrepareToInstall (exit 7) is the second line. Either counts only with the guard's own message in the log.
+$tooLongLog = if (Test-Path "$Evidence\install-toolong.log") { [IO.File]::ReadAllText("$Evidence\install-toolong.log", [Text.Encoding]::UTF8) } else { '' }
+$tooLongMsg = $tooLongLog -match '\u5B89\u88C5\u8DEF\u5F84\u592A\u957F'
+Check 's11-silent-toolong-refused' ((@(1, 7) -contains $pl.ExitCode) -and $tooLongMsg -and (-not $longLeft)) "exit=$($pl.ExitCode) guardMessage=$tooLongMsg filesLeft=$longLeft"
 if ([IO.Directory]::Exists('\\?\' + $longDir)) { [IO.Directory]::Delete('\\?\' + $longDir, $true) }
 
 $p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$dir`"","/LOG=`"$Evidence\install-setup.log`"" -PassThru -Wait
