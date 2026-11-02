@@ -7,6 +7,13 @@ $dir = Join-Path $env:LOCALAPPDATA 'Programs\CompanyOS-HarkSmoke'
 $result = [ordered]@{ setup = $Setup; installDir = $dir; checks = [ordered]@{} }
 function Check($name, $ok, $detail) { $result.checks[$name] = [ordered]@{ ok = [bool]$ok; detail = "$detail" } }
 
+# AUDIT-S11: a silent install into a too-long /DIR must refuse up front (PrepareToInstall, exit 7) and write nothing.
+$longDir = Join-Path $env:LOCALAPPDATA ('Programs\CompanyOS-TooLong-' + ('x' * 150))  # ~210 chars: under MAX_PATH itself, far above 259 - MaxRelPath - 1
+$pl = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$longDir`"","/LOG=`"$Evidence\install-toolong.log`"" -PassThru -Wait
+$longLeft = [IO.Directory]::Exists('\\?\' + $longDir) -and @([IO.Directory]::EnumerateFileSystemEntries('\\?\' + $longDir)).Count -gt 0
+Check 's11-silent-toolong-refused' (($pl.ExitCode -eq 7) -and (-not $longLeft)) "exit=$($pl.ExitCode) filesLeft=$longLeft"
+if ([IO.Directory]::Exists('\\?\' + $longDir)) { [IO.Directory]::Delete('\\?\' + $longDir, $true) }
+
 $p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$dir`"","/LOG=`"$Evidence\install-setup.log`"" -PassThru -Wait
 Check 'install-exit-0' ($p.ExitCode -eq 0) $p.ExitCode
 $exe = Join-Path $dir 'CompanyOS.exe'
@@ -115,7 +122,9 @@ $isoPs1 = Join-Path $dir 'resources\setup\configure-isolation.ps1'
 Check 'h16-isolation-helper-installed' ((Test-Path $isoPs1) -and (Test-Path (Join-Path $dir 'resources\isolation\setup.ps1')) -and (Test-Path (Join-Path $dir 'resources\isolation\companyos-isolated-launch.exe'))) $isoPs1
 $isoLnk = @(Get-ChildItem (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') -Filter 'CompanyOS *.lnk' -ErrorAction SilentlyContinue)
 Check 'h16-isolation-shortcuts' ($isoLnk.Count -ge 3) (($isoLnk | ForEach-Object Name) -join ',')
-$smokeWs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'CompanyOS-HarkSmoke-workspace'
+# AUDIT-S2/S3: the workspace path is non-ASCII (项目, built from char codes) - the target users' common case. 5.1 must
+# read the BOM-less selection file as UTF-8 (S2), and the app's hidden status read must get the root back exactly (S3).
+$smokeWs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ('CompanyOS-HarkSmoke-' + [string][char]0x9879 + [string][char]0x76EE + '-workspace')
 New-Item -ItemType Directory -Force -Path $smokeWs | Out-Null
 # What the app writes when the user picks a workspace (workspace-selection.ts).
 [IO.File]::WriteAllText((Join-Path $userData 'workspace-selection.json'), (([ordered]@{ root = $smokeWs; selectedAt = (Get-Date).ToString('o') }) | ConvertTo-Json))
@@ -127,12 +136,36 @@ $isoStatusExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 $isoState = Join-Path $userData 'isolation\state.json'
 $isoAccount = $null; $isoWs = $null
-try { $st = Get-Content -LiteralPath $isoState -Raw | ConvertFrom-Json; $isoAccount = $st.account; $isoWs = @($st.workspaceDirs) } catch { }
+try { $st = Get-Content -LiteralPath $isoState -Raw -Encoding UTF8 | ConvertFrom-Json; $isoAccount = $st.account; $isoWs = @($st.workspaceDirs) } catch { }
 Check 'h16-isolation-setup-exit-0' ($isoExit -eq 0) "exit=$isoExit"
 Check 'h16-isolation-state' (($null -ne $isoAccount) -and (Test-Path (Join-Path $userData 'isolation\agent-credential.dpapi')) -and ($isoWs -contains $smokeWs)) "account=$isoAccount workspaceDirs=$($isoWs -join ';')"
 Check 'h16-isolation-account-exists' ($isoAccount -and (Get-LocalUser -Name $isoAccount -ErrorAction SilentlyContinue)) "$isoAccount"
 Check 'h16-isolation-status-isolated' ($isoStatusExit -eq 0) "exit=$isoStatusExit"
+# The app's own pre-dispatch read (isolation-status-runner.ts): hidden, no console, stdout piped and decoded as UTF-8.
+$psi = New-Object Diagnostics.ProcessStartInfo $ps
+$psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $dir 'resources\isolation\setup.ps1') + '" -Action status -StatePath "' + $isoState + '"'
+$psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.CreateNoWindow = $true
+$psi.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+$pr = [Diagnostics.Process]::Start($psi); $statusOut = $pr.StandardOutput.ReadToEnd(); $pr.WaitForExit()
+$statusLine = @($statusOut -split "`r?`n" | Where-Object { $_.TrimStart([char]0xFEFF, ' ').StartsWith('{') }) | Select-Object -Last 1
+$statusWs = @(); try { $statusWs = @(($statusLine.TrimStart([char]0xFEFF, ' ') | ConvertFrom-Json).workspaceDirs) } catch { }
+Check 'h16-status-utf8-workspace' (($pr.ExitCode -eq 0) -and ($statusWs -contains $smokeWs) -and ($statusLine -cmatch '^[\x00-\x7E]*$')) "exit=$($pr.ExitCode) line=$statusLine"
 Check 'h16-isolation-no-handoff-left' (@(Get-ChildItem (Join-Path $userData 'isolation') -Filter 'handoff-*' -ErrorAction SilentlyContinue).Count -eq 0) ''
+# AUDIT-S8: the elevated helper never runs bytes that differ from the build-time manifest. Tamper the installed
+# setup.ps1 (user-writable install dir), ask for removal (elevated path): refused with HELPER_HASH_MISMATCH, isolation
+# untouched, no admin-only helper directory or stub left behind; then restore the original bytes.
+$isoSetup = Join-Path $dir 'resources\isolation\setup.ps1'
+$isoSetupBytes = [IO.File]::ReadAllBytes($isoSetup)
+[IO.File]::WriteAllBytes($isoSetup, [byte[]]($isoSetupBytes + [Text.Encoding]::ASCII.GetBytes("`r`n# tampered by installer-smoke`r`n")))
+$ErrorActionPreference = 'Continue'
+& $ps -NoProfile -ExecutionPolicy Bypass -File $isoPs1 -Remove -NoPause *> (Join-Path $Evidence 'h16-helper-tamper.txt')
+$tamperExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllBytes($isoSetup, $isoSetupBytes)
+$tamperOut = Get-Content -LiteralPath (Join-Path $Evidence 'h16-helper-tamper.txt') -Raw -ErrorAction SilentlyContinue
+$helperDirsLeft = @(Get-ChildItem $env:ProgramData -Directory -Filter 'CompanyOS-isolation-helper-*' -ErrorAction SilentlyContinue).Count
+$stubsLeft = @(Get-ChildItem (Join-Path $userData 'isolation') -Filter 'helper-stub-*' -ErrorAction SilentlyContinue).Count
+Check 'h16-helper-tamper-refused' (($tamperExit -eq 3) -and ($tamperOut -match 'HELPER_HASH_MISMATCH') -and (Test-Path $isoState) -and ($helperDirsLeft -eq 0) -and ($stubsLeft -eq 0)) "exit=$tamperExit helperDirsLeft=$helperDirsLeft stubsLeft=$stubsLeft"
 
 $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=`"$Evidence\uninstall.log`"" -PassThru -Wait
 Check 'uninstall-exit-0' ($u.ExitCode -eq 0) $u.ExitCode

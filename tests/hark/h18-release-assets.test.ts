@@ -14,12 +14,12 @@ describe('H18 hark-release-assets', () => {
   });
 
   it('refuses a run that is not the successful hark-installer run of the tagged commit', () => {
-    const verify = workflow.indexOf('verify installer run belongs to the tagged commit');
+    // AUDIT-S12: the identity check (name/conclusion/head_sha) moved into scripts/hark/verify-workflow-runs.mjs,
+    // which also requires every sibling gate on the tag (tests/hark/audit-scripts-verify-runs.test.ts).
+    const verify = workflow.indexOf('verify the installer run AND every sibling gate on the tagged commit');
     expect(verify).toBeGreaterThan(0);
     expect(verify).toBeLessThan(workflow.indexOf('actions/download-artifact@v4'));
-    expect(workflow).toContain('= "hark-installer" ]');
-    expect(workflow).toContain('.conclusion <<<"$run")" = "success" ]');
-    expect(workflow).toContain('.head_sha <<<"$run")" = "$tag_sha" ]');
+    expect(workflow).toContain('--mode release --sha "$tag_sha" --installer-run "$RUN_ID"');
   });
 
   it('checks the exe hash against that run installer-sha256.txt before uploading, never rebuilds', () => {

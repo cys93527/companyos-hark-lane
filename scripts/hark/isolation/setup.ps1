@@ -24,7 +24,10 @@ param(
   [string]$AccountName,
   # The user whose UNELEVATED app checks status (default: the identity running setup = the installing user under UAC
   # same-user elevation; the app passes its own SID explicitly for over-the-shoulder elevation).
-  [string]$ReaderSid
+  [string]$ReaderSid,
+  # CI only (hark-isolation lifecycle): force a failure at a named point to prove rollback / partial-removal handling.
+  # Values: afterGrants | afterProfile (install), removalProfile (uninstall leaves the profile). Never passed by the app.
+  [string]$TestFailAt = ''
 )
 # Windows PowerShell 5.1 started by a non-PowerShell parent that itself runs inside PowerShell 7 (e.g. the uninstaller
 # launched from a pwsh window) inherits pwsh's PSModulePath and then autoloads the PowerShell 7 editions of
@@ -50,10 +53,24 @@ $ErrorActionPreference = 'Stop'
 function Split-Dirs([string[]]$v) { @($v | ForEach-Object { $_ -split '\|' } | Where-Object { $_ -and $_.Trim() } | ForEach-Object { [IO.Path]::GetFullPath($_.Trim()) }) }
 $WorkspaceDirs = Split-Dirs $WorkspaceDirs; $StateDirs = Split-Dirs $StateDirs; $KernelDirs = Split-Dirs $KernelDirs; $DenyDirs = Split-Dirs $DenyDirs
 $SCHEMA = 'companyos/isolation-state/1'
+# AUDIT-S4/S6: only an account carrying this description is ever reused or deleted by this helper.
+$AGENT_DESCRIPTION = 'CompanyOS agent (isolated runtime)'
 $HIDE_KEY = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
 
-function Out-Result($obj, [int]$code) { ($obj | ConvertTo-Json -Compress -Depth 6) | Write-Output; exit $code }
-function Load-Wfp { if (-not ('CompanyOSWfp' -as [type])) { Add-Type -TypeDefinition (Get-Content (Join-Path $PSScriptRoot 'wfp-persistent.cs') -Raw) } }
+# AUDIT-S3: the app reads this JSON through a hidden console whose output code page is the OEM default (936/437) and
+# decodes it as UTF-8; 5.1 ConvertTo-Json does not escape non-ASCII, so a Chinese workspace root arrived as U+FFFD and
+# every goal was refused (workspace:notGranted). Emit UTF-8, and make the JSON ASCII-only (\uXXXX for every char above
+# 0x7E) so any decoder reads it byte-exact.
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
+function ConvertTo-AsciiJson([string]$json) {
+  $sb = New-Object Text.StringBuilder
+  foreach ($ch in $json.ToCharArray()) {
+    if ([int]$ch -gt 0x7E) { [void]$sb.Append('\u').Append(([int]$ch).ToString('x4')) } else { [void]$sb.Append($ch) }
+  }
+  return $sb.ToString()
+}
+function Out-Result($obj, [int]$code) { (ConvertTo-AsciiJson ($obj | ConvertTo-Json -Compress -Depth 6)) | Write-Output; exit $code }
+function Load-Wfp { if (-not ('CompanyOSWfp' -as [type])) { Add-Type -TypeDefinition (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wfp-persistent.cs') -Raw -Encoding UTF8) } }
 # Agent profile (lifecycle run 7, 40347340358): the launcher loads the account's own profile (LOGON_WITH_PROFILE) and
 # points HOME/TEMP/APPDATA at it, so install creates it up front (elevated) and status/uninstall track it.
 $PROFILE_CS = @'
@@ -116,8 +133,11 @@ function Test-Grant($g, [string]$sid) {
 function Get-Status {
   if (-not (Test-Path -LiteralPath $StatePath)) { return [ordered]@{ state = 'NOT_CONFIGURED'; problems = @() } }
   $problems = New-Object System.Collections.ArrayList
-  $st = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+  $st = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
   if ($st.schema -ne $SCHEMA) { return [ordered]@{ state = 'ISOLATION_DEGRADED'; problems = @("state:schema:$($st.schema)") } }
+  # AUDIT-S4/S6: a provisional (installing) or partially removed (removing) state is never ISOLATED. State files
+  # written before the phase field existed were only ever written after a complete install.
+  if ($st.phase -and $st.phase -ne 'installed') { $problems.Add("state:incomplete:$($st.phase)") | Out-Null }
   $user = Get-LocalUser -Name $st.account -ErrorAction SilentlyContinue
   if (-not $user) { $problems.Add("account:missing:$($st.account)") | Out-Null }
   else {
@@ -148,6 +168,88 @@ function Remove-AllAces([string]$path, [string]$sid) {
   return @((Get-Acl -LiteralPath $path).Access | Where-Object { -not $_.IsInherited -and (Sid-Of $_.IdentityReference) -eq $sid }).Count
 }
 
+function Save-State($state) {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $StatePath) | Out-Null
+  ($state | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StatePath -Encoding utf8
+}
+function Set-Phase($state, [string]$phase) {
+  if ($state -is [System.Collections.IDictionary]) { $state['phase'] = $phase } else { $state | Add-Member -NotePropertyName phase -NotePropertyValue $phase -Force }
+}
+
+# AUDIT-S4: every directory the install grants on must live on a local NTFS/ReFS volume (ACLs are enforced there);
+# exFAT/FAT32 removable drives and network paths are refused BEFORE any system change.
+function Test-AclCapable([string]$dir) {
+  $p = $dir
+  while ($p -and -not (Test-Path -LiteralPath $p)) { $p = Split-Path -Parent $p }
+  if (-not $p) { return $false }
+  $root = [IO.Path]::GetPathRoot($p)
+  if ($root -notmatch '^[A-Za-z]:\\$') { return $false }
+  try { $fmt = (New-Object IO.DriveInfo($root)).DriveFormat } catch { return $false }
+  if ($fmt -ne 'NTFS' -and $fmt -ne 'ReFS') { return $false }
+  try { Get-Acl -LiteralPath $p | Out-Null } catch { return $false }
+  return $true
+}
+
+# AUDIT-S6: a goal still running as the agent keeps its profile hive loaded (DeleteProfileW fails); stop every process
+# owned by the agent SID before removing anything.
+function Stop-AgentProcesses([string]$sid) {
+  $stopped = 0
+  foreach ($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+    $owner = $null
+    try { $owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwnerSid -ErrorAction Stop } catch { continue }
+    if ($owner -and $owner.Sid -eq $sid) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop; $stopped++ } catch { } }
+  }
+  if ($stopped -gt 0) { Start-Sleep -Seconds 2 }
+  return $stopped
+}
+
+# AUDIT-S4/S6: the ONE removal routine, shared by uninstall and by the install rollback. WFP objects live under fixed
+# keys and are removed even without a state file. With a state: agent processes stopped, ACEs purged, profile deleted
+# (retried), the account deleted only when it is the CompanyOS agent account the state names. The state file is
+# deleted only when everything is confirmed gone; otherwise it is kept (phase=removing) so a retry can finish.
+function Invoke-Removal($st) {
+  $r = [ordered]@{ ok = $true }
+  Load-Wfp
+  $rc = [CompanyOSWfp]::Open()
+  if ($rc -eq 0) { $rc = [CompanyOSWfp]::Uninstall() }
+  $r.wfp = ('0x{0:x}' -f $rc)
+  $left = [CompanyOSWfp]::Status('S-1-0-0', [uint16]1)
+  [CompanyOSWfp]::Close()
+  $r.wfpObjectsLeft = @($left | Where-Object { $_ -notmatch ':missing' }).Count
+  $r.acesLeft = 0; $r.accountLeft = $false; $r.profileLeft = $false; $r.stateKept = $false
+  if ($st -and $st.sid) {
+    $r.processesStopped = Stop-AgentProcesses $st.sid
+    $acesLeft = 0
+    foreach ($g in @($st.grants) + @($st.ancestorGrants)) {
+      if ($g) { try { $acesLeft += (Remove-AllAces $g.path $st.sid) } catch { $acesLeft++; $r.aceError = $_.Exception.Message } }
+    }
+    $r.acesLeft = $acesLeft
+    Load-Profile
+    $prof = Get-ProfilePath $st.sid
+    $r.profileDelete = 0
+    if ($prof -and $TestFailAt -ne 'removalProfile') {
+      for ($i = 0; $i -lt 5; $i++) {
+        $r.profileDelete = [CompanyOSProfile]::Delete($st.sid)
+        if (-not (Get-ProfilePath $st.sid) -and -not (Test-Path -LiteralPath $prof)) { break }
+        Start-Sleep -Seconds 1
+      }
+    }
+    $r.profileLeft = [bool]((Get-ProfilePath $st.sid) -or ($prof -and (Test-Path -LiteralPath $prof)))
+    $user = Get-LocalUser -SID $st.sid -ErrorAction SilentlyContinue
+    if ($user -and $user.Description -eq $AGENT_DESCRIPTION) {
+      Remove-LocalUser -SID $st.sid -ErrorAction SilentlyContinue
+      Remove-ItemProperty -Path $HIDE_KEY -Name $user.Name -ErrorAction SilentlyContinue
+    } elseif ($user) { $r.accountForeign = $user.Name }
+    if (-not $user -and $st.account) { Remove-ItemProperty -Path $HIDE_KEY -Name $st.account -ErrorAction SilentlyContinue }
+    $r.accountLeft = [bool](Get-LocalUser -SID $st.sid -ErrorAction SilentlyContinue)
+    $clean = ($rc -eq 0 -and $r.wfpObjectsLeft -eq 0 -and $r.acesLeft -eq 0 -and -not $r.accountLeft -and -not $r.profileLeft)
+    if ($clean) { Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue }
+    else { Set-Phase $st 'removing'; Save-State $st; $r.stateKept = $true }
+  }
+  if ($rc -ne 0 -or $r.wfpObjectsLeft -ne 0 -or $r.acesLeft -ne 0 -or $r.accountLeft -or $r.profileLeft) { $r.ok = $false }
+  return $r
+}
+
 switch ($Action) {
   'status' {
     $s = Get-Status
@@ -165,98 +267,123 @@ switch ($Action) {
     $sec = ConvertTo-SecureString $password -AsPlainText -Force
     $password = $null
 
+    # AUDIT-S5: the reader (the signed-in user who must read the WFP objects) is validated BEFORE any system change.
+    # Local/AD user SIDs are S-1-5-21-a-b-c-d; Microsoft Entra ID (Azure AD) sign-ins are S-1-12-1-a-b-c-d. Groups and
+    # well-known SIDs (e.g. Administrators S-1-5-32-544) are refused.
+    $readerIn = if ($ReaderSid) { $ReaderSid } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+    $reader = $null
+    try { $reader = (New-Object Security.Principal.SecurityIdentifier($readerIn)).Value } catch { $reader = $null }
+    if (-not $reader -or ($reader -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -and $reader -notmatch '^S-1-12-1-\d+-\d+-\d+-\d+$')) {
+      Out-Result ([ordered]@{ ok = $false; error = 'READER_SID_INVALID' }) 1
+    }
+
     $prev = $null
-    if (Test-Path -LiteralPath $StatePath) { $prev = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json }
+    if (Test-Path -LiteralPath $StatePath) { $prev = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json }
     if (-not $AccountName) { $AccountName = if ($prev) { $prev.account } else { 'CompanyOSAgent' + ([Guid]::NewGuid().ToString('N')).Substring(0, 6) } }
     # Local account names are limited to 20 characters (lifecycle run 2, 40340473413: 'CompanyOSAgent-xxxxxx' = 21).
     if ($AccountName.Length -gt 20 -or $AccountName -notmatch '^[A-Za-z0-9-]+$') { Out-Result ([ordered]@{ ok = $false; error = 'ACCOUNT_NAME_INVALID' }) 1 }
+    # AUDIT-S4: all remaining pure validation happens BEFORE the first system change.
+    foreach ($d in $WorkspaceDirs + $StateDirs + $KernelDirs + $DenyDirs) {
+      if (-not (Test-AclCapable $d)) { Out-Result ([ordered]@{ ok = $false; error = 'DIR_NOT_ACL_CAPABLE'; path = $d }) 1 }
+    }
+    foreach ($d in $KernelDirs) { if (-not (Test-Path -LiteralPath $d)) { Out-Result ([ordered]@{ ok = $false; error = 'KERNEL_DIR_MISSING'; path = $d }) 1 } }
     $existing = Get-LocalUser -Name $AccountName -ErrorAction SilentlyContinue
-    if ($existing) { Set-LocalUser -Name $AccountName -Password $sec -PasswordNeverExpires $true; Enable-LocalUser -Name $AccountName }
-    else { New-LocalUser -Name $AccountName -Password $sec -Description 'CompanyOS agent (isolated runtime)' -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null }
-    $sid = (Get-LocalUser -Name $AccountName).SID.Value
-    # Not offered on the sign-in screen (the account is a service identity for the agent runtime only).
-    if (-not (Test-Path $HIDE_KEY)) { New-Item -Path $HIDE_KEY -Force | Out-Null }
-    New-ItemProperty -Path $HIDE_KEY -Name $AccountName -PropertyType DWord -Value 0 -Force | Out-Null
+    if ($existing -and $existing.Description -ne $AGENT_DESCRIPTION) { Out-Result ([ordered]@{ ok = $false; error = 'ACCOUNT_NOT_COMPANYOS' }) 1 }
 
-    # Re-install replaces earlier grants of this account (no stale paths left behind).
-    if ($prev -and $prev.sid -eq $sid) { foreach ($g in @($prev.grants) + @($prev.ancestorGrants)) { if ($g) { Remove-AllAces $g.path $sid | Out-Null } } }
     $grants = New-Object System.Collections.ArrayList
     $ancestorGrants = New-Object System.Collections.ArrayList
-    # H16b-3b-fix2 (hark-installer 41184110972, installed-layout PONG): the kernel's inner shell sandbox (upstream
-    # sandbox-windows-acl grantWrite) adds its capability-SID ACE + the Low no-write-up label on the goal workspace
-    # with SetNamedSecurityInfoW(DACL|LABEL) running AS the agent account - that needs WRITE_DAC and WRITE_OWNER on
-    # the workspace (upstream: "a Full-control workspace satisfies both"). Modify gave neither -> Win32 5, every pwsh
-    # tool call failed. Workspace roots therefore get FullControl (inherited by everything below); the kernel state
-    # dirs keep Modify (the inner sandbox never grants there).
-    foreach ($d in $WorkspaceDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'FullControl' 'Allow' $true $grants }
-    foreach ($d in $StateDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'Modify' 'Allow' $true $grants }
-    foreach ($d in $KernelDirs) { Grant $d $sid 'ReadAndExecute' 'Allow' $true $grants }
-    # Explicit Allow on a child (e.g. a kernel state root inside userData) is evaluated before the inherited Deny.
-    foreach ($d in $DenyDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant-Deny $d $sid $grants }
-    $seen = @{}
-    foreach ($d in $WorkspaceDirs + $StateDirs + $KernelDirs) {
-      $parent = Split-Path -Parent $d
-      while ($parent -and (Split-Path -Parent $parent)) {
-        if (-not $seen.ContainsKey($parent)) { $seen[$parent] = $true; Grant $parent $sid 'ReadAttributes, Synchronize' 'Allow' $false $ancestorGrants }
-        $parent = Split-Path -Parent $parent
-      }
-    }
-
-    Load-Profile
-    $hr = [CompanyOSProfile]::Create($sid, $AccountName)
-    # 0x800700B7 = ERROR_ALREADY_EXISTS (re-install / repair keeps the existing profile).
-    if ($hr -ne 0 -and ('{0:x8}' -f $hr) -ne '800700b7') { Out-Result ([ordered]@{ ok = $false; error = ('PROFILE_CREATE_FAILED 0x{0:x8}' -f $hr) }) 1 }
-    $profilePath = Get-ProfilePath $sid
-    if (-not $profilePath -or -not (Test-Path -LiteralPath $profilePath)) { Out-Result ([ordered]@{ ok = $false; error = 'PROFILE_NOT_REGISTERED' }) 1 }
-    # TEMP/APPDATA the launcher points at must exist; they inherit the profile ACL (the agent owns its profile).
-    foreach ($sub in @('AppData\Local\Temp', 'AppData\Roaming')) { New-Item -ItemType Directory -Force -Path (Join-Path $profilePath $sub) | Out-Null }
-
-    Load-Wfp
-    $rc = [CompanyOSWfp]::Open()
-    $reader = if ($ReaderSid) { $ReaderSid } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
-    if ($reader -notmatch '^S-1-5-21-[0-9-]+$') { Out-Result ([ordered]@{ ok = $false; error = 'READER_SID_INVALID' }) 1 }
-    if ($rc -eq 0) { $rc = [CompanyOSWfp]::Install($sid, [uint16]$BrokerPort, $reader) }
-    $wfpLog = @([CompanyOSWfp]::Log)
-    [CompanyOSWfp]::Close()
-    if ($rc -ne 0) { Out-Result ([ordered]@{ ok = $false; error = ('WFP_INSTALL_FAILED 0x{0:x}' -f $rc); wfpLog = $wfpLog }) 1 }
-
+    $wfpLog = @()
+    # AUDIT-S4: provisional state, written as soon as the account exists and updated after every step, so a crash at
+    # any point leaves a state file that names everything changed so far (status reports it DEGRADED, removal finds it).
     $state = [ordered]@{
-      schema = $SCHEMA; account = $AccountName; sid = $sid; profilePath = $profilePath; brokerPort = $BrokerPort; installedAt = (Get-Date).ToString('o')
-      workspaceDirs = @($WorkspaceDirs)
-      grants = @($grants); ancestorGrants = @($ancestorGrants)
-      wfp = [ordered]@{ provider = [CompanyOSWfp]::PROVIDER_KEY.ToString(); sublayer = [CompanyOSWfp]::SUBLAYER_KEY.ToString(); v4 = [CompanyOSWfp]::FILTER_V4_KEY.ToString(); v6 = [CompanyOSWfp]::FILTER_V6_KEY.ToString() }
+      schema = $SCHEMA; phase = 'installing'; account = $AccountName; sid = $null; profilePath = $null; brokerPort = $BrokerPort
+      installedAt = (Get-Date).ToString('o'); workspaceDirs = @($WorkspaceDirs)
+      grants = $grants; ancestorGrants = $ancestorGrants
+      wfp = $null
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $StatePath) | Out-Null
-    ($state | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StatePath -Encoding utf8
+    try {
+      if ($existing) { Set-LocalUser -Name $AccountName -Password $sec -PasswordNeverExpires $true; Enable-LocalUser -Name $AccountName }
+      else { New-LocalUser -Name $AccountName -Password $sec -Description $AGENT_DESCRIPTION -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null }
+      $sid = (Get-LocalUser -Name $AccountName).SID.Value
+      $state.sid = $sid
+      # A re-install keeps the earlier grants in the provisional state until they are replaced.
+      if ($prev -and $prev.sid -eq $sid) { foreach ($g in @($prev.grants) + @($prev.ancestorGrants)) { if ($g) { $grants.Add($g) | Out-Null } } }
+      Save-State $state
+      # Not offered on the sign-in screen (the account is a service identity for the agent runtime only).
+      if (-not (Test-Path $HIDE_KEY)) { New-Item -Path $HIDE_KEY -Force | Out-Null }
+      New-ItemProperty -Path $HIDE_KEY -Name $AccountName -PropertyType DWord -Value 0 -Force | Out-Null
+
+      # Re-install replaces earlier grants of this account (no stale paths left behind).
+      if ($prev -and $prev.sid -eq $sid) { foreach ($g in @($prev.grants) + @($prev.ancestorGrants)) { if ($g) { Remove-AllAces $g.path $sid | Out-Null } } }
+      $grants.Clear()
+      # H16b-3b-fix2 (hark-installer 41184110972, installed-layout PONG): the kernel's inner shell sandbox (upstream
+      # sandbox-windows-acl grantWrite) adds its capability-SID ACE + the Low no-write-up label on the goal workspace
+      # with SetNamedSecurityInfoW(DACL|LABEL) running AS the agent account - that needs WRITE_DAC and WRITE_OWNER on
+      # the workspace (upstream: "a Full-control workspace satisfies both"). Modify gave neither -> Win32 5, every pwsh
+      # tool call failed. Workspace roots therefore get FullControl (inherited by everything below); the kernel state
+      # dirs keep Modify (the inner sandbox never grants there).
+      foreach ($d in $WorkspaceDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'FullControl' 'Allow' $true $grants }
+      Save-State $state
+      foreach ($d in $StateDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant $d $sid 'Modify' 'Allow' $true $grants }
+      Save-State $state
+      foreach ($d in $KernelDirs) { Grant $d $sid 'ReadAndExecute' 'Allow' $true $grants }
+      Save-State $state
+      # Explicit Allow on a child (e.g. a kernel state root inside userData) is evaluated before the inherited Deny.
+      foreach ($d in $DenyDirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null; Grant-Deny $d $sid $grants }
+      Save-State $state
+      $seen = @{}
+      foreach ($d in $WorkspaceDirs + $StateDirs + $KernelDirs) {
+        $parent = Split-Path -Parent $d
+        while ($parent -and (Split-Path -Parent $parent)) {
+          if (-not $seen.ContainsKey($parent)) { $seen[$parent] = $true; Grant $parent $sid 'ReadAttributes, Synchronize' 'Allow' $false $ancestorGrants }
+          $parent = Split-Path -Parent $parent
+        }
+      }
+      Save-State $state
+      if ($TestFailAt -eq 'afterGrants') { throw 'TEST_FAIL_AT:afterGrants' }
+
+      Load-Profile
+      $hr = [CompanyOSProfile]::Create($sid, $AccountName)
+      # 0x800700B7 = ERROR_ALREADY_EXISTS (re-install / repair keeps the existing profile).
+      if ($hr -ne 0 -and ('{0:x8}' -f $hr) -ne '800700b7') { throw ('PROFILE_CREATE_FAILED 0x{0:x8}' -f $hr) }
+      $profilePath = Get-ProfilePath $sid
+      if (-not $profilePath -or -not (Test-Path -LiteralPath $profilePath)) { throw 'PROFILE_NOT_REGISTERED' }
+      $state.profilePath = $profilePath
+      Save-State $state
+      # TEMP/APPDATA the launcher points at must exist; they inherit the profile ACL (the agent owns its profile).
+      foreach ($sub in @('AppData\Local\Temp', 'AppData\Roaming')) { New-Item -ItemType Directory -Force -Path (Join-Path $profilePath $sub) | Out-Null }
+      if ($TestFailAt -eq 'afterProfile') { throw 'TEST_FAIL_AT:afterProfile' }
+
+      Load-Wfp
+      $state.wfp = [ordered]@{ provider = [CompanyOSWfp]::PROVIDER_KEY.ToString(); sublayer = [CompanyOSWfp]::SUBLAYER_KEY.ToString(); v4 = [CompanyOSWfp]::FILTER_V4_KEY.ToString(); permitV4 = [CompanyOSWfp]::PERMIT_V4_KEY.ToString(); v6 = [CompanyOSWfp]::FILTER_V6_KEY.ToString() }
+      Save-State $state
+      $rc = [CompanyOSWfp]::Open()
+      if ($rc -eq 0) { $rc = [CompanyOSWfp]::Install($sid, [uint16]$BrokerPort, $reader) }
+      $wfpLog = @([CompanyOSWfp]::Log)
+      [CompanyOSWfp]::Close()
+      if ($rc -ne 0) { throw ('WFP_INSTALL_FAILED 0x{0:x}' -f $rc) }
+
+      $state.phase = 'installed'
+      $state.installedAt = (Get-Date).ToString('o')
+      Save-State $state
+    } catch {
+      # AUDIT-S4: any failure rolls back through the same removal routine as uninstall; nothing is left orphaned.
+      $failure = $_.Exception.Message
+      $rolledBack = $null
+      if ($state.sid) {
+        try { $rolledBack = Invoke-Removal $state } catch { $rolledBack = [ordered]@{ ok = $false; error = $_.Exception.Message; stateKept = (Test-Path -LiteralPath $StatePath) } }
+      }
+      Out-Result ([ordered]@{ ok = $false; error = $failure; rolledBack = $rolledBack; wfpLog = $wfpLog }) 1
+    }
     $readBack = Get-Status
     Out-Result ([ordered]@{ ok = ($readBack.state -eq 'ISOLATED'); account = $AccountName; sid = $sid; readBack = $readBack; wfpLog = $wfpLog }) ($(if ($readBack.state -eq 'ISOLATED') { 0 } else { 1 }))
   }
 
   'uninstall' {
     if (-not (Test-Elevated)) { Out-Result ([ordered]@{ ok = $false; error = 'NOT_ELEVATED' }) 1 }
-    $r = [ordered]@{ ok = $true }
-    Load-Wfp
-    $rc = [CompanyOSWfp]::Open()
-    if ($rc -eq 0) { $rc = [CompanyOSWfp]::Uninstall() }
-    $r.wfp = ('0x{0:x}' -f $rc)
-    $left = [CompanyOSWfp]::Status('S-1-0-0', [uint16]1)
-    [CompanyOSWfp]::Close()
-    $r.wfpObjectsLeft = @($left | Where-Object { $_ -notmatch ':missing' }).Count
-    if (Test-Path -LiteralPath $StatePath) {
-      $st = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-      $acesLeft = 0
-      foreach ($g in @($st.grants) + @($st.ancestorGrants)) { if ($g) { $acesLeft += (Remove-AllAces $g.path $st.sid) } }
-      $r.acesLeft = $acesLeft
-      Load-Profile
-      $prof = Get-ProfilePath $st.sid
-      if ($prof) { $r.profileDelete = [CompanyOSProfile]::Delete($st.sid) }
-      $r.profileLeft = [bool]((Get-ProfilePath $st.sid) -or ($prof -and (Test-Path -LiteralPath $prof)))
-      Remove-LocalUser -Name $st.account -ErrorAction SilentlyContinue
-      Remove-ItemProperty -Path $HIDE_KEY -Name $st.account -ErrorAction SilentlyContinue
-      $r.accountLeft = [bool](Get-LocalUser -Name $st.account -ErrorAction SilentlyContinue)
-      Remove-Item -LiteralPath $StatePath -Force
-    } else { $r.acesLeft = 0; $r.accountLeft = $false; $r.profileLeft = $false }
-    if ($rc -ne 0 -or $r.wfpObjectsLeft -ne 0 -or $r.acesLeft -ne 0 -or $r.accountLeft -or $r.profileLeft) { $r.ok = $false }
+    $st = $null
+    if (Test-Path -LiteralPath $StatePath) { $st = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    $r = Invoke-Removal $st
     Out-Result $r ($(if ($r.ok) { 0 } else { 1 }))
   }
 }

@@ -100,12 +100,43 @@ function Get-WfpFilterCount([string]$needle) {
 
 $srvFile = Join-Path $OutDir 'loopback-server.cjs'
 Set-Content -Path $srvFile -Encoding ascii -Value 'const h=require("http");const p=+process.argv[2];h.createServer((q,r)=>{r.end("ok "+p)}).listen({port:p,host:process.argv[3],ipv6Only:false});'
-$s1 = Start-Process -FilePath $node -ArgumentList @("`"$srvFile`"", $brokerPort, '127.0.0.1') -PassThru -WindowStyle Hidden
+# AUDIT-S1: the broker-port listener binds every IPv4 address so the agent's permit can be proved loopback-only
+# (127.0.0.1:<broker> REACHED, <runner LAN IP>:<broker> BLOCKED) while the runner itself reaches the LAN address.
+$s1 = Start-Process -FilePath $node -ArgumentList @("`"$srvFile`"", $brokerPort, '0.0.0.0') -PassThru -WindowStyle Hidden
+$lanIp = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } | ForEach-Object { $_.IPAddress }) | Select-Object -First 1
 $s2 = Start-Process -FilePath $node -ArgumentList @("`"$srvFile`"", $otherPort, '::') -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 2
 $stdUser = "cosstd-$tag"
 $exit = 0
 try {
+  # L0 (AUDIT-S5): a group / well-known reader SID is refused BEFORE any system change (no account, no handoff kept).
+  $l0Account = "cosrej-$tag"
+  if ($l0Account.Length -gt 20) { $l0Account = $l0Account.Substring(0, 20) }
+  $l0pw = Join-Path $userData "isolation\handoff-$([Guid]::NewGuid().ToString('N')).txt"
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $l0pw) | Out-Null
+  Set-Content -LiteralPath $l0pw -Value (New-Password) -NoNewline -Encoding ascii
+  $l0 = Invoke-Setup ([ordered]@{ Action = 'install'; StatePath = $statePath; PasswordFile = $l0pw; BrokerPort = "$brokerPort";
+    AccountName = $l0Account; WorkspaceDirs = $workspace; StateDirs = $stateDir; KernelDirs = $kernelDir; DenyDirs = $userData; ReaderSid = 'S-1-5-32-544' })
+  $report.steps.L0_readerSidRejected = Snap ($l0)
+  Check 'L0.readerSid.groupRejected' ($l0.code -eq 1 -and $l0.json -and $l0.json.error -eq 'READER_SID_INVALID') $l0.json
+  Check 'L0.readerSid.noAccountNoState' (-not (Get-LocalUser -Name $l0Account -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $statePath)) $l0Account
+  Remove-LocalUser -Name $l0Account -ErrorAction SilentlyContinue
+
+  # L0b (AUDIT-S4): a failure after the account, the ACEs and the profile exist rolls everything back through the
+  # shared removal routine - no orphaned account, no profile, no state file.
+  $rbAccount = "cosrb-$tag"
+  if ($rbAccount.Length -gt 20) { $rbAccount = $rbAccount.Substring(0, 20) }
+  $rbpw = Join-Path $userData "isolation\handoff-$([Guid]::NewGuid().ToString('N')).txt"
+  Set-Content -LiteralPath $rbpw -Value (New-Password) -NoNewline -Encoding ascii
+  $l0b = Invoke-Setup ([ordered]@{ Action = 'install'; StatePath = $statePath; PasswordFile = $rbpw; BrokerPort = "$brokerPort";
+    AccountName = $rbAccount; WorkspaceDirs = $workspace; StateDirs = $stateDir; KernelDirs = $kernelDir; DenyDirs = $userData; TestFailAt = 'afterProfile' })
+  $report.steps.L0b_rollback = Snap ($l0b)
+  Progress 'step' 'L0b_rollback' $report.steps.L0b_rollback
+  Check 'L0b.rollback.reported' ($l0b.code -eq 1 -and $l0b.json -and $l0b.json.error -eq 'TEST_FAIL_AT:afterProfile' -and $l0b.json.rolledBack.ok -eq $true) $l0b.json
+  Check 'L0b.rollback.noAccountNoState' (-not (Get-LocalUser -Name $rbAccount -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $statePath)) $rbAccount
+  Check 'L0b.rollback.noProfileNoAce' (-not (Test-Path -LiteralPath (Join-Path $env:SystemDrive "Users\$rbAccount")) -and $l0b.json.rolledBack.acesLeft -eq 0 -and $l0b.json.rolledBack.profileLeft -eq $false) $l0b.json.rolledBack
+  Remove-LocalUser -Name $rbAccount -ErrorAction SilentlyContinue
+
   # L1
   $password = New-Password
   $l1 = Install-Isolation $password
@@ -125,7 +156,7 @@ try {
 
   # L3
   $spec = [ordered]@{
-    out = (Join-Path $workspace 'child-L3.json'); brokerPort = $brokerPort; otherPort = $otherPort; children = $true
+    out = (Join-Path $workspace 'child-L3.json'); brokerPort = $brokerPort; otherPort = $otherPort; children = $true; brokerLanHost = "$lanIp"
     reads = [ordered]@{ workspaceInput = (Join-Path $workspace 'input.txt'); kernelFile = (Join-Path $kernelDir 'probe-child.cjs');
       userDataVault = (Join-Path $userData 'vault.json'); userDataDir = $userData }
     writes = [ordered]@{ workspace = (Join-Path $workspace 'w-L3.txt'); stateDir = (Join-Path $stateDir 'w-L3.txt');
@@ -147,6 +178,10 @@ try {
   Check 'L3.launch.inJob' ($launch -match 'inJob=True') $launch
   Check 'L3.identity' ($C -and $C.identity -eq $account) $C.identity
   Check 'L3.net.broker.reached' ($C -and $C.net.brokerLoopback.outcome -eq 'REACHED') $C.net.brokerLoopback
+  Check 'L3.net.brokerPortOnLan.blocked' ($C -and $lanIp -and (& $notReached $C.net.brokerLan)) ([ordered]@{ lanIp = $lanIp; result = $C.net.brokerLan })
+  $ctl = $null
+  try { $ctl = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 8 -Uri "http://${lanIp}:$brokerPort/probe").StatusCode } catch { $ctl = "$($_.Exception.Message)" }
+  Check 'L3.control.runnerReachesBrokerOnLan' ($ctl -eq 200) ([ordered]@{ lanIp = $lanIp; status = $ctl })
   Check 'L3.net.otherLoopback.blocked' ($C -and (& $notReached $C.net.otherLoopback)) $C.net.otherLoopback
   Check 'L3.net.otherLoopbackV6.blocked' ($C -and (& $notReached $C.net.otherLoopbackV6)) $C.net.otherLoopbackV6
   Check 'L3.net.tcp_1_1_1_1.blocked' ($C -and (& $notReached $C.net.tcp_1_1_1_1_443)) $C.net.tcp_1_1_1_1_443
@@ -253,10 +288,20 @@ try {
   $report.steps.L7_repair = Snap ($l7)
   Progress 'step' 'L7_repair' $report.steps.L7_repair
   Check 'L7.repair.isolated' ($l7.code -eq 0 -and $l7.json.readBack.state -eq 'ISOLATED' -and $l7.json.sid -eq $sid) $l7.json.readBack
-  $report.steps.L7_filterCounts = [ordered]@{ v4 = (Get-WfpFilterCount 'CompanyOS agent v4'); v6 = (Get-WfpFilterCount 'CompanyOS agent v6') }
-  Check 'L7.repair.noDuplicates' ($report.steps.L7_filterCounts.v4 -eq 1 -and $report.steps.L7_filterCounts.v6 -eq 1) $report.steps.L7_filterCounts
+  $report.steps.L7_filterCounts = [ordered]@{ v4 = (Get-WfpFilterCount 'CompanyOS agent v4'); v6 = (Get-WfpFilterCount 'CompanyOS agent v6'); permit = (Get-WfpFilterCount 'CompanyOS agent broker permit') }
+  Check 'L7.repair.noDuplicates' ($report.steps.L7_filterCounts.v4 -eq 1 -and $report.steps.L7_filterCounts.v6 -eq 1 -and $report.steps.L7_filterCounts.permit -eq 1) $report.steps.L7_filterCounts
 
-  # L8
+  # L8a (AUDIT-S6): an incomplete removal keeps the state file (phase=removing) so a retry can finish; status is not
+  # NOT_CONFIGURED while anything is left.
+  $l8a = Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath; TestFailAt = 'removalProfile' })
+  $report.steps.L8a_partialRemoval = Snap ($l8a)
+  Progress 'step' 'L8a_partialRemoval' $report.steps.L8a_partialRemoval
+  $l8aState = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+  Check 'L8a.partial.stateKept' ($l8a.code -eq 1 -and $l8a.json.profileLeft -eq $true -and $l8a.json.stateKept -eq $true -and $l8aState -and $l8aState.phase -eq 'removing') ([ordered]@{ result = $l8a.json; phase = $(if ($l8aState) { $l8aState.phase } else { $null }) })
+  $l8as = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
+  Check 'L8a.partial.statusDegraded' ($l8as.code -eq 2 -and (@($l8as.json.problems) -match '^state:incomplete:removing$').Count -gt 0) $l8as.json
+
+  # L8 (the retry finishes the removal)
   $l8 = Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })
   $report.steps.L8_uninstall = Snap ($l8)
   Progress 'step' 'L8_uninstall' $report.steps.L8_uninstall
@@ -277,7 +322,7 @@ finally {
   if (Test-Path -LiteralPath $statePath) { $report.finalCleanup = Snap ((Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })).json) }
   Remove-LocalUser -Name $stdUser -ErrorAction SilentlyContinue
   foreach ($p in @($s1, $s2)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 43) { $exit = 1 }
+  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 52) { $exit = 1 }
   $report.finishedAt = (Get-Date).ToString('o')
   $report.verdict = if ($exit -eq 0) { 'ISOLATION_LIFECYCLE_PASS' } else { 'ISOLATION_LIFECYCLE_FAIL' }
   if ($report.fatal) { $report.fatal = Snap $report.fatal; Progress 'fatal' 'fatal' $report.fatal }

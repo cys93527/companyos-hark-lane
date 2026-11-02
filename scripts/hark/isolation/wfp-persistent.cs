@@ -4,8 +4,12 @@
 // these objects by FIXED keys, so the app's start-time status check and uninstall find them without state.
 //   provider  CompanyOS agent isolation           649e0283-b6fd-4309-b881-fb82b67fcea9
 //   sublayer  weight 0xFFFF                       60ebdb28-3fae-4291-9bd9-27863ab73a79
-//   filter v4 block account connects except the broker port 74a06708-c0f7-43ca-867f-02ce2db8e953
+//   filter v4 block every account connect (weight 14)      74a06708-c0f7-43ca-867f-02ce2db8e953
+//   permit v4 account -> 127.0.0.1:<broker> TCP (weight 15)  0b6b5b1e-6f0f-4d8a-9a43-3c7a2f1d9e51
 //   filter v6 block every account connect      50418b8d-e4dd-4ee4-b931-d941f447b4de
+// AUDIT-S1: the v4 hole used to be "remote port != broker" on ANY host, so the agent reached <any LAN/internet
+// host>:<broker port>. The hole is now a separate hard PERMIT scoped to remote address 127.0.0.1 + the broker
+// port + TCP, above a block-all filter for the agent account.
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -59,10 +63,15 @@ public static class CompanyOSWfp {
   public static readonly Guid SUBLAYER_KEY = new Guid("60ebdb28-3fae-4291-9bd9-27863ab73a79");
   public static readonly Guid FILTER_V4_KEY = new Guid("74a06708-c0f7-43ca-867f-02ce2db8e953");
   public static readonly Guid FILTER_V6_KEY = new Guid("50418b8d-e4dd-4ee4-b931-d941f447b4de");
+  public static readonly Guid PERMIT_V4_KEY = new Guid("0b6b5b1e-6f0f-4d8a-9a43-3c7a2f1d9e51");
   public static readonly Guid LAYER_CONNECT_V4 = new Guid("c38d57d1-05a7-4c33-904f-7fbceee60e82");
   public static readonly Guid LAYER_CONNECT_V6 = new Guid("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");
   static readonly Guid COND_USER = new Guid("af043a0a-b34d-4f86-979c-c90371af6e66");
   static readonly Guid COND_REMOTE_PORT = new Guid("c35a604d-d22b-4e1a-91b4-68f674ee674b");
+  static readonly Guid COND_REMOTE_ADDRESS = new Guid("b235ae9a-1d64-49b8-a44c-5ff3d9095045");
+  static readonly Guid COND_PROTOCOL = new Guid("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7");
+  const uint LOOPBACK_V4 = 0x7F000001, IPPROTO_TCP = 6, FWP_UINT32 = 3, ACTION_PERMIT = 0x1002;
+  const byte WEIGHT_BLOCK = 14, WEIGHT_PERMIT = 15;
   const uint FWP_UINT8 = 1, FWP_UINT16 = 2, FWP_SD = 14, MATCH_EQUAL = 0, MATCH_NOT_EQUAL = 10;
   const uint ACTION_BLOCK = 0x1001, FILTER_FLAG_PERSISTENT = 0x1, FILTER_FLAG_CLEAR_ACTION_RIGHT = 0x8;
   const uint PROVIDER_FLAG_PERSISTENT = 0x1, SUBLAYER_FLAG_PERSISTENT = 0x1, RPC_C_AUTHN_WINNT = 10;
@@ -88,10 +97,11 @@ public static class CompanyOSWfp {
     Guid k;
     k = FILTER_V4_KEY; uint a = FwpmFilterDeleteByKey0(engine, ref k);
     k = FILTER_V6_KEY; uint b = FwpmFilterDeleteByKey0(engine, ref k);
+    k = PERMIT_V4_KEY; uint e = FwpmFilterDeleteByKey0(engine, ref k);
     k = SUBLAYER_KEY; uint c = FwpmSubLayerDeleteByKey0(engine, ref k);
     k = PROVIDER_KEY; uint d = FwpmProviderDeleteByKey0(engine, ref k);
-    Log.Add("delete v4=" + Hex(a) + " v6=" + Hex(b) + " sublayer=" + Hex(c) + " provider=" + Hex(d));
-    foreach (var rc in new[] { a, b }) if (rc != 0 && rc != E_FILTER_NOT_FOUND) return rc;
+    Log.Add("delete v4=" + Hex(a) + " v6=" + Hex(b) + " permitV4=" + Hex(e) + " sublayer=" + Hex(c) + " provider=" + Hex(d));
+    foreach (var rc in new[] { a, b, e }) if (rc != 0 && rc != E_FILTER_NOT_FOUND) return rc;
     if (c != 0 && c != E_SUBLAYER_NOT_FOUND) return c;
     if (d != 0 && d != E_PROVIDER_NOT_FOUND) return d;
     return 0;
@@ -107,26 +117,32 @@ public static class CompanyOSWfp {
     return sd;
   }
 
-  static uint AddBlock(Guid key, Guid layer, string sid, ushort allowPort, string name, IntPtr objSd) {
+  // block: user only (weight 14). permit: user + 127.0.0.1 + broker port + TCP (weight 15, hard).
+  static uint AddFilter(Guid key, Guid layer, string sid, ushort permitPort, string name, IntPtr objSd) {
     IntPtr sd; uint sdSize;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("O:LSD:(A;;CC;;;" + sid + ")", 1, out sd, out sdSize))
       return (uint)Marshal.GetLastWin32Error();
     try {
       IntPtr blob = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(BLOB))); allocs.Add(blob);
       var b = new BLOB(); b.size = sdSize; b.data = sd; Marshal.StructureToPtr(b, blob, false);
-      int n = allowPort > 0 ? 2 : 1;
+      bool permit = permitPort > 0;
+      int n = permit ? 4 : 1;
       int csize = Marshal.SizeOf(typeof(CONDITION));
       IntPtr conds = Marshal.AllocHGlobal(csize * n); allocs.Add(conds);
       var c0 = new CONDITION(); c0.fieldKey = COND_USER; c0.matchType = MATCH_EQUAL; c0.conditionValue.type = FWP_SD; c0.conditionValue.value = blob;
       Marshal.StructureToPtr(c0, conds, false);
-      if (n == 2) {
-        var c1 = new CONDITION(); c1.fieldKey = COND_REMOTE_PORT; c1.matchType = MATCH_NOT_EQUAL; c1.conditionValue.type = FWP_UINT16; c1.conditionValue.value = (IntPtr)allowPort;
+      if (permit) {
+        var c1 = new CONDITION(); c1.fieldKey = COND_REMOTE_ADDRESS; c1.matchType = MATCH_EQUAL; c1.conditionValue.type = FWP_UINT32; c1.conditionValue.value = (IntPtr)(long)LOOPBACK_V4;
         Marshal.StructureToPtr(c1, IntPtr.Add(conds, csize), false);
+        var c2 = new CONDITION(); c2.fieldKey = COND_REMOTE_PORT; c2.matchType = MATCH_EQUAL; c2.conditionValue.type = FWP_UINT16; c2.conditionValue.value = (IntPtr)permitPort;
+        Marshal.StructureToPtr(c2, IntPtr.Add(conds, csize * 2), false);
+        var c3 = new CONDITION(); c3.fieldKey = COND_PROTOCOL; c3.matchType = MATCH_EQUAL; c3.conditionValue.type = FWP_UINT8; c3.conditionValue.value = (IntPtr)(long)IPPROTO_TCP;
+        Marshal.StructureToPtr(c3, IntPtr.Add(conds, csize * 3), false);
       }
       var f = new FILTER(); f.filterKey = key; f.displayData.name = Str(name); f.flags = FILTER_FLAG_PERSISTENT | FILTER_FLAG_CLEAR_ACTION_RIGHT;
       f.providerKey = GuidPtr(PROVIDER_KEY);
-      f.layerKey = layer; f.subLayerKey = SUBLAYER_KEY; f.weight.type = FWP_UINT8; f.weight.value = (IntPtr)15;
-      f.numFilterConditions = (uint)n; f.filterCondition = conds; f.action.type = ACTION_BLOCK;
+      f.layerKey = layer; f.subLayerKey = SUBLAYER_KEY; f.weight.type = FWP_UINT8; f.weight.value = (IntPtr)(permit ? WEIGHT_PERMIT : WEIGHT_BLOCK);
+      f.numFilterConditions = (uint)n; f.filterCondition = conds; f.action.type = permit ? ACTION_PERMIT : ACTION_BLOCK;
       ulong id; uint rc = FwpmFilterAdd0(engine, ref f, objSd, out id);
       Log.Add("add " + name + " rc=" + Hex(rc) + " id=" + id);
       return rc;
@@ -154,8 +170,9 @@ public static class CompanyOSWfp {
       sl.providerKey = GuidPtr(PROVIDER_KEY); sl.weight = 0xFFFF;
       rc = FwpmSubLayerAdd0(engine, ref sl, objSd); Log.Add("add sublayer rc=" + Hex(rc));
     }
-    if (rc == 0) rc = AddBlock(FILTER_V4_KEY, LAYER_CONNECT_V4, sid, brokerPort, "CompanyOS agent v4: block all except broker port " + brokerPort, objSd);
-    if (rc == 0) rc = AddBlock(FILTER_V6_KEY, LAYER_CONNECT_V6, sid, 0, "CompanyOS agent v6: block all", objSd);
+    if (rc == 0) rc = AddFilter(FILTER_V4_KEY, LAYER_CONNECT_V4, sid, 0, "CompanyOS agent v4: block all", objSd);
+    if (rc == 0) rc = AddFilter(PERMIT_V4_KEY, LAYER_CONNECT_V4, sid, brokerPort, "CompanyOS agent broker permit 127.0.0.1:" + brokerPort + " tcp", objSd);
+    if (rc == 0) rc = AddFilter(FILTER_V6_KEY, LAYER_CONNECT_V6, sid, 0, "CompanyOS agent v6: block all", objSd);
     if (rc == 0) { rc = FwpmTransactionCommit0(engine); Log.Add("commit rc=" + Hex(rc)); }
     else { FwpmTransactionAbort0(engine); Log.Add("abort after rc=" + Hex(rc)); }
     return rc;
@@ -178,35 +195,47 @@ public static class CompanyOSWfp {
   }
 
   // One problem string per deviation; an empty list means the object set is exactly what Install wrote.
-  static void CheckFilter(Guid key, Guid layer, string sid, ushort allowPort, string label, List<string> problems) {
+  // permitPort == 0: block-all for the user; > 0: the 127.0.0.1:<port>/TCP permit.
+  static void CheckFilter(Guid key, Guid layer, string sid, ushort permitPort, string label, List<string> problems) {
     IntPtr p; Guid k = key;
     uint rc = FwpmFilterGetByKey0(engine, ref k, out p);
     if (rc != 0) { problems.Add(label + ":missing(" + Hex(rc) + ")"); return; }
     try {
+      bool permit = permitPort > 0;
       var f = (FILTER)Marshal.PtrToStructure(p, typeof(FILTER));
       if (f.layerKey != layer) problems.Add(label + ":layer");
       if (f.subLayerKey != SUBLAYER_KEY) problems.Add(label + ":sublayer");
-      if (f.action.type != ACTION_BLOCK) problems.Add(label + ":action");
+      if (f.action.type != (permit ? ACTION_PERMIT : ACTION_BLOCK)) problems.Add(label + ":action");
       if ((f.flags & FILTER_FLAG_CLEAR_ACTION_RIGHT) == 0) problems.Add(label + ":notHard");
       if ((f.flags & FILTER_FLAG_PERSISTENT) == 0) problems.Add(label + ":notPersistent");
-      uint want = allowPort > 0 ? 2u : 1u;
+      if (f.weight.type != FWP_UINT8 || (f.weight.value.ToInt64() & 0xFF) != (permit ? WEIGHT_PERMIT : WEIGHT_BLOCK)) problems.Add(label + ":weight");
+      uint want = permit ? 4u : 1u;
       if (f.numFilterConditions != want) { problems.Add(label + ":conditions=" + f.numFilterConditions); return; }
       int csize = Marshal.SizeOf(typeof(CONDITION));
-      bool userOk = false, portOk = allowPort == 0;
+      bool userOk = false, addrOk = !permit, portOk = !permit, protoOk = !permit;
       for (int i = 0; i < f.numFilterConditions; i++) {
         var c = (CONDITION)Marshal.PtrToStructure(IntPtr.Add(f.filterCondition, i * csize), typeof(CONDITION));
         if (c.fieldKey == COND_USER && c.matchType == MATCH_EQUAL && c.conditionValue.type == FWP_SD) {
           string sddl = SddlOf(c.conditionValue.value);
           userOk = sddl != null && sddl.IndexOf(";" + sid + ")", StringComparison.OrdinalIgnoreCase) >= 0;
           if (!userOk) problems.Add(label + ":user=" + (sddl ?? "?"));
-        } else if (c.fieldKey == COND_REMOTE_PORT && c.matchType == MATCH_NOT_EQUAL && c.conditionValue.type == FWP_UINT16) {
+        } else if (permit && c.fieldKey == COND_REMOTE_ADDRESS && c.matchType == MATCH_EQUAL && c.conditionValue.type == FWP_UINT32) {
+          uint addr = (uint)(c.conditionValue.value.ToInt64() & 0xFFFFFFFF);
+          addrOk = addr == LOOPBACK_V4;
+          if (!addrOk) problems.Add(label + ":address=0x" + addr.ToString("x"));
+        } else if (permit && c.fieldKey == COND_REMOTE_PORT && c.matchType == MATCH_EQUAL && c.conditionValue.type == FWP_UINT16) {
           ushort port = (ushort)(c.conditionValue.value.ToInt64() & 0xFFFF);
-          portOk = port == allowPort;
+          portOk = port == permitPort;
           if (!portOk) problems.Add(label + ":port=" + port);
+        } else if (permit && c.fieldKey == COND_PROTOCOL && c.matchType == MATCH_EQUAL && c.conditionValue.type == FWP_UINT8) {
+          protoOk = (c.conditionValue.value.ToInt64() & 0xFF) == IPPROTO_TCP;
+          if (!protoOk) problems.Add(label + ":protocol");
         } else problems.Add(label + ":unexpectedCondition");
       }
       if (!userOk && !problems.Exists(x => x.StartsWith(label + ":user"))) problems.Add(label + ":userMissing");
+      if (!addrOk && !problems.Exists(x => x.StartsWith(label + ":address"))) problems.Add(label + ":addressMissing");
       if (!portOk && !problems.Exists(x => x.StartsWith(label + ":port"))) problems.Add(label + ":portMissing");
+      if (!protoOk && !problems.Exists(x => x.StartsWith(label + ":protocol"))) problems.Add(label + ":protocolMissing");
     } finally { FwpmFreeMemory0(ref p); }
   }
 
@@ -222,7 +251,8 @@ public static class CompanyOSWfp {
       if (sl.weight != 0xFFFF) problems.Add("sublayer:weight=" + sl.weight);
       FwpmFreeMemory0(ref p);
     }
-    CheckFilter(FILTER_V4_KEY, LAYER_CONNECT_V4, sid, brokerPort, "filterV4", problems);
+    CheckFilter(FILTER_V4_KEY, LAYER_CONNECT_V4, sid, 0, "filterV4", problems);
+    CheckFilter(PERMIT_V4_KEY, LAYER_CONNECT_V4, sid, brokerPort, "permitV4", problems);
     CheckFilter(FILTER_V6_KEY, LAYER_CONNECT_V6, sid, 0, "filterV6", problems);
     return problems.ToArray();
   }

@@ -74,32 +74,81 @@ Name: "{autoprograms}\CompanyOS 隔离设置"; Filename: "{sys}\WindowsPowerShel
 Name: "{autoprograms}\CompanyOS 隔离状态"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-isolation.ps1"" -Status"; WorkingDir: "{app}"; IconFilename: "{app}\CompanyOS.exe"
 Name: "{autoprograms}\CompanyOS 移除隔离"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-isolation.ps1"" -Remove"; WorkingDir: "{app}"; IconFilename: "{app}\CompanyOS.exe"
 
-[UninstallRun]
-; H16b-3b: uninstalling CompanyOS also removes a configured isolation (account, WFP filters, ACEs) - no leftovers.
-; Without isolation configured this does nothing and asks for nothing.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\resources\setup\configure-isolation.ps1"" -Remove -IfConfigured -NoPause"; Flags: runhidden waituntilterminated; RunOnceId: "CompanyOSRemoveIsolation"
+; AUDIT-S7: uninstalling CompanyOS also removes a configured isolation (account, WFP filters, ACEs). This used to be
+; an [UninstallRun] entry whose exit code Inno ignores: a failed or refused (UAC) removal still deleted the app and
+; with it the only removal tool, leaving an orphaned hidden account. The removal now runs in InitializeUninstall
+; (before anything is deleted); a failure offers Abort / Retry / Ignore and a silent uninstall aborts.
+; Without isolation configured the helper does nothing and asks for nothing.
 
 [Run]
 Filename: "{app}\CompanyOS.exe"; Description: "{cm:LaunchProgram,CompanyOS}"; Flags: nowait postinstall skipifsilent
 
 [CustomMessages]
+chs.IsolationRemoveFailed=移除 CompanyOS 隔离失败（退出码 %1）。若现在继续卸载，隔离账户和防火墙规则会留在这台电脑上，且移除工具会被一并删除。%n%n「中止」保留 CompanyOS（之后可用开始菜单「CompanyOS 移除隔离」重试），「重试」再试一次，「忽略」仍然卸载。
 chs.InstallDirTooLong=安装路径太长（%1 个字符）。CompanyOS 自带的文件最深 {#MaxRelPath} 个字符，Windows 路径上限为 260，请选择不超过 %2 个字符的安装位置（例如默认位置）。
 
 [Code]
+{ AUDIT-S11: one MAX_PATH rule for the wizard page AND silent installs (/DIR= skips the page). }
+function InstallDirTooLongMessage(Dir: String): String;
+var
+  Limit: Integer;
+begin
+  Result := '';
+  Dir := RemoveBackslashUnlessRoot(Dir);
+  Limit := 259 - {#MaxRelPath} - 1;
+  if Length(Dir) > Limit then
+    Result := FmtMessage(CustomMessage('InstallDirTooLong'), [IntToStr(Length(Dir)), IntToStr(Limit)]);
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  Dir: String;
-  Limit: Integer;
+  Msg: String;
 begin
   Result := True;
   if CurPageID = wpSelectDir then
   begin
-    Dir := RemoveBackslashUnlessRoot(WizardDirValue);
-    Limit := 259 - {#MaxRelPath} - 1;
-    if Length(Dir) > Limit then
+    Msg := InstallDirTooLongMessage(WizardDirValue);
+    if Msg <> '' then
     begin
-      SuppressibleMsgBox(FmtMessage(CustomMessage('InstallDirTooLong'), [IntToStr(Length(Dir)), IntToStr(Limit)]), mbError, MB_OK, IDOK);
+      SuppressibleMsgBox(Msg, mbError, MB_OK, IDOK);
       Result := False;
     end;
   end;
+end;
+
+{ Runs for silent installs too: a non-empty result aborts before any file is written (setup exit code 7). }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := InstallDirTooLongMessage(ExpandConstant('{app}'));
+end;
+
+{ AUDIT-S7: remove a configured isolation BEFORE the uninstaller deletes anything; never ignore a failure silently. }
+function InitializeUninstall(): Boolean;
+var
+  Ps, Params: String;
+  Code, Choice: Integer;
+  Done: Boolean;
+begin
+  Result := True;
+  Ps := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\resources\setup\configure-isolation.ps1') + '" -Remove -IfConfigured -NoPause';
+  Done := False;
+  repeat
+    if not Exec(Ps, Params, '', SW_HIDE, ewWaitUntilTerminated, Code) then
+      Code := -1;
+    Log('isolation removal exit code ' + IntToStr(Code));
+    if Code = 0 then
+      Done := True
+    else
+    begin
+      Choice := SuppressibleMsgBox(FmtMessage(CustomMessage('IsolationRemoveFailed'), [IntToStr(Code)]), mbError, MB_ABORTRETRYIGNORE, IDABORT);
+      if Choice = IDIGNORE then
+        Done := True
+      else if Choice <> IDRETRY then
+      begin
+        Result := False;
+        Done := True;
+      end;
+    end;
+  until Done;
 end;

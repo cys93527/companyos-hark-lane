@@ -32,15 +32,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
-          fetch-depth: 1
-      - name: verify installer run belongs to the tagged commit
+          fetch-depth: 0
+      - name: verify the installer run AND every sibling gate on the tagged commit (AUDIT-S12)
         run: |
           set -euo pipefail
           tag_sha=$(git rev-parse HEAD)
-          run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
-          [ "$(jq -r .name <<<"$run")" = "hark-installer" ] || { echo "run ${RUN_ID} is not hark-installer"; exit 1; }
-          [ "$(jq -r .conclusion <<<"$run")" = "success" ] || { echo "run ${RUN_ID} did not succeed"; exit 1; }
-          [ "$(jq -r .head_sha <<<"$run")" = "$tag_sha" ] || { echo "run ${RUN_ID} is for $(jq -r .head_sha <<<"$run"), tag ${TAG} is ${tag_sha}"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${tag_sha}&per_page=100" > runs.json
+          # hark-isolation is path-filtered: any commit from the last isolation-path change up to the tag counts.
+          last_iso=$(git log -1 --format=%H -- scripts/hark/isolation .github/workflows/hark-isolation.yml)
+          { echo "$last_iso"; git rev-list "${last_iso}..${tag_sha}"; } > iso-shas.txt
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/hark-isolation.yml/runs?per_page=100" > iso-runs.json
+          node scripts/hark/verify-workflow-runs.mjs --mode release --sha "$tag_sha" --installer-run "$RUN_ID" \
+            --runs runs.json --isolation-runs iso-runs.json --isolation-shas iso-shas.txt
           gh release view "$TAG" --json tagName,isPrerelease
       - uses: actions/download-artifact@v4
         with:

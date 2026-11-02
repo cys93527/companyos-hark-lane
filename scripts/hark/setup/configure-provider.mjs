@@ -24,28 +24,29 @@ export const parseArgs = (argv) => {
   return { command, ...opts };
 };
 
-const main = async () => {
+export const main = async (argv = process.argv.slice(2), log = (line) => console.log(line)) => {
   const here = dirname(fileURLToPath(import.meta.url));
   let args;
   try {
-    args = parseArgs(process.argv.slice(2));
+    args = parseArgs(argv);
   } catch (e) {
-    console.log(JSON.stringify({ ok: false, code: 'SETUP_ARGS_INVALID', message: e.message }));
+    log(JSON.stringify({ ok: false, code: 'SETUP_ARGS_INVALID', message: e.message }));
     return 2;
   }
   const dist = args.dist ?? join(here, '..', 'app', 'apps', 'desktop', 'dist');
-  const mod = await import(pathToFileURL(join(dist, 'provider-setup-write.js')).href);
   try {
+    // AUDIT-S13: inside the try, so a missing/broken app module still answers with a JSON error the helper shows.
+    const mod = await import(pathToFileURL(join(dist, 'provider-setup-write.js')).href);
     const profile = mod.readProviderSetupProfile(args.profile ?? join(here, mod.PROVIDER_SETUP_PROFILE_FILE));
     if (args.command === 'remove') {
-      console.log(JSON.stringify({ ok: true, ...mod.removeProviderSetup(args['user-data'], profile) }));
+      log(JSON.stringify({ ok: true, ...mod.removeProviderSetup(args['user-data'], profile) }));
       return 0;
     }
     const r = mod.writeProviderSetup({ userDataDir: args['user-data'], profile, capCny: Number(args['cap-cny']), approvedBy: args['approved-by'] });
-    console.log(JSON.stringify({ ok: true, proofRef: r.proofRef, capMicros: r.capMicros, keyFilePresent: r.keyFilePresent }));
+    log(JSON.stringify({ ok: true, proofRef: r.proofRef, capMicros: r.capMicros, keyFilePresent: r.keyFilePresent }));
     return r.keyFilePresent ? 0 : 4;
   } catch (e) {
-    console.log(JSON.stringify({ ok: false, code: e.code ?? 'SETUP_FAILED', message: e.message }));
+    log(JSON.stringify({ ok: false, code: e.code ?? 'SETUP_FAILED', message: e.message }));
     return 3;
   }
 };

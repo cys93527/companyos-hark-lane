@@ -83,30 +83,115 @@ function Get-IsolationStatus {
   try { $o = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -Action status -StatePath $statePath 2>&1 | Out-String } finally { $ErrorActionPreference = $prev }
   return (Last-Json $o)
 }
+# AUDIT-S8: the install directory (%LOCALAPPDATA%\Programs\CompanyOS) is writable by the signed-in user, so the
+# administrator must never execute the helper files in place (a standard user / malware could edit setup.ps1 or
+# wfp-persistent.cs and the next UAC approval would run that code as administrator). Every elevated run therefore
+# goes through ONE stub that, already elevated:
+#   1. creates a fresh %ProgramData%\CompanyOS-isolation-helper-<guid> directory whose ACL (protected, created
+#      atomically with the directory) grants only Administrators and SYSTEM;
+#   2. reads each helper file ONCE, checks its SHA-256 against the build-time manifest (helper-sha256.json written by
+#      stage-desktop.mjs) and writes exactly those verified bytes into the new directory (CreateNew);
+#   3. runs setup.ps1 from there, then deletes the directory.
+# A mismatch is refused (HELPER_HASH_MISMATCH, exit 3) before anything runs. The stub itself is written to a file in the
+# user's isolation directory; the elevated process is started with a short bootstrap (single quotes only, so the
+# command line survives Start-Process -Verb RunAs) that reads the stub ONCE, checks its SHA-256 (pinned on the command
+# line) and runs exactly those bytes from memory (exit 7 on mismatch) - no window between check and use. Residual (documented in
+# docs/hark-lane/H16_WINDOWS_ISOLATION.md): this initiator script and the manifest live in the same per-user directory;
+# same-user malware that rewrites them as well is outside what a per-user install can prevent.
+$ELEVATED_STUB = @'
+$ErrorActionPreference = 'Stop'
+$src = __SRC__
+$expected = @{ 'setup.ps1' = __HASH_SETUP__; 'wfp-persistent.cs' = __HASH_WFP__ }
+$helperArgs = @(__ARGS__)
+$resultFile = __RESULT__
+$ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$text = ''; $code = 3
+$dir = Join-Path $env:ProgramData ('CompanyOS-isolation-helper-' + [Guid]::NewGuid().ToString('N'))
+try {
+  $sec = New-Object Security.AccessControl.DirectorySecurity
+  $sec.SetAccessRuleProtection($true, $false)
+  foreach ($s in @('S-1-5-32-544', 'S-1-5-18')) {
+    $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($s)), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')))
+  }
+  if (Test-Path -LiteralPath $dir) { throw 'HELPER_DIR_EXISTS' }
+  [void][IO.Directory]::CreateDirectory($dir, $sec)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $mismatch = $null
+  foreach ($name in @('setup.ps1', 'wfp-persistent.cs')) {
+    $bytes = [IO.File]::ReadAllBytes((Join-Path $src $name))
+    $hash = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    if ($hash -ne $expected[$name]) { $mismatch = $name; break }
+    $fs = New-Object IO.FileStream((Join-Path $dir $name), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+    try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+  }
+  if ($mismatch) {
+    $text = '{"ok":false,"error":"HELPER_HASH_MISMATCH","file":"' + $mismatch + '"}'
+  } else {
+    $ErrorActionPreference = 'Continue'
+    $text = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $dir 'setup.ps1') @helperArgs 2>&1 | Out-String
+    $code = $LASTEXITCODE
+  }
+} catch {
+  $text = '{"ok":false,"error":"HELPER_STUB_FAILED","detail":' + (ConvertTo-Json ([string]$_.Exception.Message)) + '}'
+  $code = 3
+} finally {
+  Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+}
+if ($resultFile) { [IO.File]::WriteAllText($resultFile, $text, (New-Object Text.UTF8Encoding($false))) }
+[Console]::Out.Write($text)
+$global:CompanyOSHelperExit = $code
+'@
+function Get-HelperHashes {
+  $manifest = Join-Path $isoRes 'helper-sha256.json'
+  if (-not (Test-Path -LiteralPath $manifest)) { return $null }
+  try {
+    $m = [IO.File]::ReadAllText($manifest) | ConvertFrom-Json
+    $a = [string]$m.'setup.ps1'; $b = [string]$m.'wfp-persistent.cs'
+  } catch { return $null }
+  if ($a -notmatch '^[0-9a-f]{64}$' -or $b -notmatch '^[0-9a-f]{64}$') { return $null }
+  return @{ setup = $a; wfp = $b }
+}
+# Writes the stub (values baked in) and returns the short single-quote-only bootstrap that verifies and runs it.
+function New-ElevatedBootstrap($named, [string]$resultFile) {
+  $hashes = Get-HelperHashes
+  $argList = @()
+  foreach ($k in $named.Keys) { $argList += (Quote-Ps "-$k"); $argList += (Quote-Ps ([string]$named[$k])) }
+  $script = $ELEVATED_STUB.Replace('__SRC__', (Quote-Ps $isoRes)).Replace('__HASH_SETUP__', (Quote-Ps $hashes.setup)).Replace('__HASH_WFP__', (Quote-Ps $hashes.wfp))
+  $script = $script.Replace('__ARGS__', ($argList -join ', ')).Replace('__RESULT__', $(if ($resultFile) { Quote-Ps $resultFile } else { '$null' }))
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($script)
+  $hash = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+  $stubPath = Join-Path $isoDir ('helper-stub-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+  [IO.File]::WriteAllBytes($stubPath, $bytes)
+  $boot = '$b = [IO.File]::ReadAllBytes(' + (Quote-Ps $stubPath) + '); ' +
+    '$h = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($b) | ForEach-Object { $_.ToString(''x2'') }); ' +
+    'if ($h -ne ' + (Quote-Ps $hash) + ') { exit 7 }; ' +
+    '$global:CompanyOSHelperExit = 3; & ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($b))); exit $global:CompanyOSHelperExit'
+  return [pscustomobject]@{ command = $boot; stub = $stubPath }
+}
 # One elevated helper run; its single JSON line comes back through a result file (an elevated child's stdout cannot
 # be piped to this unelevated process).
 function Test-Elevated { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 function Invoke-Elevated($named) {
   New-Item -ItemType Directory -Force -Path $isoDir | Out-Null
   if (Test-Elevated) {
-    # Already administrator (e.g. an elevated uninstaller): run the helper directly and capture ALL of its output
-    # (stdout + stderr) and its exit code through a pipe - no second elevation, nothing can get lost.
-    $args2 = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $helper)
-    foreach ($k in $named.Keys) { $args2 += "-$k"; $args2 += [string]$named[$k] }
+    # Already administrator (e.g. an elevated uninstaller): run the same bootstrap directly and capture ALL of its
+    # output (stdout + stderr) and its exit code through a pipe - no second elevation, nothing can get lost.
+    $boot = New-ElevatedBootstrap $named ''
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $raw = & $ps @args2 2>&1 | Out-String; $code = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+    try { $raw = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $boot.command 2>&1 | Out-String; $code = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $prev; Remove-Item -LiteralPath $boot.stub -Force -ErrorAction SilentlyContinue }
     return [pscustomobject]@{ refused = $false; exit = $code; json = (Last-Json $raw); raw = $raw }
   }
   $result = Join-Path $isoDir ("helper-result-" + [Guid]::NewGuid().ToString('N') + '.txt')
-  $parts = @('&', (Quote-Ps $helper))
-  foreach ($k in $named.Keys) { $parts += "-$k"; $parts += (Quote-Ps ([string]$named[$k])) }
-  $cmd = ($parts -join ' ') + ' *> ' + (Quote-Ps $result) + '; exit $LASTEXITCODE'
+  $boot = New-ElevatedBootstrap $named $result
   try {
-    $p = Start-Process -FilePath $ps -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ('"' + $cmd.Replace('"', '\"') + '"'))
+    $p = Start-Process -FilePath $ps -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $boot.command)
   } catch {
+    Remove-Item -LiteralPath $boot.stub -Force -ErrorAction SilentlyContinue
     return [pscustomobject]@{ refused = $true; exit = $null; json = $null; raw = $_.Exception.Message }
   }
-  $raw = if (Test-Path -LiteralPath $result) { Get-Content -LiteralPath $result -Raw } else { '' }
+  Remove-Item -LiteralPath $boot.stub -Force -ErrorAction SilentlyContinue
+  $raw = if (Test-Path -LiteralPath $result) { Get-Content -LiteralPath $result -Raw -Encoding UTF8 } else { '' }
   Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
   return [pscustomobject]@{ refused = $false; exit = $p.ExitCode; json = (Last-Json $raw); raw = $raw }
 }
@@ -114,6 +199,7 @@ function Invoke-Elevated($named) {
 if (-not (Test-Path -LiteralPath $helper) -or -not (Test-Path -LiteralPath (Join-Path $isoRes 'companyos-isolated-launch.exe'))) {
   Finish 5 "找不到 CompanyOS 隔离组件：$isoRes"
 }
+if ($null -eq (Get-HelperHashes)) { Finish 5 "CompanyOS 隔离组件缺少校验清单（helper-sha256.json）：$isoRes" }
 
 if ($Status) {
   $s = Get-IsolationStatus
@@ -142,7 +228,7 @@ Write-Host '启用后，智能体在专用的本机账户下运行：只能写�
 Write-Host '网络只能连到 CompanyOS 的本机模型代理（由它代你访问模型服务商）。需要一次管理员授权。'
 if (-not $Workspace) {
   $sel = Join-Path $UserData 'workspace-selection.json'
-  if (Test-Path -LiteralPath $sel) { try { $Workspace = (Get-Content -LiteralPath $sel -Raw | ConvertFrom-Json).root } catch { } }
+  if (Test-Path -LiteralPath $sel) { try { $Workspace = ([IO.File]::ReadAllText($sel, (New-Object Text.UTF8Encoding($false))) | ConvertFrom-Json).root } catch { } }
 }
 if (-not $Workspace -or -not (Test-Path -LiteralPath $Workspace -PathType Container)) {
   Finish 2 '请先打开 CompanyOS 选择工作区，然后再运行隔离设置。'

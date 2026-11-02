@@ -27,7 +27,8 @@ describe('H16b isolation removal on uninstall', () => {
   it('the uninstaller removes a configured isolation; Inno RedirectionGuard keeps its default', () => {
     expect(iss).toMatch(/^PrivilegesRequired=lowest\r?$/m);
     expect(iss).not.toMatch(/^RedirectionGuard=/m);
-    expect(iss).toMatch(/configure-isolation\.ps1""\s+-Remove -IfConfigured -NoPause/);
+    // AUDIT-S7: the removal moved from [UninstallRun] (exit code ignored) into InitializeUninstall.
+    expect(iss).toMatch(/configure-isolation\.ps1'\) \+ '" -Remove -IfConfigured -NoPause'/);
   });
   it.each(shipped51)('$name repairs PSModulePath before its first command (5.1 under a pwsh parent)', ({ text }) => {
     const body = text.slice(text.search(/^\)\r?$/m));
@@ -38,8 +39,9 @@ describe('H16b isolation removal on uninstall', () => {
     expect(text).toContain("-notmatch '(^|\\\\)PowerShell(\\\\|$)'");
     expect(text).toContain("'WindowsPowerShell', 'v1.0', 'Modules'");
   });
-  it('an elevated caller runs the helper directly, capturing stdout+stderr and the exit code', () => {
-    expect(configure).toMatch(/if \(Test-Elevated\) \{[\s\S]*?& \$ps @args2 2>&1 \| Out-String; \$code = \$LASTEXITCODE/);
+  it('an elevated caller runs the helper without a second elevation, capturing stdout+stderr and the exit code', () => {
+    // AUDIT-S8: no longer the install-dir setup.ps1 in place (that was the elevation bug) - the verified-copy bootstrap.
+    expect(configure).toMatch(/if \(Test-Elevated\) \{[\s\S]*?& \$ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \$boot\.command 2>&1 \| Out-String; \$code = \$LASTEXITCODE/);
     expect(configure).toContain('退出码 $($r.exit)');
   });
   it('every outcome is appended to %APPDATA%\\CompanyOS\\isolation-setup.log and the smoke keeps it', () => {

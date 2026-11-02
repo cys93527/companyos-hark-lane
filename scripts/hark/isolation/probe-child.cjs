@@ -40,6 +40,8 @@ const run = (cmd, args) => {
 
 (async () => {
   result.net.brokerLoopback = await get(http, `http://127.0.0.1:${spec.brokerPort}/probe`);
+  // AUDIT-S1: the broker port on a NON-loopback address must stay blocked for the agent.
+  if (spec.brokerLanHost) result.net.brokerLan = await get(http, `http://${spec.brokerLanHost}:${spec.brokerPort}/probe`);
   result.net.otherLoopback = await get(http, `http://127.0.0.1:${spec.otherPort}/probe`);
   result.net.otherLoopbackV6 = await tcp('::1', spec.otherPort);
   result.net.tcp_1_1_1_1_443 = await tcp('1.1.1.1', 443);

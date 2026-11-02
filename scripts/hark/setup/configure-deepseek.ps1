@@ -47,8 +47,9 @@ function Finish([int]$code, [string]$message) {
   exit $code
 }
 
+# Never exits the script itself: the caller must be able to restore the previous key on any failure (AUDIT-S9).
 function Invoke-SetupNode([string[]]$arguments) {
-  if (-not (Test-Path -LiteralPath $AppExe)) { Finish 5 "找不到 CompanyOS 程序：$AppExe" }
+  if (-not (Test-Path -LiteralPath $AppExe)) { return [pscustomobject]@{ exit = 5; result = $null; raw = "找不到 CompanyOS 程序：$AppExe" } }
   $script = Join-Path $PSScriptRoot 'configure-provider.mjs'
   $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
   $quoted = @("`"$script`"") + ($arguments | ForEach-Object { "`"$_`"" })
@@ -56,8 +57,18 @@ function Invoke-SetupNode([string[]]$arguments) {
   $env:ELECTRON_RUN_AS_NODE = '1'
   try {
     $p = Start-Process -FilePath $AppExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
-    $text = [IO.File]::ReadAllText($out)
-    return [pscustomobject]@{ exit = $p.ExitCode; result = ($text | ConvertFrom-Json -ErrorAction SilentlyContinue); raw = $text }
+    $text = [IO.File]::ReadAllText($out, (New-Object Text.UTF8Encoding($false)))
+    # AUDIT-S13: node's stderr (an import failure, a crash) is part of the message; it never carries the key.
+    $errText = ([IO.File]::ReadAllText($err, (New-Object Text.UTF8Encoding($false)))).Trim()
+    if ($errText.Length -gt 2000) { $errText = $errText.Substring(0, 2000) + ' ...' }
+    $raw = $text.Trim()
+    if ($errText) { $raw = ($raw + [Environment]::NewLine + $errText).Trim() }
+    # an empty stdout (the module never loaded) must not throw a binding error that would hide $errText
+    $parsed = $null
+    if (-not [string]::IsNullOrWhiteSpace($text)) { try { $parsed = $text | ConvertFrom-Json } catch { $parsed = $null } }
+    return [pscustomobject]@{ exit = $p.ExitCode; result = $parsed; raw = $raw }
+  } catch {
+    return [pscustomobject]@{ exit = -1; result = $null; raw = "无法启动 CompanyOS 程序：$($_.Exception.Message)" }
   } finally {
     $env:ELECTRON_RUN_AS_NODE = $prev
     Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
@@ -69,10 +80,13 @@ $keyFile = Join-Path $providerDir 'model-api-key.dpapi'
 
 if ($Remove) {
   $r = Invoke-SetupNode @('remove', '--user-data', $UserData)
+  if ($r.exit -eq 5) { Finish 5 $r.raw }
   if ($r.exit -ne 0) { Finish 3 "移除失败：$($r.raw)" }
   Finish 0 '已移除 CompanyOS 的模型配置（API Key、模型设置和预算批准）。重新启动 CompanyOS 后生效。'
 }
 
+# AUDIT-S9: the app must exist BEFORE anything is asked or written (it used to be checked after the key was replaced).
+if (-not (Test-Path -LiteralPath $AppExe)) { Finish 5 "找不到 CompanyOS 程序：$AppExe" }
 Write-Host 'CompanyOS 首次配置（DeepSeek）'
 Write-Host 'API Key 只保存在本机，用当前 Windows 用户的 DPAPI 加密；CompanyOS 界面不会读取或显示它。'
 
@@ -109,15 +123,36 @@ $plain = $null
 try {
   $blob = [Security.Cryptography.ProtectedData]::Protect($bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
 } finally { [Array]::Clear($bytes, 0, $bytes.Length) }
-$tmp = "$keyFile.tmp"
-[IO.File]::WriteAllBytes($tmp, $blob)
-Move-Item -LiteralPath $tmp -Destination $keyFile -Force
+# AUDIT-S9: a re-run must never lose the previously working key. The new blob goes to .new, the old key is kept as
+# .bak while the app writes and verifies the rest, and is put back on ANY failure; .bak is deleted only on success.
+$newKey = "$keyFile.new"
+$bakKey = "$keyFile.bak"
+if (Test-Path -LiteralPath $bakKey) {
+  # left by an interrupted earlier run: the .bak is the last working key unless a key file exists again
+  if (Test-Path -LiteralPath $keyFile) { Remove-Item -LiteralPath $bakKey -Force } else { Move-Item -LiteralPath $bakKey -Destination $keyFile -Force }
+}
+[IO.File]::WriteAllBytes($newKey, $blob)
+$hadOld = Test-Path -LiteralPath $keyFile
+function Restore-PreviousKey {
+  Remove-Item -LiteralPath $newKey -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $keyFile -Force -ErrorAction SilentlyContinue
+  if ($hadOld -and (Test-Path -LiteralPath $bakKey)) { Move-Item -LiteralPath $bakKey -Destination $keyFile -Force; return '已恢复原来保存的 API Key' }
+  return '没有保存新的 API Key'
+}
+try {
+  if ($hadOld) { Move-Item -LiteralPath $keyFile -Destination $bakKey -Force }
+  Move-Item -LiteralPath $newKey -Destination $keyFile -Force
+} catch {
+  $restored = Restore-PreviousKey
+  Finish 3 "保存 API Key 失败（$restored）：$($_.Exception.Message)"
+}
 
 # 4. non-secret model settings + budget approval through the app's own parsers
 $cap = $CapCny.ToString([Globalization.CultureInfo]::InvariantCulture)
 $r = Invoke-SetupNode @('write', '--user-data', $UserData, '--cap-cny', $cap, '--approved-by', $env:USERNAME)
 if ($r.exit -ne 0 -or $null -eq $r.result -or -not $r.result.ok) {
-  Remove-Item -LiteralPath $keyFile -Force -ErrorAction SilentlyContinue
-  Finish 3 "配置写入失败，已撤销保存的 API Key：$($r.raw)"
+  $restored = Restore-PreviousKey
+  Finish 3 "配置写入失败（$restored）：$($r.raw)"
 }
+Remove-Item -LiteralPath $bakKey -Force -ErrorAction SilentlyContinue
 Finish 0 "已配置：DeepSeek（deepseek-flash），每个目标花费上限 $cap 元。请重新启动 CompanyOS 后生效；要修改或移除，重新运行「CompanyOS 首次配置」（移除：加 -Remove）。"

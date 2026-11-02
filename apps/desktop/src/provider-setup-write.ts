@@ -75,6 +75,18 @@ const httpsUrl = (v: unknown): boolean => {
   }
 };
 
+/*
+ * AUDIT-D12: the budget fields of the profile become the approval's cap, so they are bounded EXACTLY as the app's
+ * approval parser (readDeploymentBudgetApproval) bounds them; a looser profile bound let setup write an approval the
+ * app refuses (verify failed, partial files left). Parity is pinned by tests/hark/audit-scripts-provider-profile-bounds.
+ */
+export const SETUP_PROFILE_CAP_BOUNDS = {
+  maxCalls: { min: 1, max: 1_000 },
+  maxTokens: { min: 1, max: 100_000_000 },
+  durationMs: { min: 1_000, max: 86_400_000 },
+} as const;
+const inBounds = (v: unknown, b: { readonly min: number; readonly max: number }): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= b.min && v <= b.max;
+
 /** Strict shape check of the deployment profile; null when anything is off (no partial profile is ever used). */
 export const parseProviderSetupProfile = (raw: unknown): ProviderSetupProfile | null => {
   if (!isRecord(raw) || !exactKeys(raw, PROFILE_KEYS) || raw['schema'] !== PROVIDER_SETUP_PROFILE_SCHEMA) return null;
@@ -83,8 +95,8 @@ export const parseProviderSetupProfile = (raw: unknown): ProviderSetupProfile | 
   if (!httpsUrl(p['source']) || !text(p['version']) || p['currency'] !== 'CNY' || p['units'] !== 'MICROS_PER_MILLION_TOKENS' || p['rounding'] !== 'CEIL_TOTAL_PER_REQUEST_MICROS') return null;
   if (!posInt(p['inputRate'], 1_000_000_000) || !posInt(p['outputRate'], 1_000_000_000)) return null;
   if (!text(raw['upstreamModelIdentity']) || !text(raw['billingAccount'])) return null;
-  if (!posInt(raw['inputUpperBound'], 10_000_000) || !posInt(raw['maxCalls'], 100_000) || !posInt(raw['maxTokens'], 1_000_000_000)) return null;
-  if (!posInt(raw['durationMs'], 7 * 24 * 3_600_000) || !posInt(raw['proofValidForMs'], 366 * 24 * 3_600_000)) return null;
+  if (!posInt(raw['inputUpperBound'], 10_000_000) || !inBounds(raw['maxCalls'], SETUP_PROFILE_CAP_BOUNDS.maxCalls) || !inBounds(raw['maxTokens'], SETUP_PROFILE_CAP_BOUNDS.maxTokens)) return null;
+  if (!inBounds(raw['durationMs'], SETUP_PROFILE_CAP_BOUNDS.durationMs) || !posInt(raw['proofValidForMs'], 366 * 24 * 3_600_000)) return null;
   // The model half must be exactly what the app's own model.json parser accepts.
   const model = parseProviderSetupModel({
     schema: PROVIDER_SETUP_SCHEMA,
@@ -143,8 +155,32 @@ export class ProviderSetupWriteError extends Error {
 
 const atomicWrite = (path: string, bytes: string | Uint8Array): void => {
   const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, bytes);
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, bytes);
+    renameSync(tmp, path);
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch { /* the original error is what matters */ }
+    throw e;
+  }
+};
+
+/*
+ * AUDIT-S10/D11: approvedBy is the local account name ($env:USERNAME). Windows allows apostrophes, parentheses, '#',
+ * '&', '!', '~', '{', '}' and combining marks (e.g. Hindi/Thai names) in it, so the old letters/digits-only pattern made
+ * setup fail for those users. Accept exactly what a Windows user name can be: 1-128 characters, no control characters
+ * (C0, DEL, C1), none of the characters Windows forbids (" / \ [ ] : ; | = , + * ? < >), and not only dots/spaces.
+ * The value only ever goes into JSON (JSON.stringify escapes it).
+ */
+const APPROVER_FORBIDDEN = new Set(['"', '/', '\\', '[', ']', ':', ';', '|', '=', ',', '+', '*', '?', '<', '>']);
+export const isValidSetupApprover = (v: unknown): v is string => {
+  if (typeof v !== 'string') return false;
+  const chars = [...v];
+  if (chars.length < 1 || chars.length > 128) return false;
+  for (const c of chars) {
+    const code = c.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || APPROVER_FORBIDDEN.has(c)) return false;
+  }
+  return !/^[. ]+$/u.test(v);
 };
 
 export const capCnyToMicros = (capCny: number): number => {
@@ -157,7 +193,7 @@ export const capCnyToMicros = (capCny: number): number => {
 /** Write model.json + the user's budget approval and price proof. Throws typed errors; never touches the key file. */
 export const writeProviderSetup = (input: ProviderSetupWriteInput): ProviderSetupWriteResult => {
   const capMicros = capCnyToMicros(input.capCny);
-  if (typeof input.approvedBy !== 'string' || !/^[\p{L}\p{N} ._@$-]{1,128}$/u.test(input.approvedBy)) {
+  if (!isValidSetupApprover(input.approvedBy)) {
     throw new ProviderSetupWriteError('SETUP_APPROVER_INVALID', 'approvedBy must be the local account name');
   }
   const profile = parseProviderSetupProfile(input.profile);
@@ -179,6 +215,27 @@ export const writeProviderSetup = (input: ProviderSetupWriteInput): ProviderSetu
     configuredAt: new Date(now).toISOString(),
   };
   const modelPath = join(providerDir, PROVIDER_SETUP_MODEL_FILE);
+  const approvalPath = join(budgetDir, 'approvals.json');
+  // AUDIT-D12: a setup that fails part-way (a write error or the read-back verify) leaves the previous setup exactly
+  // as it was: the earlier model.json/approvals.json come back (or stay absent) and the new proof is removed.
+  const previous = [modelPath, approvalPath].map((path) => ({ path, bytes: existsSync(path) ? readFileSync(path) : null }));
+  const written: string[] = [];
+  try {
+    return writeSetupFiles(input, profile, model, modelPath, approvalPath, budgetDir, now, capMicros, providerDir, written);
+  } catch (e) {
+    for (const p of written) rmSync(p, { force: true });
+    for (const { path, bytes } of previous) {
+      if (bytes === null) rmSync(path, { force: true });
+      else atomicWrite(path, bytes);
+    }
+    throw e;
+  }
+};
+
+const writeSetupFiles = (
+  input: ProviderSetupWriteInput, profile: ProviderSetupProfile, model: ProviderSetupModel, modelPath: string, approvalPath: string,
+  budgetDir: string, now: number, capMicros: number, providerDir: string, written: string[],
+): ProviderSetupWriteResult => {
   atomicWrite(modelPath, JSON.stringify(model, null, 2));
 
   const attestationRef = `user-setup:${new Date(now).toISOString()}:configure-provider:${input.approvedBy}`;
@@ -207,7 +264,9 @@ export const writeProviderSetup = (input: ProviderSetupWriteInput): ProviderSetu
   };
   const proofBytes = Buffer.from(JSON.stringify(proof));
   const hex = createHash('sha256').update(proofBytes).digest('hex');
-  atomicWrite(join(budgetDir, 'proofs', `${hex}.json`), proofBytes);
+  const proofPath = join(budgetDir, 'proofs', `${hex}.json`);
+  if (!existsSync(proofPath)) written.push(proofPath);
+  atomicWrite(proofPath, proofBytes);
   const approval = {
     schema: 'companyos:budget-approval:1',
     approvedBy: input.approvedBy,
@@ -217,7 +276,6 @@ export const writeProviderSetup = (input: ProviderSetupWriteInput): ProviderSetu
     cap: { maxCalls: profile.maxCalls, maxTokens: profile.maxTokens, maxCostMicros: capMicros, durationMs: profile.durationMs },
     proofs: [`sha256:${hex}`],
   };
-  const approvalPath = join(budgetDir, 'approvals.json');
   atomicWrite(approvalPath, JSON.stringify(approval, null, 2));
 
   // Read back through the SAME parsers the app uses: a record the app would refuse is a failed setup.

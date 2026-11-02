@@ -41,8 +41,11 @@
 10. 内核内层 shell 沙箱（上游 sandbox-windows-acl grantWrite）以隔离账户身份给工作区加能力 SID ACE 与 Low 完整性标签，需要 WRITE_DAC + WRITE_OWNER；Modify 不含 → 每次 pwsh 工具调用 Win32 5（hark-installer 41184110972）→ 工作区根目录授予 FullControl（继承），状态目录仍 Modify。
 11. 开始菜单「CompanyOS 隔离设置」脚本在 Windows PowerShell 5.1 上解析失败：PowerShell 把中文弯引号 U+201C/U+201D 当作普通双引号，双引号字符串里的“已隔离”提前结束字符串（hark-installer 41189442900 安装冒烟 h16-*）→ 改用「」，并加 tests/hark/h16b-ps1-quote-chars.test.ts：scripts/hark 下所有 PowerShell 脚本禁止 U+2018–U+201E，含非 ASCII 必须带 UTF-8 BOM。
 12. 卸载时未移除隔离（账户/状态/凭据残留；hark-installer 41191287370、41194007074 输出为空，41195872992 捕获到真实错误）：卸载程序由运行在 PowerShell 7 中的父进程启动时，把 pwsh 的 PSModulePath 传给 Windows PowerShell 5.1，5.1 随后自动加载 PowerShell 7 版的 Microsoft.PowerShell.Security / Utility 失败（`Get-Acl ... module could not be loaded`；早先 `*> 文件` 重定向依赖 Utility，所以连输出都没有）。8817dec 的 RedirectionGuard 推断是错的，已恢复 Inno 默认值。根治：所有随包发布的 5.1 脚本（configure-isolation.ps1、configure-deepseek.ps1、isolation/setup.ps1）在第一条命令前 `Repair-WindowsPowerShellModulePath` 恢复 Windows PowerShell 模块路径（子进程继承修复后的值）；已提权调用方直接运行 helper 并捕获 stdout/stderr/退出码；每次结果写入 %APPDATA%\CompanyOS\isolation-setup.log；tests/hark/h16b-uninstall-removal.test.ts。
+13. v0.1.1 审计（AUDIT-S4/S6）：安装失败会留下孤立的隐藏账户/ACE/配置文件/WFP（state.json 最后才写），卸载不完整时仍删除 state.json → setup.ps1 先做全部纯校验（NTFS/ReFS 本地卷、内核目录、拒绝复用非 CompanyOS 账户），账户创建后立即写临时状态（phase=installing）并逐步更新，任何失败经与卸载共用的 Invoke-Removal 回滚（先结束隔离账户的进程、重试删除配置文件、只删除带 CompanyOS 描述的账户、全部清理干净才删除状态，否则 phase=removing 留待重试）；状态非 installed 一律 ISOLATION_DEGRADED。hark-isolation 生命周期新增 L0b（强制失败→完整回滚）、L8a（强制部分移除→保留状态、降级、重试完成）。
+14. v0.1.1 审计（AUDIT-S8）：提权后直接执行用户可写安装目录中的 setup.ps1 / wfp-persistent.cs（标准用户→管理员提权）→ 所有提权运行改为经同一个桩：在 %ProgramData% 新建仅 Administrators+SYSTEM 可访问的目录（ACL 随目录原子创建），对每个文件只读一次、按构建期清单 helper-sha256.json（stage-desktop.mjs 生成）校验 SHA-256，再把校验过的同一份字节写入该目录并从那里运行，结束后删除；不匹配即 HELPER_HASH_MISMATCH（退出 3）。桩本身由只含单引号的短引导命令按命令行内固定的哈希校验后从内存执行。安装冒烟新增 h16-helper-tamper-refused。
 
 ## 诚实残留（不宣称已关闭）
+- 提权发起方（configure-isolation.ps1）与哈希清单仍位于按用户安装的可写目录：能同时改写它们的同用户恶意代码不在按用户安装能防范的范围内（需要按机器安装，未做）。
 - DNS：名字解析由 DNS Client 服务（NetworkService）代发，按账户 SID 的过滤看不到 → DNS 查询仍可作为外泄信道。
 - 其他卷根（如 D:\）对 Authenticated Users 默认可读 → 隔离账户可列/读这些位置中未单独收紧的数据。
 - 隔离需要一次管理员提权（UAC）；普通标准用户无管理员凭据时无法启用，应用保持"未隔离"标签并照常可用。
