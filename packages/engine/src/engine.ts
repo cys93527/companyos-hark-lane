@@ -15,6 +15,7 @@
  * imports are `@companyos/core` contracts/ports (AGENTS.md §1.3). A real Agent
  * Runtime is plugged in behind `StageHandlerRegistry` in a later sprint.
  */
+import { executionDomainVerdict } from './execution-domain.js';
 import {
   DomainError,
   applyRunEvent,
@@ -36,7 +37,6 @@ import {
   FAULT_CHECKPOINTS,
   STAGE_OUTPUT_TASK_KEY,
 
-  isTaskTerminal,
   createExecutionAttempt,
   executionAttemptIdOf,
   type ExecutionAttempt,
@@ -220,12 +220,23 @@ export interface DriveResult {
   readonly stopReason: DriveStopReason;
 }
 
+/** AUDIT-E2: `recover` with the honoured-cancellation outcome made explicit. */
+export type RunRecoveryOutcome = 'resumed' | 'cancelled' | 'unrecoverable';
+
 export interface WorkflowEngine extends WorkflowEnginePort {
   dispatch(command: unknown): Promise<Result<DispatchOutcome, DomainError>>;
   readRun(runId: string): Promise<WorkflowRun | null>;
   runEvents(runId: string): Promise<readonly StoredEvent[]>;
   /** Deterministic driver used by tests and by the desktop shell's "continue" action. */
   drive(runId: string, options?: DriveOptions): Promise<Result<DriveResult, DomainError>>;
+  /**
+   * AUDIT-E2 — the precise crash-recovery verdict. The frozen Core port's `recover`
+   * can only say 'resumed' | 'unrecoverable'; startup recovery needs the third,
+   * NON-ERROR outcome 'cancelled': the run carried a durable cancel intent (the user
+   * cancelled, the process died before RUN.CANCEL committed), recovery HONOURED it and
+   * the run is now terminal. That is a successful recovery, never a safety failure.
+   */
+  recoverOutcome(runId: string): Promise<RunRecoveryOutcome>;
   /** Pure branch decision (Core semantics) exposed for callers/tests. */
   planBranch(
     branchSet: BranchSet,
@@ -1093,6 +1104,46 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     const taskStates: string[] = [];
     let blocked = false;
 
+    /**
+     * AUDIT-E1 — the ONE post-settlement tail of the claim path. Every way an executor
+     * attempt can end (returned succeeded/failed/blocked, or THREW) funnels its settled
+     * task through here, so no exit path can leave a terminal task under an EXECUTING
+     * run again: CANCELLED -> RUN.CANCEL, FAILED -> EXECUTION.FAIL, BLOCKED -> stage
+     * blocked, otherwise (DONE, or READY awaiting its retry) the stage continues.
+     */
+    const afterSettlement = async (
+      settled: Task,
+      failReason: string,
+    ): Promise<
+      | { readonly kind: 'return'; readonly result: Result<StageOutcome, DomainError> }
+      | { readonly kind: 'blocked' }
+      | { readonly kind: 'continue' }
+    > => {
+      await deps.tasks.put(settled);
+      taskStates.push(settled.state);
+      if (settled.state === 'CANCELLED' || settled.state === 'FAILED') {
+        const cancelled = settled.state === 'CANCELLED';
+        const moved = await inTransaction(() =>
+          dispatchInternal(
+            request.runId,
+            cancelled ? 'RUN.CANCEL' : 'EXECUTION.FAIL',
+            { reason: cancelled ? 'durable cancellation intent' : failReason },
+            true,
+          ),
+        );
+        if (!moved.ok) return { kind: 'return', result: moved };
+        if (!moved.value.ok) {
+          // The run transition itself was refused: acceptable only when the run already
+          // left the live states (e.g. a concurrent cancel won); otherwise surface it.
+          const current = await deps.runs.get(request.runId);
+          if (current === null || !isRunTerminal(current.state)) return { kind: 'return', result: moved.value };
+        }
+        return { kind: 'return', result: ok({ outcome: 'failed', attempts, taskStates }) };
+      }
+      if (settled.state === 'BLOCKED') return { kind: 'blocked' };
+      return { kind: 'continue' };
+    };
+
     for (const taskId of request.taskIds) {
       const loaded = await deps.tasks.get(taskId);
       if (loaded === null) {
@@ -1226,11 +1277,13 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
             return inner.value;
           });
           if (!settledTx.ok) return settledTx;
-          if (settledTx.value.task.state === 'CANCELLED') {
-            const cancelledRun = await inTransaction(() => dispatchInternal(request.runId, 'RUN.CANCEL', { reason: 'durable cancellation intent' }, true));
-            if (!cancelledRun.ok) return cancelledRun;
-          }
-          return ok({ outcome: 'failed', attempts, taskStates: [ ...taskStates, settledTx.value.task.state ] });
+          // AUDIT-E1: the crash outcome shares the ONE settlement tail with a returned
+          // 'failed' — a FAILED (exhausted) task drives EXECUTION.FAIL, a retryable one
+          // stays READY for the next turn. Never a FAILED task under an EXECUTING run.
+          const crashTail = await afterSettlement(settledTx.value.task, `task ${String(claim.task.id)} failed with EXECUTOR_CRASH`);
+          if (crashTail.kind === 'return') return crashTail.result;
+          if (crashTail.kind === 'blocked') { blocked = true; break; }
+          continue;
         }
 
         const normalized = normalizeStageHandlerResult(reported);
@@ -1271,22 +1324,15 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
         });
         if (!settledTx.ok) return settledTx;
         task = settledTx.value.task;
-        await deps.tasks.put(task);
-        taskStates.push(task.state);
-        if (task.state === 'CANCELLED') {
-          const cancelledRun = await inTransaction(() => dispatchInternal(request.runId, 'RUN.CANCEL', { reason: 'durable cancellation intent' }, true));
-          if (!cancelledRun.ok) return cancelledRun;
-          return ok({ outcome: 'failed', attempts, taskStates });
-        }
-        if (settledTx.value.task.state === 'BLOCKED') {
+        const failureCode = result.failure === undefined ? null : result.failure.code;
+        const tail = await afterSettlement(
+          task,
+          failureCode === null ? `task ${task.id} exhausted ${claim.task.maxAttempts} attempts` : `task ${task.id} failed with ${failureCode}${(task.attempts < claim.task.maxAttempts) ? ' (non-retryable)' : ''}`,
+        );
+        if (tail.kind === 'return') return tail.result;
+        if (tail.kind === 'blocked') {
           blocked = true;
           break;
-        }
-        if (settledTx.value.task.state === 'FAILED') {
-          const failureCode = result.failure === undefined ? null : result.failure.code;
-          const failedRun = await inTransaction(() => dispatchInternal(request.runId, 'EXECUTION.FAIL', { reason: failureCode === null ? `task ${task.id} exhausted ${claim.task.maxAttempts} attempts` : `task ${task.id} failed with ${failureCode}${(task.attempts < claim.task.maxAttempts) ? ' (non-retryable)' : ''}` }, true));
-          if (!failedRun.ok) return failedRun;
-          return ok({ outcome: 'failed', attempts, taskStates });
         }
         /*
          * LIVE-SMOKE-FIX-04 — the retryable failure kept the task's RETRY semantics
@@ -1459,15 +1505,9 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     // Sprint21 corrective: the EXECUTION DOMAIN is EVERY pinned stage — no stage-class
     // filter, no phase exception. The pinned DAG alone decides ordering; EXECUTION.COMPLETE
     // fires when the whole graph's work is terminal-successful.
-    const domainStages = graph.value.nodes.map((node) => node.id);
+    // AUDIT-E5: the same predicate the supervisor's EXECUTING gate uses (execution-domain.ts).
     const tasks = await deps.tasksOfRun!(runId);
-    for (const stageId of domainStages) {
-      const stageTasks = tasks.filter((task) => String(task.stageId) === String(stageId));
-      if (stageTasks.length === 0) return ok(false);
-      if (stageTasks.some((task) => !isTaskTerminal(task.state))) return ok(false);
-      if (!stageTasks.some((task) => task.state === 'DONE')) return ok(false);
-    }
-    return ok(true);
+    return ok(executionDomainVerdict(graph.value.nodes.map((node) => String(node.id)), tasks).kind === 'complete');
   }
 
   /**
@@ -1557,7 +1597,9 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
               }),
         };
       case 'ROUTING':
-        return options.risk === 'HIGH' || options.risk === 'CRITICAL'
+        // AUDIT-P5: an approval granted for this route returns HERE; the route then resolves
+        // (asking again would loop on the approval gate forever).
+        return (options.risk === 'HIGH' || options.risk === 'CRITICAL') && run.history.at(-1)?.event !== 'APPROVAL_GRANTED'
           ? {
               type: 'APPROVAL.REQUEST',
               reason: `risk ${options.risk}`,
@@ -1730,8 +1772,38 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     });
   }
 
+  async function recoverOutcome(runId: string): Promise<RunRecoveryOutcome> {
+    if (await deps.cancellation?.requested(runId) === true) {
+      // AUDIT-E2: a durable cancel intent is honoured, not "unrecoverable". Success is
+      // judged on the durable run row (terminal after cancel), so a cancel that throws
+      // or leaves the run live is reported unrecoverable instead of rejecting.
+      try {
+        await cancel(runId);
+      } catch (error) {
+        deps.logger?.warn('recovery could not honour a durable cancel intent', {
+          runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return 'unrecoverable';
+      }
+      const after = await deps.runs.get(runId);
+      return after !== null && isRunTerminal(after.state) ? 'cancelled' : 'unrecoverable';
+    }
+    return recoverLive(runId);
+  }
+
+  /**
+   * Frozen Core port (ADR-0002): only 'resumed' | 'unrecoverable'. A run whose durable
+   * cancellation was honoured is terminal and therefore not resumable through the port,
+   * so the port keeps reporting 'unrecoverable' there; startup recovery uses
+   * `recoverOutcome`, which distinguishes it.
+   */
   async function recover(runId: string): Promise<'resumed' | 'unrecoverable'> {
-    if (await deps.cancellation?.requested(runId)) { await cancel(runId); return 'unrecoverable'; }
+    const outcome = await recoverOutcome(runId);
+    return outcome === 'resumed' ? 'resumed' : 'unrecoverable';
+  }
+
+  async function recoverLive(runId: string): Promise<'resumed' | 'unrecoverable'> {
     const run = await deps.runs.get(runId);
     if (run === null || isRunTerminal(run.state)) return 'unrecoverable';
 
@@ -1754,6 +1826,7 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     advance,
     cancel,
     recover,
+    recoverOutcome,
     planBranch: (branchSet, context) => selectBranch(branchSet, context),
     async readRun(runId: string): Promise<WorkflowRun | null> {
       return deps.runs.get(runId);

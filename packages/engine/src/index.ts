@@ -13,6 +13,7 @@ export {
   type DriveResult,
   type DriveStopReason,
   type WorkflowEngine,
+  type RunRecoveryOutcome,
   type WorkflowEngineDeps,
 } from './engine.js';
 
@@ -508,6 +509,7 @@ export {
 export {
   createStartupRecoveryOrchestrator,
   type StartupRecoveryReport,
+  type RunRecoveryFailure,
   type StartupRecoveryDeps,
   type StartupRecoveryOrchestrator,
 } from './recovery/startup-recovery.js';

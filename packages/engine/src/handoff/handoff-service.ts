@@ -299,8 +299,31 @@ export function createHandoffService(deps: HandoffServiceDeps): HandoffService {
       const nextVersion = { ...created.value, handoffVersion: current.value.handoffVersion + 1 };
       const superseded = supersedeHandoff(current.value, nextVersion);
       if (!superseded.ok) return superseded;
-      await deps.store.update(superseded.value.previous);
-      await deps.store.create(superseded.value.next);
+      // AUDIT (corep finding handoff-service.ts:302-303): the successor is inserted FIRST.
+      // A refused insert (duplicate version, invalid ref, storage failure) therefore changes
+      // nothing - the predecessor can never be left SUPERSEDED without a successor. Only
+      // then is the predecessor marked SUPERSEDED. Both failures surface as typed errors.
+      // (Full two-row atomicity needs the durable store to join an outer UnitOfWork; its
+      // synchronous create transaction refuses nesting today - see fix-engine.md.)
+      const persistFailure = (error: unknown, phase: 'create_successor' | 'supersede_previous'): DomainError =>
+        error instanceof DomainErrorClass
+          ? error
+          : domainError('PERSISTENCE_FAILED', `Handoff "${input.handoffId}" could not be superseded.`, {
+              handoffId: input.handoffId,
+              previousVersion: input.previousVersion,
+              phase,
+              cause: error instanceof Error ? error.message : String(error),
+            });
+      try {
+        await deps.store.create(superseded.value.next);
+      } catch (error) {
+        return err(persistFailure(error, 'create_successor'));
+      }
+      try {
+        await deps.store.update(superseded.value.previous);
+      } catch (error) {
+        return err(persistFailure(error, 'supersede_previous'));
+      }
       await deps.audit.superseded(payloadOf(superseded.value.previous, input.actorId));
       await deps.audit.created(payloadOf(superseded.value.next, input.actorId));
       return ok({ previous: superseded.value.previous, next: superseded.value.next });

@@ -221,7 +221,11 @@ export function applyRunEvent(
     );
   }
 
-  const next = nextRunState(event, run.state, { resumePoint: run.resumePoint });
+  // AUDIT-P5: an approval returns to the state it was requested from (latest APPROVAL_REQUIRED entry).
+  const approvalOrigin = event === 'APPROVAL_GRANTED'
+    ? ([...run.history].reverse().find((change) => change.event === 'APPROVAL_REQUIRED')?.from ?? null)
+    : null;
+  const next = nextRunState(event, run.state, { resumePoint: run.resumePoint, approvalOrigin });
   if (!next.ok) return next;
 
   const reason = failureReasonFor(event, context.failureReason);

@@ -182,7 +182,7 @@ export const RUN_TRANSITIONS: readonly RunTransitionRule[] = [
     event: 'APPROVAL_GRANTED',
     from: ['WAITING_APPROVAL'],
     to: 'EXECUTING',
-    effect: '审批通过，继续执行',
+    effect: '审批通过，回到发起审批的状态继续（规划/路由/执行；见 nextRunState 的 approvalOrigin）',
     emits: ['run.approval_granted'],
   },
   {
@@ -359,7 +359,16 @@ export interface RunTransitionOptions {
    * (`ILLEGAL_TRANSITION`), never a silent fallback.
    */
   readonly resumePoint?: RunState | null;
+  /**
+   * AUDIT-P5: the state `APPROVAL_REQUIRED` was entered from (the `from` of the latest APPROVAL_REQUIRED
+   * history entry). `APPROVAL_GRANTED` returns there, so an approval requested in PLANNING or ROUTING can
+   * never skip PLAN.COMPLETE / ROUTE.RESOLVE. Absent = the rule's fallback (EXECUTING).
+   */
+  readonly approvalOrigin?: RunState | null;
 }
+
+/** AUDIT-P5: the states APPROVAL_REQUIRED is legal from (and APPROVAL_GRANTED returns to). */
+export const APPROVAL_ORIGIN_STATES: readonly RunState[] = ['PLANNING', 'ROUTING', 'EXECUTING'];
 
 export function nextRunState(
   event: RunEvent,
@@ -375,6 +384,18 @@ export function nextRunState(
         allowed: allowedRunEvents(from),
       }),
     );
+  }
+  if (event === 'APPROVAL_GRANTED') {
+    const origin = options.approvalOrigin ?? null;
+    if (origin === null) return ok(rule.to);
+    if (!APPROVAL_ORIGIN_STATES.includes(origin)) {
+      return err(
+        domainError('ILLEGAL_TRANSITION', `Cannot return an approval to "${origin}".`, {
+          event, from, approvalOrigin: origin, allowed: [...APPROVAL_ORIGIN_STATES],
+        }),
+      );
+    }
+    return ok(origin);
   }
   const resumePoint = options.resumePoint ?? null;
   if (event === 'RESUME' || event === 'RECOVERED') {

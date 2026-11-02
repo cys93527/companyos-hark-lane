@@ -32,7 +32,15 @@ import {
   type AgentExecution,
 } from '@companyos/core';
 
-import { CRASHABLE_STATES } from '../engine.js';
+import { CRASHABLE_STATES, type RunRecoveryOutcome } from '../engine.js';
+
+/** AUDIT-E2: one run the scan could not recover (JSON-serializable, no secrets/paths). */
+export interface RunRecoveryFailure {
+  readonly runId: string;
+  readonly runState: string;
+  readonly phase: 'RECOVERING_COMPLETE' | 'CRASH_RECOVER';
+  readonly cause?: string;
+}
 
 /** Transient, JSON-serializable, no content bytes / secrets / absolute paths (ADR-0021 D9). */
 export interface StartupRecoveryReport {
@@ -41,6 +49,11 @@ export interface StartupRecoveryReport {
   readonly toolsWaitingApproval: number;
   readonly runsScanned: number;
   readonly runsRecovered: number;
+  /**
+   * AUDIT-E2: crash residue whose DURABLE cancel intent recovery honoured (the run is
+   * now terminal-cancelled). A successful recovery outcome, not a safety failure.
+   */
+  readonly runsCancelled: number;
   readonly recoveringRunsCompleted: number;
   readonly runsPaused: number;
   readonly runsWaitingApproval: number;
@@ -61,6 +74,11 @@ export interface StartupRecoveryDeps {
   };
   readonly engine: {
     recover(runId: string): Promise<'resumed' | 'unrecoverable'>;
+    /**
+     * AUDIT-E2: the precise verdict (WorkflowEngine.recoverOutcome). Preferred when
+     * wired; a bare frozen-port engine falls back to `recover`.
+     */
+    recoverOutcome?(runId: string): Promise<RunRecoveryOutcome>;
   };
   readonly runs: EntityStore<WorkflowRun>;
   /** Scan page size for run enumeration (default 200; exhaustiveness is mandatory). */
@@ -109,9 +127,11 @@ export function createStartupRecoveryOrchestrator(deps: StartupRecoveryDeps): St
     const pageSize = deps.runsPageSize ?? 200;
     let runsScanned = 0;
     let runsRecovered = 0;
+    let runsCancelled = 0;
     let recoveringRunsCompleted = 0;
     let runsPaused = 0;
     let runsWaitingApproval = 0;
+    const failures: RunRecoveryFailure[] = [];
     for (let offset = 0; ; offset += pageSize) {
       let page: Awaited<ReturnType<EntityStore<WorkflowRun>['list']>>;
       try {
@@ -135,27 +155,31 @@ export function createStartupRecoveryOrchestrator(deps: StartupRecoveryDeps): St
           // This instance's own prior output resting at its resumePoint — skip.
           continue;
         }
-        if (run.state === 'RECOVERING') {
-          // Finish the EXISTING cycle only — engine.recover's RECOVERING branch never
-          // re-issues CRASH.DETECTED.
-          const outcome = await deps.engine.recover(run.id);
-          if (outcome === 'unrecoverable') {
-            return err(
-              fail('RUN_RECOVERY_FAILED', { runId: run.id, runState: run.state, phase: 'RECOVERING_COMPLETE' }),
-            );
+        const recovering = run.state === 'RECOVERING';
+        if (recovering || (CRASHABLE_STATES as readonly string[]).includes(run.state)) {
+          // RECOVERING: finish the EXISTING cycle only — engine.recover's RECOVERING
+          // branch never re-issues CRASH.DETECTED.
+          const phase: RunRecoveryFailure['phase'] = recovering ? 'RECOVERING_COMPLETE' : 'CRASH_RECOVER';
+          let outcome: RunRecoveryOutcome;
+          try {
+            outcome = deps.engine.recoverOutcome !== undefined
+              ? await deps.engine.recoverOutcome(run.id)
+              : await deps.engine.recover(run.id);
+          } catch (error) {
+            // AUDIT-E2: a rejected recover is the typed per-run safety failure, never an
+            // unhandled rejection escaping the startup path.
+            failures.push({ runId: run.id, runState: run.state, phase, cause: String(error) });
+            continue;
           }
-          recoveringRunsCompleted += 1;
-          recoveredRunIds.add(run.id);
-          continue;
-        }
-        if ((CRASHABLE_STATES as readonly string[]).includes(run.state)) {
-          const outcome = await deps.engine.recover(run.id);
           if (outcome === 'unrecoverable') {
-            return err(
-              fail('RUN_RECOVERY_FAILED', { runId: run.id, runState: run.state, phase: 'CRASH_RECOVER' }),
-            );
+            // AUDIT-E2: one bad run never stops the scan — every other crash residue is
+            // still recovered on THIS boot; the failure is reported per run below.
+            failures.push({ runId: run.id, runState: run.state, phase });
+            continue;
           }
-          runsRecovered += 1;
+          if (outcome === 'cancelled') runsCancelled += 1;
+          else if (recovering) recoveringRunsCompleted += 1;
+          else runsRecovered += 1;
           recoveredRunIds.add(run.id);
           continue;
         }
@@ -164,12 +188,20 @@ export function createStartupRecoveryOrchestrator(deps: StartupRecoveryDeps): St
       if (page.items.length < pageSize) break;
     }
 
+    const firstFailure = failures[0];
+    if (firstFailure !== undefined) {
+      // Still fail closed (§43), but only AFTER the exhaustive scan, naming EVERY run that
+      // could not be recovered (the first one's fields stay top-level for existing callers).
+      return err(fail('RUN_RECOVERY_FAILED', { ...firstFailure, failures }));
+    }
+
     return ok({
       agentsInterrupted: agents.value.length,
       toolsInterrupted: toolReport.value.interrupted.length,
       toolsWaitingApproval: toolReport.value.waitingApproval.length,
       runsScanned,
       runsRecovered,
+      runsCancelled,
       recoveringRunsCompleted,
       runsPaused,
       runsWaitingApproval,

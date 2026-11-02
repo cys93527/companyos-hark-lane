@@ -50,7 +50,9 @@ describe('E. approval granted', () => {
       ),
     );
     const granted = await fixture.engine.readRun(routing.id);
-    expect(granted?.state).toBe('EXECUTING');
+    // AUDIT-P5: the approval was requested in ROUTING, so the grant returns to ROUTING (the old 'EXECUTING'
+    // expectation encoded the gate skip past ROUTE.RESOLVE).
+    expect(granted?.state).toBe('ROUTING');
     expect(fixture.approvals.snapshot()[0]?.status).toBe('approved');
   });
 

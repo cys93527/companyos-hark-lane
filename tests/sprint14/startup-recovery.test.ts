@@ -340,7 +340,7 @@ describe('real-durable composition (ADR-0021 order / matrices / events / side ef
       actorId: ACTOR,
       runtime: withLog(real.runtime, 'recoverInterrupted', 'agent', log),
       tools: withLog(real.tools, 'recoverInvocations', 'tool', log),
-      engine: withLog(real.engine, 'recover', 'run', log),
+      engine: withLog(real.engine, 'recoverOutcome', 'run', log),
       runs: real.db.runs,
     }).run();
     expect(report.ok).toBe(true);
