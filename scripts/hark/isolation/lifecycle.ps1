@@ -106,6 +106,19 @@ Start-Sleep -Seconds 2
 $stdUser = "cosstd-$tag"
 $exit = 0
 try {
+  # L0 (AUDIT-S5): a group / well-known reader SID is refused BEFORE any system change (no account, no handoff kept).
+  $l0Account = "cosrej-$tag"
+  if ($l0Account.Length -gt 20) { $l0Account = $l0Account.Substring(0, 20) }
+  $l0pw = Join-Path $userData "isolation\handoff-$([Guid]::NewGuid().ToString('N')).txt"
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $l0pw) | Out-Null
+  Set-Content -LiteralPath $l0pw -Value (New-Password) -NoNewline -Encoding ascii
+  $l0 = Invoke-Setup ([ordered]@{ Action = 'install'; StatePath = $statePath; PasswordFile = $l0pw; BrokerPort = "$brokerPort";
+    AccountName = $l0Account; WorkspaceDirs = $workspace; StateDirs = $stateDir; KernelDirs = $kernelDir; DenyDirs = $userData; ReaderSid = 'S-1-5-32-544' })
+  $report.steps.L0_readerSidRejected = Snap ($l0)
+  Check 'L0.readerSid.groupRejected' ($l0.code -eq 1 -and $l0.json -and $l0.json.error -eq 'READER_SID_INVALID') $l0.json
+  Check 'L0.readerSid.noAccountNoState' (-not (Get-LocalUser -Name $l0Account -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $statePath)) $l0Account
+  Remove-LocalUser -Name $l0Account -ErrorAction SilentlyContinue
+
   # L1
   $password = New-Password
   $l1 = Install-Isolation $password
@@ -277,7 +290,7 @@ finally {
   if (Test-Path -LiteralPath $statePath) { $report.finalCleanup = Snap ((Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })).json) }
   Remove-LocalUser -Name $stdUser -ErrorAction SilentlyContinue
   foreach ($p in @($s1, $s2)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 43) { $exit = 1 }
+  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 45) { $exit = 1 }
   $report.finishedAt = (Get-Date).ToString('o')
   $report.verdict = if ($exit -eq 0) { 'ISOLATION_LIFECYCLE_PASS' } else { 'ISOLATION_LIFECYCLE_FAIL' }
   if ($report.fatal) { $report.fatal = Snap $report.fatal; Progress 'fatal' 'fatal' $report.fatal }

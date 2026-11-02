@@ -177,6 +177,16 @@ switch ($Action) {
     $sec = ConvertTo-SecureString $password -AsPlainText -Force
     $password = $null
 
+    # AUDIT-S5: the reader (the signed-in user who must read the WFP objects) is validated BEFORE any system change.
+    # Local/AD user SIDs are S-1-5-21-a-b-c-d; Microsoft Entra ID (Azure AD) sign-ins are S-1-12-1-a-b-c-d. Groups and
+    # well-known SIDs (e.g. Administrators S-1-5-32-544) are refused.
+    $readerIn = if ($ReaderSid) { $ReaderSid } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+    $reader = $null
+    try { $reader = (New-Object Security.Principal.SecurityIdentifier($readerIn)).Value } catch { $reader = $null }
+    if (-not $reader -or ($reader -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -and $reader -notmatch '^S-1-12-1-\d+-\d+-\d+-\d+$')) {
+      Out-Result ([ordered]@{ ok = $false; error = 'READER_SID_INVALID' }) 1
+    }
+
     $prev = $null
     if (Test-Path -LiteralPath $StatePath) { $prev = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json }
     if (-not $AccountName) { $AccountName = if ($prev) { $prev.account } else { 'CompanyOSAgent' + ([Guid]::NewGuid().ToString('N')).Substring(0, 6) } }
@@ -225,8 +235,6 @@ switch ($Action) {
 
     Load-Wfp
     $rc = [CompanyOSWfp]::Open()
-    $reader = if ($ReaderSid) { $ReaderSid } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
-    if ($reader -notmatch '^S-1-5-21-[0-9-]+$') { Out-Result ([ordered]@{ ok = $false; error = 'READER_SID_INVALID' }) 1 }
     if ($rc -eq 0) { $rc = [CompanyOSWfp]::Install($sid, [uint16]$BrokerPort, $reader) }
     $wfpLog = @([CompanyOSWfp]::Log)
     [CompanyOSWfp]::Close()
