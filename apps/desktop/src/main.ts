@@ -55,7 +55,7 @@ import { captureRuntimeEnv, createProviderRuntimeEnv, readProviderSetup, PROVIDE
 import { loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
 import { productionIsolationLaunchConfig } from './executor/isolation/isolation-status-runner.js';
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
-import { CSP, createWindowOptions } from './security.js';
+import { CSP, createWindowOptions, denyAllPermissions } from './security.js';
 import { createWorkflowApi, type WorkflowApi } from './workflows.js';
 import { openArtifactFoundation, type ArtifactFoundation } from './artifact-stack.js';
 import {
@@ -841,8 +841,13 @@ async function createMainWindow(): Promise<BrowserWindow> {
 /**
  * Serve the strict CSP on every response in packaged builds. Development keeps
  * the Vite dev-server defaults so HMR works (see PROJECT_HANDOFF known limitations).
+ * AUDIT-D9: the packaged renderer is a file:// load, where this header is not delivered;
+ * the same CSP is embedded as a <meta http-equiv> in the built index.html
+ * (apps/renderer/vite.config.ts → csp.ts), which is what applies there.
  */
 function applyContentSecurityPolicy(activeLogger: Logger): void {
+  // AUDIT-D9: default-deny permission policy in every mode (Electron grants by default).
+  denyAllPermissions(session.defaultSession);
   if (isDev) {
     activeLogger.warn('csp header injection skipped in development');
     return;
