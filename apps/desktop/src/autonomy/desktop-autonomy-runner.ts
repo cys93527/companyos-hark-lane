@@ -34,6 +34,9 @@ import type { CoreServices } from '../core-services.js';
 /** The canonical goal workflow id every desktop-created Goal belongs to. */
 const GOAL_WORKFLOW_ID = 'wf-companyos-goal';
 
+/** AUDIT-D5 — page size for the restart-resume sweep (the run store's own per-page clamp). */
+const RESUME_PAGE = 500;
+
 export interface DesktopAutonomyRunner {
   /** Start the driver for one run. Returns false when one is already active for it. */
   readonly start: (companyId: string, runId: string) => boolean;
@@ -61,11 +64,18 @@ export interface DesktopAutonomyRunnerDeps {
    * run store). A null/terminal answer cancels the resume.
    */
   readonly goalRunState?: (runId: string) => Promise<string | null>;
+  /**
+   * AUDIT-E2 (desktop): runs startup recovery could not recover. They are left exactly as they are
+   * (no driver is ever started for them in this process) instead of blocking the whole app.
+   */
+  readonly quarantinedRunIds?: ReadonlySet<string>;
 }
 
 export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): DesktopAutonomyRunner => {
   const active = new Map<string, Promise<unknown>>();
   const stallResumes = new Map<string, number>();
+  /** AUDIT-D6 — the canonical fingerprint of each run's last stall terminal (consecutive-stall guard). */
+  const lastStallFingerprint = new Map<string, string>();
   const maxStallResumes = deps.maxStallResumes ?? 3;
   const stallResumeDelayMs = deps.stallResumeDelayMs ?? 30_000;
   const scheduleDelay =
@@ -132,6 +142,7 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
     if (read.kind === 'terminal' || read.kind === 'not_found') {
       // Canonically the state is KNOWN: stop the bounded mechanism and release the owner.
       stallResumes.delete(runId);
+      lastStallFingerprint.delete(runId);
       releaseRecoveryOwner(runId);
       return;
     }
@@ -202,6 +213,10 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
   const start = (companyId: string, runId: string): boolean => {
     const driver = deps.driver;
     if (active.has(runId) || driver === null) return false;
+    if (deps.quarantinedRunIds?.has(runId) === true) {
+      deps.logger?.warn('autonomy driver not started: run is quarantined after a failed startup recovery', { runId });
+      return false;
+    }
     const attempt = (async () => {
       const result = await driver.run({ companyId, runId });
       if (result.ok) {
@@ -215,7 +230,20 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
         // STAGE 4 — bounded stall-resume (see module doc). Only when durable truth still
         // shows the goal run non-terminal, and never past the counted guard.
         if (result.value.terminal === 'AUTONOMY_STALLED') {
+          /*
+           * AUDIT-D6: the guard counts CONSECUTIVE stalls without progress. A stall whose
+           * canonical fingerprint differs from the previous stall's means the Goal moved
+           * forward in between (the fingerprint covers task/run states, attempts, decisions
+           * and events), so the count restarts instead of exhausting over the run's lifetime.
+           */
+          const previous = lastStallFingerprint.get(runId);
+          if (previous !== undefined && previous !== result.value.fingerprint) stallResumes.delete(runId);
+          lastStallFingerprint.set(runId, result.value.fingerprint);
           await scheduleBoundedResume(companyId, runId, 'autonomy driver stall-resume scheduled');
+        } else {
+          // AUDIT-D6: any non-stall finish ends the consecutive-stall streak.
+          stallResumes.delete(runId);
+          lastStallFingerprint.delete(runId);
         }
       } else {
         deps.logger?.warn('autonomy driver refused', { runId, code: result.error.code });
@@ -253,9 +281,20 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
     activeRunIds: () => [...active.keys()],
 
     resumeNonTerminalGoalRuns: async (core) => {
-      const runs = (await core.database.runs.list({ limit: 500 })).items.filter(
-        (run) => run.workflowId === GOAL_WORKFLOW_ID && !isRunTerminal(run.state),
-      );
+      /*
+       * AUDIT-D5: page through EVERY run (the store clamps a page to 500, oldest first), as
+       * control-plane homeSummary does — a single page silently dropped every Goal created
+       * after the first ~500 runs from restart resume.
+       */
+      const runs: Awaited<ReturnType<typeof core.database.runs.list>>['items'][number][] = [];
+      for (let offset = 0; ; ) {
+        const page = await core.database.runs.list({ limit: RESUME_PAGE, offset });
+        for (const run of page.items) {
+          if (run.workflowId === GOAL_WORKFLOW_ID && !isRunTerminal(run.state)) runs.push(run);
+        }
+        offset += page.items.length;
+        if (page.items.length === 0 || offset >= page.total) break;
+      }
       const started: string[] = [];
       for (const run of runs) {
         if (start(deps.companyId, run.id)) started.push(run.id);

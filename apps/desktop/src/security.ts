@@ -9,21 +9,10 @@
  */
 import { join } from 'node:path';
 
-import type { BrowserWindowConstructorOptions } from 'electron';
+import type { BrowserWindowConstructorOptions, Session } from 'electron';
 
-/** Content-Security-Policy served to the renderer (dev server overrides it). */
-export const CSP = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
-  "font-src 'self'",
-  "connect-src 'none'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join('; ');
+/** Content-Security-Policy for the renderer (AUDIT-D9: one string, csp.ts; delivered as build-time meta + header). */
+export { CSP } from './csp.js';
 
 export interface HardenedWebPreferences {
   readonly preload: string;
@@ -109,4 +98,16 @@ export function auditWindowOptions(
     });
   }
   return violations;
+}
+
+/**
+ * AUDIT-D9 — default-deny session permission policy. Without a handler Electron GRANTS renderer
+ * permission requests (media, geolocation, notifications, clipboard, HID/serial…). CompanyOS
+ * needs none of them, so every request and every check is refused.
+ */
+export function denyAllPermissions(target: Pick<Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>): void {
+  target.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+  target.setPermissionCheckHandler(() => false);
 }

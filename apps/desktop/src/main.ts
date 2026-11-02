@@ -11,7 +11,8 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,9 +42,12 @@ import {
 import type { ModelRecord } from '@companyos/core';
 import type { RouterAuditEmitter, RouterAuditPayload, HandoffAuditPayload } from '@companyos/engine';
 
-import { composeCoreServices as composeCoreServicesImpl, type ComposeCoreServicesOptions, type CoreServices } from './core-services.js';
+import { composeCoreServices as composeCoreServicesImpl, lastCoreCompositionError, type ComposeCoreServicesOptions, type CoreServices } from './core-services.js';
 import { createDesktopAutonomyRunner, type DesktopAutonomyRunner } from './autonomy/desktop-autonomy-runner.js';
+import { recoveryFailurePolicy } from './startup-recovery-policy.js';
+import { createRuntimeStarter } from './startup-runtime.js';
 import {
+  exportArtifactCopy,
   readArtifactPreview,
   resolveArtifactTarget,
 } from './artifacts.js';
@@ -51,12 +55,13 @@ import { projectReadiness } from './readiness.js';
 import { isDatabaseBootstrapRetryable } from './database-bootstrap-policy.js';
 import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
 import { productionCompositionOptions, productionIsolationResourcesDir, productionResourcesRoot } from './production-composition.js';
-import { applyProviderSetupOverlay, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
+import { captureRuntimeEnv, createProviderRuntimeEnv, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
 import { loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
 import { productionIsolationLaunchConfig } from './executor/isolation/isolation-status-runner.js';
 import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
-import { CSP, createWindowOptions } from './security.js';
+import { CSP, createWindowOptions, denyAllPermissions } from './security.js';
 import { createWorkflowApi, type WorkflowApi } from './workflows.js';
+import { createControlPlaneIpcHandler, neverReject } from './control-plane-ipc.js';
 import { openArtifactFoundation, type ArtifactFoundation } from './artifact-stack.js';
 import {
   clearPersistedSelection,
@@ -113,6 +118,9 @@ function bootstrapDatabase(activeLogger: Logger): DurableDatabase | null {
       chains: ['core', 'engine', 'lifecycle', 'provider', 'registry', 'selection', 'agent', 'tools', 'router', 'handoff', 'memory', 'artifact', 'pack'],
       logger: activeLogger,
     });
+    // AUDIT-D8: a database that opens (boot or retry) clears any earlier refusal.
+    databaseError = null;
+    databaseFailure = null;
     activeLogger.info('database ready', {
       path: opened.path,
       journalMode: opened.journalMode,
@@ -159,6 +167,15 @@ let workflowError: string | null = null;
  * seam; the DEFAULT is the runtime's single actor, never an OS identity.
  */
 const SESSION_ACTOR = process.env['COMPANYOS_ACTOR'] ?? 'user_owner';
+
+/**
+ * AUDIT-D3 — the PRIVATE runtime environment every composition reads (vault, model config,
+ * attempt timeout). Captured at module load, and every secret-shaped name (the model API key,
+ * COMPANYOS_*KEY/TOKEN/SECRET…) is removed from process.env at the same moment, so ShellExecute
+ * (打开/链接), execFile without `env` and Chromium children never inherit a credential. The
+ * H17a setup overlay is applied to this copy, never to process.env.
+ */
+let runtimeEnv: Readonly<Record<string, string | undefined>> = captureRuntimeEnv(process.env);
 /** The single V1 company every desktop-created Goal belongs to (matches the renderer). */
 const COMPANY_ID = 'company_default';
 
@@ -192,6 +209,8 @@ let coreServices: CoreServices | null = null;
  * canonical durable truth (never from renderer memory).
  */
 let autonomyRunner: DesktopAutonomyRunner | null = null;
+/** AUDIT-E2: runs startup recovery could not recover (never driven in this process). */
+const quarantinedRunIds = new Set<string>();
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -202,42 +221,162 @@ async function composeCoreServices(
   options: ComposeCoreServicesOptions,
 ): Promise<CoreServices | null> {
   const composed = await composeCoreServicesImpl(database, activeLogger, options);
-  if (composed === null) return null;
+  if (composed === null) {
+    // AUDIT-D13: the UI shows the composition's own reason, not a generic "unavailable".
+    workflowError = lastCoreCompositionError() ?? 'core services composition failed';
+    return null;
+  }
   if (composed.compositionError !== null) workflowError = composed.compositionError;
   return composed as CoreServices;
 }
 
-async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | null> {  try {
-    // ONE durable handle for the whole app (Sprint 6 carry-over): the shell opened it with
-    // every chain enabled, so the workflow service and the provider registry share the
-    // same connection and the same transaction coordinator.
-    const opened: DurableDatabase | null =
-      shellDatabase ?? (isDatabaseBootstrapRetryable(databaseFailure) ? bootstrapDatabase(activeLogger) : null);
-    if (opened === null) {
-      workflowError = databaseError ?? 'durable database unavailable';
+/**
+ * AUDIT-D8 - the ONE startup sequence (startup-runtime.ts), shared by the boot and the lazy
+ * workflow path. Module state (shellDatabase, artifactFoundation, coreServices, autonomyRunner)
+ * is written only by these steps: the handle when it opens, the composition only after recovery.
+ */
+const runtimeStarter = createRuntimeStarter<DurableDatabase, Extract<ArtifactFoundation, { ok: true }>, CoreServices>({
+  openDatabase: () => {
+    const opened = bootstrapDatabase(logger);
+    if (opened !== null) shellDatabase = opened;
+    return opened;
+  },
+  databaseRetryable: () => isDatabaseBootstrapRetryable(databaseFailure),
+  // Sprint 13 (Task-13-11) - the CAS reconciliation gate runs in QUIESCENT STARTUP: no
+  // artifact write can be in flight. Fatal integrity (CAS missing/hash/size mismatch, reparse
+  // violation, chain disabled) fails startup CLOSED.
+  openFoundation: async (database) => {
+    const foundation = await openArtifactFoundation({
+      // User-local, restart-stable, main-process-only: a sibling of the `data` (SQLite)
+      // and `logs` directories under Electron's userData. Never cwd, never a temp dir,
+      // never renderer/IPC/caller supplied.
+      casRoot: join(app.getPath('userData'), 'artifacts'),
+      database,
+      logger,
+    });
+    if (!foundation.ok) {
+      logger.error('startup failed: artifact CAS integrity is fatal', {
+        casRoot: join(app.getPath('userData'), 'artifacts'),
+        reason: foundation.error.code,
+        detail: foundation.error.message,
+        fatalFindings: foundation.report.fatal.length,
+      });
+      return { ok: false, code: foundation.error.code, message: foundation.error.message };
+    }
+    artifactFoundation = foundation;
+    return { ok: true, value: foundation };
+  },
+  compose: async (database, foundation) =>
+    composeCoreServices(database, logger, {
+      artifactFoundation: foundation,
+      // The ONE production wiring seam (BUG-BB-001 closeout): executor kinds, provider routing
+      // and repository capability come from productionCompositionOptions() - the same function
+      // the production-reachability tests exercise. A missing or unknown adapter fails loud at
+      // dispatch, never a silent mock.
+      ...productionCompositionOptions(runtimeEnv, deploymentBudgetOptions()),
+      runtimeEnv,
+      usageReconciliationDir: join(app.getPath('userData'), 'budget'),
+      embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
+      validatorTrustedStateRoot: app.getPath('userData'),
+      embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
+    }),
+  // Sprint 14 (Task-14-02, ADR-0021): startup recovery - AFTER CAS integrity PASS, BEFORE any
+  // exposure. Manual states (PAUSED / WAITING_* / INTERRUPTED awaiting humans) are reported,
+  // never mutated.
+  recover: async (database, core) => {
+    const recovery = await createStartupRecoveryOrchestrator({
+      actorId: SESSION_ACTOR,
+      runtime: core.runtime,
+      tools: core.tools,
+      engine: core.sprint13.engine,
+      runs: database.runs,
+    }).run();
+    if (recovery.ok) {
+      logger.info('startup recovery complete', { ...recovery.value });
+      return { kind: 'ok' };
+    }
+    // AUDIT-E2: runs the engine could not recover are quarantined (untouched, no driver),
+    // every other recovery failure stays fatal.
+    const policy = recoveryFailurePolicy(recovery.error);
+    if (policy.kind === 'quarantine') {
+      for (const runId of policy.runIds) quarantinedRunIds.add(runId);
+      logger.error('startup recovery: runs could not be recovered; quarantined', {
+        code: recovery.error.code,
+        detail: recovery.error.message,
+        runIds: policy.runIds,
+      });
+      void dialog.showMessageBox({
+        type: 'warning',
+        title: 'CompanyOS',
+        message: `有 ${policy.runIds.length} 个运行在启动恢复时无法恢复，已保持原状且不会自动继续。`,
+        detail: `${policy.runIds.join('\n')}\n\n其他目标照常运行。详情见日志 desktop.log。`,
+      });
+      return { kind: 'ok' };
+    }
+    logger.error('startup failed: recovery safety failure', {
+      code: recovery.error.code,
+      detail: recovery.error.message,
+    });
+    return { kind: 'fatal', code: recovery.error.code, message: recovery.error.message };
+  },
+  commit: (_database, _foundation, core) => {
+    coreServices = core;
+  },
+  // ---- STAGE 2 autonomy resume (canonical, main-process-owned) ----
+  // Every goal run that durable truth still shows as non-terminal gets its driver back. The
+  // driver re-reads canonical state at every step (never renderer memory).
+  startAutonomy: async (database, core) => {
+    if (core.autonomyDriver === null) {
+      logger.warn('autonomy driver not composed; manual advance remains required', {});
+      return;
+    }
+    autonomyRunner = createDesktopAutonomyRunner({
+      companyId: COMPANY_ID,
+      driver: core.autonomyDriver,
+      logger,
+      quarantinedRunIds,
+      goalRunState: async (runId: string) => {
+        const row = await database.runs.get(runId);
+        return row === null ? null : row.state;
+      },
+    });
+    const resumed = await autonomyRunner.resumeNonTerminalGoalRuns(core);
+    logger.info('autonomy resume complete', { resumedRuns: resumed.length, runIds: resumed });
+  },
+  // ---- DESKTOP STAGE 1 restart rehydration (operational context) ----
+  // Re-open the persisted workspace when it still exists. A vanished directory is downgraded
+  // to a cleared selection - the UI asks the user again; no hidden fallback directory.
+  rehydrate: async (core) => {
+    const persisted = readPersistedSelection(app.getPath('userData'));
+    if (persisted === null) return;
+    if (!isExistingDirectory(persisted.root)) {
+      clearPersistedSelection(app.getPath('userData'));
+      logger.warn('persisted workspace directory no longer exists; selection cleared', { root: persisted.root });
+      return;
+    }
+    const reopened = await core.repositoryRuntime.openWorkspace({ root: persisted.root, commandProfile: {} });
+    if (reopened.ok) logger.info('workspace rehydrated from persisted selection', { root: persisted.root });
+    else logger.warn('persisted workspace failed to re-open', { root: persisted.root, code: reopened.error.code });
+  },
+  closeDatabase: (database) => {
+    database.db.close();
+    if (shellDatabase === database) shellDatabase = null;
+    artifactFoundation = null;
+  },
+});
+
+async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | null> {
+  try {
+    // AUDIT-D8: the lazy path runs the SAME startup sequence as the boot (one database handle,
+    // CAS reconcile, composition, recovery, autonomy, rehydrate), resuming at the first step
+    // that has not succeeded yet; it never opens a second handle.
+    const started = await runtimeStarter.start();
+    if (started.kind !== 'ready') {
+      if (started.kind === 'fatal') workflowError = `${started.code}: ${started.message}`;
+      else if (started.stage === 'database') workflowError = databaseError ?? 'durable database unavailable';
       return null;
     }
-    // Sprint 14 (Task-14-02): the core services were composed during quiescent
-    // startup (before recovery, before any exposure) whenever the database was up;
-    // reuse that instance — one composition, one set of stores, no double registry.
-    const core: CoreServices | null =
-      coreServices !== null && coreServices.database === opened
-        ? coreServices
-        : await composeCoreServices(opened, activeLogger, {
-            artifactFoundation,
-            // The ONE production wiring seam (BUG-BB-001 closeout): executor kinds,
-            // provider routing and repository capability come from
-            // productionCompositionOptions() — the same function the
-            // production-reachability tests exercise. The routed adapter id is a
-            // deployment value (COMPANYOS_EXECUTOR_PROVIDER); a missing or unknown
-            // adapter fails loud at dispatch, never a silent mock.
-            ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
-            usageReconciliationDir: join(app.getPath('userData'), 'budget'),
-      embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
-      embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
-          });
-    if (core === null) return null;
-    coreServices = core;
+    const core = started.core;
     const { database, clock, ids, authz, sessionAuthorize, providers, models, policies, tools, runtime, sprint13, durableReferenceResolver } = core;
     void sprint13;
 
@@ -539,7 +678,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
 
 /**
  * H17a — the ordinary user's provider setup ("CompanyOS 首次配置", resources/setup). Applied to
- * the MAIN process environment once, before any composition reads it; a deployment environment
+ * the PRIVATE runtime environment (AUDIT-D3; never process.env) once, before any composition reads it; a deployment environment
  * that declares the model wins whole. The DPAPI binding is loaded only when a key file exists.
  * Logged by state and counts only — never a name of a secret, never a value.
  */
@@ -547,7 +686,9 @@ async function applyInstalledProviderSetup(): Promise<void> {
   const userData = app.getPath('userData');
   const keyExists = existsSync(join(userData, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE));
   const dpapi = keyExists ? await loadProviderSetupUnprotect(productionResourcesRoot()) : { unprotect: null, detail: null };
-  const result = applyProviderSetupOverlay(process.env, readProviderSetup(userData, dpapi.unprotect));
+  const applied = createProviderRuntimeEnv(runtimeEnv, readProviderSetup(userData, dpapi.unprotect));
+  runtimeEnv = applied.runtimeEnv;
+  const result = applied.result;
   logger.info('provider setup', {
     source: result.source,
     setupState: result.setupState,
@@ -574,6 +715,25 @@ function deploymentBudgetOptions(): { trustedBudgetProofs?: NonNullable<ReturnTy
   return { trustedBudgetProofs: deployment.source, budgetCap: deployment.cap };
 }
 
+let controlPlaneIpcHandler: ((request: unknown) => Promise<unknown>) | null = null;
+let controlPlaneIpcCore: CoreServices | null = null;
+/** AUDIT-D7: one wrapper per composed core (single-flight approval resume lives in it). */
+function controlPlaneIpc(core: CoreServices): (request: unknown) => Promise<unknown> {
+  if (controlPlaneIpcHandler === null || controlPlaneIpcCore !== core) {
+    controlPlaneIpcCore = core;
+    controlPlaneIpcHandler = createControlPlaneIpcHandler({
+      companyId: COMPANY_ID,
+      handle: async (request) => core.controlPlane!.handle(request as never),
+      autonomy: () => (autonomyRunner === null ? null : {
+        start: (companyId: string, runId: string) => autonomyRunner?.start(companyId, runId),
+        resumeNonTerminalGoalRuns: async () => (autonomyRunner === null ? [] : autonomyRunner.resumeNonTerminalGoalRuns(core)),
+      }),
+      logger,
+    });
+  }
+  return controlPlaneIpcHandler;
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(CHANNELS.appVersion, (): string => app.getVersion());
 
@@ -589,7 +749,8 @@ function registerIpcHandlers(): void {
           error: { code: 'PERSISTENCE_FAILED', message: workflowError ?? 'workflow service unavailable', details: {} },
         };
       }
-      return api.handle(withSessionActor(request));
+      // AUDIT-D7/R7: never reject the renderer's invoke.
+      return neverReject(async () => api.handle(withSessionActor(request)), 'WORKFLOW_HANDLER_FAILED', logger);
     },
   );
 
@@ -610,22 +771,9 @@ function registerIpcHandlers(): void {
           },
         };
       }
-      // STAGE 2 — after a canonical Goal is created the main process starts its autonomy
-      // driver, so the operator never has to press 继续 again. The renderer only asked for
-      // the Goal; the loop below lives here, outside the untrusted renderer.
-      const response = await core.controlPlane.handle(withSessionActor(request));
-      if (
-        autonomyRunner !== null &&
-        isRecord(request) &&
-        request['operation'] === 'goal.create' &&
-        isRecord(response) &&
-        response['ok'] === true &&
-        isRecord(response['value']) &&
-        typeof response['value']['runId'] === 'string'
-      ) {
-        autonomyRunner.start(COMPANY_ID, response['value']['runId'] as string);
-      }
-      return response;
+      // STAGE 2 + AUDIT-D7: goal.create starts the Goal's autonomy driver, an approve resumes the
+      // waiting Goals, and a throwing handler answers with the typed envelope (control-plane-ipc.ts).
+      return controlPlaneIpc(core)(withSessionActor(request));
     },
   );
 
@@ -681,9 +829,13 @@ function registerIpcHandlers(): void {
       }
       // Operational context only: remember WHICH directory the user chose so a
       // restart can re-offer it. Never canonical workflow truth.
-      writePersistedSelection(app.getPath('userData'), { root, selectedAt: new Date().toISOString() });
-      logger.info('workspace opened', { root });
-      return { ok: true, root };
+      // AUDIT-D14: persist and return the CANONICAL root the engine bound, never the raw
+      // renderer string (a case/trailing-separator/subst variant would later defeat the
+      // workspaceSwitch identity check and turn a no-op re-affirm into close→reopen).
+      const canonicalRoot = opened.value.canonicalRoot;
+      writePersistedSelection(app.getPath('userData'), { root: canonicalRoot, selectedAt: new Date().toISOString() });
+      logger.info('workspace opened', { root: canonicalRoot });
+      return { ok: true, root: canonicalRoot };
     },
   );
 
@@ -701,6 +853,13 @@ function registerIpcHandlers(): void {
       const result = await switchWorkspace(
         {
           currentRoot: () => core.repositoryRuntime.currentWorkspace()?.canonicalRoot ?? null,
+          canonicalize: (candidate) => {
+            try {
+              return realpathSync.native(candidate);
+            } catch {
+              return null;
+            }
+          },
           close: () => core.repositoryRuntime.closeWorkspace(),
           open: async (next) => {
             const opened = await core.repositoryRuntime.openWorkspace({ root: next, commandProfile: {} });
@@ -767,12 +926,15 @@ function registerIpcHandlers(): void {
       artifactId,
     );
     if (!target.ok) return target;
-    if (operation === 'reveal') {
-      shell.showItemInFolder(target.value.absolutePath);
-      return { ok: true, operation, artifactId };
-    }
-    if (operation === 'open') {
-      const failure = await shell.openPath(target.value.absolutePath);
+    if (operation === 'reveal' || operation === 'open') {
+      // AUDIT-D4: a hash-verified read-only copy, never the canonical CAS object.
+      const copy = await exportArtifactCopy(target.value, artifactFoundation.contentStore, join(tmpdir(), 'companyos-open'));
+      if (!copy.ok) return copy;
+      if (operation === 'reveal') {
+        shell.showItemInFolder(copy.value.path);
+        return { ok: true, operation, artifactId };
+      }
+      const failure = await shell.openPath(copy.value.path);
       return failure === ''
         ? { ok: true, operation, artifactId }
         : { ok: false, code: 'ARTIFACT_OPEN_FAILED', message: failure };
@@ -818,8 +980,13 @@ async function createMainWindow(): Promise<BrowserWindow> {
 /**
  * Serve the strict CSP on every response in packaged builds. Development keeps
  * the Vite dev-server defaults so HMR works (see PROJECT_HANDOFF known limitations).
+ * AUDIT-D9: the packaged renderer is a file:// load, where this header is not delivered;
+ * the same CSP is embedded as a <meta http-equiv> in the built index.html
+ * (apps/renderer/vite.config.ts → csp.ts), which is what applies there.
  */
 function applyContentSecurityPolicy(activeLogger: Logger): void {
+  // AUDIT-D9: default-deny permission policy in every mode (Electron grants by default).
+  denyAllPermissions(session.defaultSession);
   if (isDev) {
     activeLogger.warn('csp header injection skipped in development');
     return;
@@ -855,124 +1022,21 @@ async function main(): Promise<void> {
   });
 
   await applyInstalledProviderSetup();
-  shellDatabase = bootstrapDatabase(logger);
-  // Sprint 13 (Task-13-11) — the CAS reconciliation gate runs in QUIESCENT STARTUP:
-  // the window, the IPC handlers and the workflow API do not exist yet, so no artifact
-  // write can be in flight. Fatal integrity (CAS missing/hash/size mismatch, reparse
-  // violation, chain disabled) fails startup CLOSED — the window and the commands are
-  // never exposed, so the application runtime cannot become "partially healthy".
-  if (shellDatabase !== null) {
-    const foundation = await openArtifactFoundation({
-      // User-local, restart-stable, main-process-only: a sibling of the `data` (SQLite)
-      // and `logs` directories under Electron's userData. Never cwd, never a temp dir,
-      // never renderer/IPC/caller supplied.
-      casRoot: join(app.getPath('userData'), 'artifacts'),
-      database: shellDatabase,
-      logger,
-    });
-    if (!foundation.ok) {
-      logger.error('startup failed: artifact CAS integrity is fatal', {
-        casRoot: join(app.getPath('userData'), 'artifacts'),
-        reason: foundation.error.code,
-        detail: foundation.error.message,
-        fatalFindings: foundation.report.fatal.length,
-      });
-      shellDatabase.db.close();
-      app.exit(1);
-      return;
-    }
-    artifactFoundation = foundation;
-
-    // Sprint 14 (Task-14-02, ADR-0021): quiescent startup recovery — AFTER CAS
-    // integrity PASS, BEFORE any IPC handler / window / command exposure. The core
-    // services are the SAME instances the normal runtime will reuse (no double
-    // composition). A SAFETY FAILURE fails startup closed, exactly like a fatal CAS
-    // finding: no partially healthy runtime. Manual states (PAUSED / WAITING_* /
-    // INTERRUPTED awaiting humans) are reported, never mutated.
-    const core = await composeCoreServices(shellDatabase, logger, {
-      artifactFoundation,
-      // The ONE production wiring seam (BUG-BB-001 closeout) — identical to the
-      // workflow-API composition: this quiescent-startup instance is REUSED as the
-      // product instance whenever the database was up at boot, so both sites must
-      // carry the same wiring.
-      ...productionCompositionOptions(process.env, deploymentBudgetOptions()),
-      usageReconciliationDir: join(app.getPath('userData'), 'budget'),
-      embeddedDshStateRoot: join(app.getPath('userData'), 'agent-kernel-state'),
-      embeddedDshIsolation: productionIsolationLaunchConfig({ resourcesDir: productionIsolationResourcesDir(), userDataDir: app.getPath('userData') }),
-    });
-    if (core === null) {
-      // Composition failure keeps the frozen Sprint 5/6 shell rule: the window may
-      // still open and the workflow surface reports the error lazily. Recovery is
-      // simply unavailable — there is nothing durable it could act on.
-      logger.error('core services composition failed; startup recovery skipped', {
-        error: workflowError,
-      });
-    } else {
-      coreServices = core;
-      const recovery = await createStartupRecoveryOrchestrator({
-        actorId: SESSION_ACTOR,
-        runtime: core.runtime,
-        tools: core.tools,
-        engine: core.sprint13.engine,
-        runs: shellDatabase.runs,
-      }).run();
-      if (!recovery.ok) {
-        logger.error('startup failed: recovery safety failure', {
-          code: recovery.error.code,
-          detail: recovery.error.message,
-        });
-        shellDatabase.db.close();
-        app.exit(1);
-        return;
-      }
-      logger.info('startup recovery complete', { ...recovery.value });
-
-      // ---- STAGE 2 autonomy resume (canonical, main-process-owned) ----
-      // Every goal run that durable truth still shows as non-terminal gets its driver
-      // back. Nothing here reads renderer memory: the driver re-reads canonical state at
-      // every step and stops on terminal success/failure, PAUSED, an approval/authority
-      // decision, or a true external blocker.
-      if (core.autonomyDriver !== null) {
-        autonomyRunner = createDesktopAutonomyRunner({
-          companyId: COMPANY_ID,
-          driver: core.autonomyDriver,
-          logger,
-          goalRunState: async (runId: string) => {
-            const row = await shellDatabase!.runs.get(runId);
-            return row === null ? null : row.state;
-          },
-        });
-        const resumed = await autonomyRunner.resumeNonTerminalGoalRuns(core);
-        logger.info('autonomy resume complete', { resumedRuns: resumed.length, runIds: resumed });
-      } else {
-        logger.warn('autonomy driver not composed; manual advance remains required', {});
-      }
-    }
-
-    // ---- DESKTOP STAGE 1 restart rehydration (operational context) ----
-    // Re-open the persisted workspace when it still exists. The GOALS themselves are
-    // durable canonical truth (nothing to rehydrate); only the directory binding is
-    // restored here. A vanished directory is downgraded to a cleared selection — the
-    // UI asks the user again; there is no hidden fallback to any other directory.
-    const persisted = readPersistedSelection(app.getPath('userData'));
-    if (persisted !== null && coreServices !== null) {
-      if (isExistingDirectory(persisted.root)) {
-        const reopened = await coreServices.repositoryRuntime.openWorkspace({
-          root: persisted.root,
-          commandProfile: {},
-        });
-        if (reopened.ok) {
-          logger.info('workspace rehydrated from persisted selection', { root: persisted.root });
-        } else {
-          logger.warn('persisted workspace failed to re-open', { root: persisted.root, code: reopened.error.code });
-        }
-      } else {
-        clearPersistedSelection(app.getPath('userData'));
-        logger.warn('persisted workspace directory no longer exists; selection cleared', {
-          root: persisted.root,
-        });
-      }
-    }
+  // Sprint 13/14 + AUDIT-D8: the quiescent startup sequence (DB -> CAS gate -> composition ->
+  // recovery -> autonomy -> rehydrate) runs BEFORE any IPC handler / window exists. A fatal
+  // finding fails startup CLOSED - never a partially healthy runtime.
+  const started = await runtimeStarter.start();
+  if (started.kind === 'fatal') {
+    // AUDIT-D4: a fatal startup is never silent - the user sees why before the app exits.
+    const what = started.stage === 'recovery' ? '启动恢复安全检查失败' : '产物存储完整性检查失败';
+    dialog.showErrorBox('CompanyOS 无法启动', `${what}（${started.code}）：${started.message}\n\n详情见日志 desktop.log。`);
+    app.exit(1);
+    return;
+  }
+  if (started.kind === 'unavailable' && started.stage === 'composition') {
+    // Composition failure keeps the frozen Sprint 5/6 shell rule: the window still opens and
+    // the workflow surface reports the error; the lazy path retries the remaining steps.
+    logger.error('core services composition failed; startup recovery skipped', { error: workflowError });
   }
   applyContentSecurityPolicy(logger);
   registerIpcHandlers();

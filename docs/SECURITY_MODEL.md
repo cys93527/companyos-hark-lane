@@ -195,7 +195,9 @@ A startup self-check asserts these flags and refuses to open a window (with a di
 | `form-action` | `'none'` | No form navigation |
 | `worker-src` | `'self' blob:` | Worker pool only |
 
-Delivered as an HTTP header via `session.defaultSession.webRequest.onHeadersReceived` (and mirrored in the dev server config so dev/prod do not diverge).
+The shipped policy is the single string `CSP` in `apps/desktop/src/csp.ts` (authoritative where this design table differs: V1 ships `connect-src 'none'` because the renderer makes no network calls; all model traffic goes through the main process).
+
+Delivery (corrected in v0.1.1, AUDIT-D9): the packaged app loads the renderer from `file://`, and a response-header CSP set through `session.defaultSession.webRequest.onHeadersReceived` is **not** delivered for `file://` loads. The renderer build (`apps/renderer/vite.config.ts`) therefore prepends the same string as a `<meta http-equiv="Content-Security-Policy">` to the built `index.html`, so it governs the packaged renderer; `main.ts` additionally keeps the header for any http(s) response (dev server). `frame-ancestors` is ignored inside a meta CSP; framing of the app is prevented by the navigation/popup guards below (no remote content is ever loaded). The session also denies every permission request/check by default (`setPermissionRequestHandler` / `setPermissionCheckHandler`).
 
 ### 5.3 Navigation and popup guards
 
@@ -396,7 +398,7 @@ Each item is binary and evidence-backed. A sprint is **not** done if any applica
 | # | Check | Evidence | Applies |
 |---|---|---|---|
 | C-01 | `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` in the shipped window config, asserted by a startup self-check | config diff + self-check test log | every sprint |
-| C-02 | CSP delivered in prod build with `default-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`; no `'unsafe-inline'` in `script-src` | response-header test | every sprint |
+| C-02 | CSP delivered in the prod build as a `<meta http-equiv>` in the built `index.html` equal to `apps/desktop/src/csp.ts` (`default-src 'self'`, `object-src 'none'`, `connect-src 'none'`); no `'unsafe-inline'` in `script-src` | built-HTML meta test (apps/desktop/tests/audit-desktop-csp-permissions.test.ts) | every sprint |
 | C-03 | `will-navigate` blocked; `setWindowOpenHandler` denies by default; webview attach blocked; permission requests denied by default | unit tests for each handler | every sprint |
 | C-04 | Every IPC channel is in the static registry; no dynamic channel name exists (lint rule green) | lint output + `grep` for `invoke(` with non-literal args | every sprint |
 | C-05 | Every IPC request/response validated by a zod `.strict()` schema; unknown keys rejected | per-channel tests | every sprint |

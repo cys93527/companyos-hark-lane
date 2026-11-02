@@ -65,6 +65,11 @@ export const planIsolatedLaunch = (input: {
   readonly decision: IsolationDispatchDecision;
   readonly config: Pick<IsolationLaunchConfig, 'launcherPath' | 'credentialPath' | 'fileExists'>;
   readonly workspaceRoot: string;
+  /**
+   * AUDIT-D1: roots the setup granted besides the workspaces (the validator runs its snapshot copy under the
+   * agent-writable kernel state root). Composition-supplied, never renderer input.
+   */
+  readonly extraGrantedRoots?: readonly string[];
   readonly childExecutable: string;
   readonly childArgv: readonly string[];
 }): IsolatedLaunchPlan => {
@@ -78,7 +83,7 @@ export const planIsolatedLaunch = (input: {
   if (!isAbsolute(config.launcherPath) || !exists(config.launcherPath)) problems.push('launcher:missing');
   if (!isAbsolute(config.credentialPath) || !exists(config.credentialPath)) problems.push('credential:missing');
   if (!isAbsolute(input.workspaceRoot)) problems.push('workspace:notAbsolute');
-  else if (!decision.workspaceDirs.some((root) => isWithinRoot(root, input.workspaceRoot))) problems.push('workspace:notGranted');
+  else if (![...decision.workspaceDirs, ...(input.extraGrantedRoots ?? [])].some((root) => isWithinRoot(root, input.workspaceRoot))) problems.push('workspace:notGranted');
   if (!isAbsolute(input.childExecutable)) problems.push('child:notAbsolute');
   if (problems.length > 0) return { kind: 'refused', reasonCode: 'ISOLATION_DEGRADED', problems };
   return {
