@@ -27,7 +27,8 @@ describe('H16b isolation removal on uninstall', () => {
   it('the uninstaller removes a configured isolation; Inno RedirectionGuard keeps its default', () => {
     expect(iss).toMatch(/^PrivilegesRequired=lowest\r?$/m);
     expect(iss).not.toMatch(/^RedirectionGuard=/m);
-    expect(iss).toMatch(/configure-isolation\.ps1""\s+-Remove -IfConfigured -NoPause/);
+    // AUDIT-S7: the removal moved from [UninstallRun] (exit code ignored) into InitializeUninstall.
+    expect(iss).toMatch(/configure-isolation\.ps1'\) \+ '" -Remove -IfConfigured -NoPause'/);
   });
   it.each(shipped51)('$name repairs PSModulePath before its first command (5.1 under a pwsh parent)', ({ text }) => {
     const body = text.slice(text.search(/^\)\r?$/m));

@@ -7,6 +7,13 @@ $dir = Join-Path $env:LOCALAPPDATA 'Programs\CompanyOS-HarkSmoke'
 $result = [ordered]@{ setup = $Setup; installDir = $dir; checks = [ordered]@{} }
 function Check($name, $ok, $detail) { $result.checks[$name] = [ordered]@{ ok = [bool]$ok; detail = "$detail" } }
 
+# AUDIT-S11: a silent install into a too-long /DIR must refuse up front (PrepareToInstall, exit 7) and write nothing.
+$longDir = Join-Path $env:LOCALAPPDATA ('Programs\CompanyOS-TooLong-' + ('x' * 150))  # ~210 chars: under MAX_PATH itself, far above 259 - MaxRelPath - 1
+$pl = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$longDir`"","/LOG=`"$Evidence\install-toolong.log`"" -PassThru -Wait
+$longLeft = [IO.Directory]::Exists('\\?\' + $longDir) -and @([IO.Directory]::EnumerateFileSystemEntries('\\?\' + $longDir)).Count -gt 0
+Check 's11-silent-toolong-refused' (($pl.ExitCode -eq 7) -and (-not $longLeft)) "exit=$($pl.ExitCode) filesLeft=$longLeft"
+if ([IO.Directory]::Exists('\\?\' + $longDir)) { [IO.Directory]::Delete('\\?\' + $longDir, $true) }
+
 $p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$dir`"","/LOG=`"$Evidence\install-setup.log`"" -PassThru -Wait
 Check 'install-exit-0' ($p.ExitCode -eq 0) $p.ExitCode
 $exe = Join-Path $dir 'CompanyOS.exe'
