@@ -42,6 +42,14 @@ if (isolation) {
   for (const required of ['setup.ps1', 'wfp-persistent.cs', 'companyos-isolated-launch.exe']) must(join(isolation, required));
   cpSync(must(isolation), join(out, 'resources', 'isolation'), { recursive: true });
   console.log(`staged isolation helper + launcher from ${isolation}`);
+  // AUDIT-S8: build-time SHA-256 of the files the ELEVATED helper runs; configure-isolation.ps1's elevated stub copies
+  // them into an admin-only directory and refuses to run bytes that do not match (HELPER_HASH_MISMATCH).
+  const helperHashes = {};
+  for (const name of ['setup.ps1', 'wfp-persistent.cs']) {
+    helperHashes[name] = createHash('sha256').update(readFileSync(join(out, 'resources', 'isolation', name))).digest('hex');
+  }
+  writeFileSync(join(out, 'resources', 'isolation', 'helper-sha256.json'), `${JSON.stringify(helperHashes, null, 2)}\n`);
+  console.log(`pinned elevated helper hashes ${JSON.stringify(helperHashes)}`);
 }
 // H17a: the ordinary-user setup helper ("CompanyOS 首次配置") ships from the repo, always.
 for (const required of ['configure-deepseek.ps1', 'configure-provider.mjs']) must(join(root, 'scripts', 'hark', 'setup', required));

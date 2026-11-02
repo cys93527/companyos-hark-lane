@@ -151,6 +151,21 @@ $statusLine = @($statusOut -split "`r?`n" | Where-Object { $_.TrimStart([char]0x
 $statusWs = @(); try { $statusWs = @(($statusLine.TrimStart([char]0xFEFF, ' ') | ConvertFrom-Json).workspaceDirs) } catch { }
 Check 'h16-status-utf8-workspace' (($pr.ExitCode -eq 0) -and ($statusWs -contains $smokeWs) -and ($statusLine -cmatch '^[\x00-\x7E]*$')) "exit=$($pr.ExitCode) line=$statusLine"
 Check 'h16-isolation-no-handoff-left' (@(Get-ChildItem (Join-Path $userData 'isolation') -Filter 'handoff-*' -ErrorAction SilentlyContinue).Count -eq 0) ''
+# AUDIT-S8: the elevated helper never runs bytes that differ from the build-time manifest. Tamper the installed
+# setup.ps1 (user-writable install dir), ask for removal (elevated path): refused with HELPER_HASH_MISMATCH, isolation
+# untouched, no admin-only helper directory or stub left behind; then restore the original bytes.
+$isoSetup = Join-Path $dir 'resources\isolation\setup.ps1'
+$isoSetupBytes = [IO.File]::ReadAllBytes($isoSetup)
+[IO.File]::WriteAllBytes($isoSetup, [byte[]]($isoSetupBytes + [Text.Encoding]::ASCII.GetBytes("`r`n# tampered by installer-smoke`r`n")))
+$ErrorActionPreference = 'Continue'
+& $ps -NoProfile -ExecutionPolicy Bypass -File $isoPs1 -Remove -NoPause *> (Join-Path $Evidence 'h16-helper-tamper.txt')
+$tamperExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllBytes($isoSetup, $isoSetupBytes)
+$tamperOut = Get-Content -LiteralPath (Join-Path $Evidence 'h16-helper-tamper.txt') -Raw -ErrorAction SilentlyContinue
+$helperDirsLeft = @(Get-ChildItem $env:ProgramData -Directory -Filter 'CompanyOS-isolation-helper-*' -ErrorAction SilentlyContinue).Count
+$stubsLeft = @(Get-ChildItem (Join-Path $userData 'isolation') -Filter 'helper-stub-*' -ErrorAction SilentlyContinue).Count
+Check 'h16-helper-tamper-refused' (($tamperExit -eq 3) -and ($tamperOut -match 'HELPER_HASH_MISMATCH') -and (Test-Path $isoState) -and ($helperDirsLeft -eq 0) -and ($stubsLeft -eq 0)) "exit=$tamperExit helperDirsLeft=$helperDirsLeft stubsLeft=$stubsLeft"
 
 $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=`"$Evidence\uninstall.log`"" -PassThru -Wait
 Check 'uninstall-exit-0' ($u.ExitCode -eq 0) $u.ExitCode
