@@ -56,6 +56,24 @@ export const projectEffectiveAuthority = (input: {
 
 export const authorityLabel = (mode: EffectiveAuthorityMode): string => AUTHORITY_LABELS[mode];
 
+/**
+ * AUDIT-R4: the run-state projection above is a STATUS of the open Goal, never a permission: shown as such
+ * ("等待批准 / 执行中 / 未在执行") so it can't be read as the access policy. The chip shows the policy the NEXT
+ * Goal will be created with (the real selection).
+ */
+const AUTHORITY_STATUS_LABELS: Readonly<Record<EffectiveAuthorityMode, string>> = {
+  'ask-permission': '等待批准',
+  'workspace-operations': '执行中',
+  'read-only': '未在执行',
+};
+export const authorityStatusLabel = (authority: { readonly mode: string; readonly basis: string }): string =>
+  authority.basis === 'no-active-run'
+    ? '没有打开的目标'
+    : (AUTHORITY_STATUS_LABELS as Readonly<Record<string, string>>)[authority.mode] ?? authority.mode;
+
+export const accessPolicyLabel = (policy: string | null | undefined): string | null =>
+  ACCESS_POLICY_OPTIONS.find((option) => option.value === policy)?.label ?? null;
+
 /* ------------------------------------------------------- model selector --- */
 
 export interface ModelSelectorViewProps {
@@ -181,6 +199,8 @@ export interface ComposerViewProps {
   readonly ready: boolean;
   readonly busy: boolean;
   readonly authority: EffectiveAuthority;
+  /** AUDIT-R4: the access policy the next Goal is created with (the chip's label). */
+  readonly nextPolicy?: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS' | null;
   readonly modelLabel: string;
   readonly workspaceLabel: string | null;
   readonly pendingIntent: boolean;
@@ -213,7 +233,7 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
       h(
         'button',
         { type: 'button', className: 'composer__chip', onClick: props.onOpenAuthority, 'aria-expanded': props.authorityOpen },
-        `${authorityLabel(props.authority.mode)} ▾`,
+        `${accessPolicyLabel(props.nextPolicy) ?? '访问权限'} ▾`,
       ),
       h('button', { type: 'button', className: 'composer__chip', onClick: props.onOpenTools }, '工具'),
     ),
@@ -292,7 +312,9 @@ export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
   return h(
     'div',
     { className: 'popover', role: 'dialog', 'aria-label': 'authority-popover' },
-    h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '当前权限'), h('span', null, authorityLabel(props.authority.mode))),
+    // AUDIT-R4: the next Goal's policy is the selection; the open Goal's run state is a status, not a permission.
+    h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '下一个目标'), h('span', null, accessPolicyLabel(props.selectedPolicy) ?? '访问权限')),
+    h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '当前目标状态'), h('span', null, authorityStatusLabel(props.authority))),
     h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '依据'), h('span', null, props.authority.basis)),
     props.effectiveGoalPolicy === undefined || props.effectiveGoalPolicy === null
       ? null

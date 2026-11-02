@@ -10,6 +10,7 @@
  */
 import { createElement as h, type JSX } from 'react';
 import { runStateLabel } from './run-outcome.js';
+import { authorityStatusLabel } from './composer.js';
 
 export type ShellView = 'home' | 'chat' | 'knowledge' | 'tools' | 'agents' | 'settings';
 
@@ -216,16 +217,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
 
     h('h3', null, '权限与安全'),
     h('dl', { className: 'kv' },
-      h('dt', null, '当前权限呈现'),
-      h(
-        'dd',
-        null,
-        (props.authority ?? null) === null
-          ? '--'
-          : `${props.authority!.mode}（${props.authority!.basis}）`,
-      ),
-      h('dt', null, '权限可否在界面中切换'),
-      h('dd', null, '不可切换：权限由 CompanyOS Authority / Approval 治理，界面只呈现当前有效权限。'),
+      // AUDIT-R4: the run-state projection is a status, the access policy is chosen per Goal.
+      h('dt', null, '当前目标状态'),
+      h('dd', null, (props.authority ?? null) === null ? '--' : authorityStatusLabel(props.authority!)),
+      h('dt', null, '访问策略'),
+      h('dd', null, '在输入框的权限按钮中为下一个目标选择（询问权限 / 只读 / 工作区操作），随目标提交并由内核沙箱强制；已创建目标的策略不能在界面中修改。'),
       h('dt', null, '高风险操作'),
       h('dd', null, '仍需 canonical 批准（approval.respond），界面不代替引擎决定。'),
     ),

@@ -214,7 +214,9 @@ describe('UX-01..05 chat-first shell', () => {
     const html = renderToString(
       h(AuthorityPopover, { authority: { mode: 'ask-permission', basis: 'blocker:APPROVAL_REQUIRED', mutable: false }, open: true }),
     );
-    expect(html).toContain('询问权限');
+    // AUDIT-R4: the run-state projection is a STATUS ('等待批准'), never shown as the permission itself
+    // (the old assertion that it read '询问权限' encoded the defect).
+    expect(html).toContain('等待批准');
     expect(html).toContain('blocker:APPROVAL_REQUIRED');
     // The UI states plainly that it cannot switch authority.
     expect(html).toContain('只读展示');

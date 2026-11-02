@@ -24,7 +24,8 @@ export type ChatEntry =
   | { readonly kind: 'artifacts'; readonly artifacts: readonly { readonly artifactId: string; readonly kind: string }[] }
   | { readonly kind: 'outcome'; readonly delivered: boolean }
   | { readonly kind: 'failed'; readonly reason: string | null; readonly blockerCodes: readonly string[] }
-  | { readonly kind: 'cancelled' };
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'cancel-requested' };
 
 /**
  * Project the canonical state of ONE goal run into the conversation surface.
@@ -48,6 +49,8 @@ export const projectConversation = (
   // H12b: a cancelled Goal is its own typed ending, never "目标失败".
   const outcome = terminalOutcomeOf(workspace.overview);
   if (outcome === 'CANCELLED') entries.push({ kind: 'cancelled' });
+  // AUDIT-R1: a durable cancel intent on a Goal that has not ended yet.
+  else if (workspace.cancellationRequested === true && outcome === null) entries.push({ kind: 'cancel-requested' });
   const failed = outcome === 'FAILED' || outcome === 'TIMED_OUT';
   if (failed) {
     entries.push({
@@ -144,6 +147,8 @@ export function ChatView(props: ChatViewProps): JSX.Element {
           );
         case 'cancelled':
           return h('div', { key: `c${index}`, className: 'chat__row chat__row--cancelled' }, '目标已取消 · 不再启动新的工作或模型调用');
+        case 'cancel-requested':
+          return h('div', { key: `q${index}`, className: 'chat__row chat__row--cancelled', role: 'status' }, '已请求取消，不再启动新的工作；正在收尾');
         case 'failed':
           return h(
             'div',

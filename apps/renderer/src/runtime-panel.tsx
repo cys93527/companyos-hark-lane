@@ -86,6 +86,8 @@ export interface CanonicalOverview {
 
 export interface CanonicalGoalWorkspace {
   readonly runId: string;
+  /** AUDIT-R1: goal.workspace read-back of a durable cancel intent (main: cancellationRequested). */
+  readonly cancellationRequested?: boolean;
   /** STAGE 4: the Goal's canonical access policy (read-back through goal.workspace). */
   readonly accessPolicy?: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS';
   readonly goal: { readonly objective: string } | null;

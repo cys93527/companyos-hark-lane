@@ -91,6 +91,7 @@ import type { ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
 import { isRunEnded } from './run-outcome.js';
+import { GoalCancelControl } from './cancel-control.js';
 import { DatabaseFailureBanner, readDatabaseFailure } from './database-failure.js';
 
 /** Bounded, read-only, lifecycle-bound polling — never workflow authority. */
@@ -170,6 +171,12 @@ export function App() {
   >('ASK_PERMISSION');
   const [pendingDecisions, setPendingDecisions] = useState<readonly PendingDecision[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
+  // AUDIT-R1: cancel control state of the OPEN Goal (reset on Goal switch).
+  const [cancelConfirming, setCancelConfirming] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelRequestedFor, setCancelRequestedFor] = useState<string | null>(null);
+  const [cancelFailure, setCancelFailure] = useState<{ code: string; message: string } | null>(null);
+  const cancelInFlight = useRef(false);
   const [approvalFailure, setApprovalFailure] = useState<{ code: string; message: string } | null>(null);
   const [usageProjection, setUsageProjection] = useState<Awaited<ReturnType<typeof loadGoalUsage>>>(null);
   // H11: the boss's budget/spend + previewed-plan projection for the selected Goal.
@@ -543,6 +550,8 @@ export function App() {
     setBudgetRead(null);
     setUsageProjection(null);
     setApprovalFailure(null);
+    setCancelConfirming(false);
+    setCancelFailure(null);
   }, [openGoalRunId]);
   useLayoutEffect(() => {
     currentWorkspace.current = runtimeWorkspace?.runId === openGoalRunId ? runtimeWorkspace : null;
@@ -860,6 +869,34 @@ export function App() {
     [controlPlane, pendingApprovalDecision, loadPendingDecisionsNow],
   );
 
+  /** AUDIT-R1: the ONE cancel command for the open Goal (single-flight; main records the durable intent). */
+  const cancelGoal = useCallback(async () => {
+    const goalRunId = openGoalRunId;
+    if (controlPlane === null || goalRunId === null || cancelInFlight.current) return;
+    cancelInFlight.current = true;
+    setCancelBusy(true);
+    setCancelFailure(null);
+    try {
+      const response = (await controlPlane.controlPlaneRequest({
+        operation: 'goal.cancel',
+        payload: { companyId: COMPANY_ID, runId: goalRunId },
+      })) as BridgeEnvelope<{ readonly accepted?: boolean }>;
+      if (selectedGoal.current !== goalRunId) return;
+      if (response.ok === true) {
+        setCancelRequestedFor(goalRunId);
+        setCancelConfirming(false);
+      } else {
+        setCancelFailure({ code: response.error?.code ?? 'GOAL_CANCEL_FAILED', message: response.error?.message ?? '取消请求未被接受。' });
+      }
+    } catch {
+      if (selectedGoal.current === goalRunId) setCancelFailure({ code: 'IPC_FAILED', message: '取消请求结果未确认（通信失败），请刷新后查看。' });
+    } finally {
+      cancelInFlight.current = false;
+      setCancelBusy(false);
+      setRefreshKey((key) => key + 1);
+    }
+  }, [controlPlane, openGoalRunId]);
+
   /** Bounded artifact actions: the renderer names a canonical artifact id only. */
   const runArtifact = useCallback(
     async (operation: 'preview' | 'open' | 'reveal', artifactId: string, kind: string) => {
@@ -1042,6 +1079,17 @@ export function App() {
                       failure: approvalFailure,
                       onDecide: (decision: ApprovalDecision) => void decideApproval(decision),
                     }),
+                h(GoalCancelControl, {
+                  visible: openGoalRunId !== null && runtimeWorkspace?.runId === openGoalRunId &&
+                    runtimeWorkspace.overview != null && !isRunEnded(runtimeWorkspace.overview),
+                  requested: runtimeWorkspace?.cancellationRequested === true || (openGoalRunId !== null && cancelRequestedFor === openGoalRunId),
+                  confirming: cancelConfirming,
+                  busy: cancelBusy,
+                  failure: cancelFailure,
+                  onRequest: () => setCancelConfirming(true),
+                  onConfirm: () => void cancelGoal(),
+                  onDismiss: () => setCancelConfirming(false),
+                }),
                 h(ChatView, {
                   objective: selectedObjective,
                   entries: conversation,
@@ -1093,9 +1141,9 @@ export function App() {
           setSelectedAccessPolicy(policy);
           setPopover(null);
         },
+        // AUDIT-R4: only the open Goal's canonical read-back - never a default when it is unknown.
         effectiveGoalPolicy:
-          ACCESS_POLICY_OPTIONS.find((option) => option.value === (runtimeWorkspace?.accessPolicy ?? 'ASK_PERMISSION'))
-            ?.label ?? null,
+          ACCESS_POLICY_OPTIONS.find((option) => option.value === runtimeWorkspace?.accessPolicy)?.label ?? null,
       }),
       h(ModelSelectorView, {
         options: modelOptions,
@@ -1134,6 +1182,7 @@ export function App() {
         ready: modelReady && workspaceRoot !== null && !pendingIntent,
         busy: submissionBusy,
         authority,
+        nextPolicy: selectedAccessPolicy,
         modelLabel,
         workspaceLabel: workspaceRoot,
         pendingIntent,
