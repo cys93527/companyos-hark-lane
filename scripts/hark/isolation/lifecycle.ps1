@@ -122,6 +122,21 @@ try {
   Check 'L0.readerSid.noAccountNoState' (-not (Get-LocalUser -Name $l0Account -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $statePath)) $l0Account
   Remove-LocalUser -Name $l0Account -ErrorAction SilentlyContinue
 
+  # L0b (AUDIT-S4): a failure after the account, the ACEs and the profile exist rolls everything back through the
+  # shared removal routine - no orphaned account, no profile, no state file.
+  $rbAccount = "cosrb-$tag"
+  if ($rbAccount.Length -gt 20) { $rbAccount = $rbAccount.Substring(0, 20) }
+  $rbpw = Join-Path $userData "isolation\handoff-$([Guid]::NewGuid().ToString('N')).txt"
+  Set-Content -LiteralPath $rbpw -Value (New-Password) -NoNewline -Encoding ascii
+  $l0b = Invoke-Setup ([ordered]@{ Action = 'install'; StatePath = $statePath; PasswordFile = $rbpw; BrokerPort = "$brokerPort";
+    AccountName = $rbAccount; WorkspaceDirs = $workspace; StateDirs = $stateDir; KernelDirs = $kernelDir; DenyDirs = $userData; TestFailAt = 'afterProfile' })
+  $report.steps.L0b_rollback = Snap ($l0b)
+  Progress 'step' 'L0b_rollback' $report.steps.L0b_rollback
+  Check 'L0b.rollback.reported' ($l0b.code -eq 1 -and $l0b.json -and $l0b.json.error -eq 'TEST_FAIL_AT:afterProfile' -and $l0b.json.rolledBack.ok -eq $true) $l0b.json
+  Check 'L0b.rollback.noAccountNoState' (-not (Get-LocalUser -Name $rbAccount -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $statePath)) $rbAccount
+  Check 'L0b.rollback.noProfileNoAce' (-not (Test-Path -LiteralPath (Join-Path $env:SystemDrive "Users\$rbAccount")) -and $l0b.json.rolledBack.acesLeft -eq 0 -and $l0b.json.rolledBack.profileLeft -eq $false) $l0b.json.rolledBack
+  Remove-LocalUser -Name $rbAccount -ErrorAction SilentlyContinue
+
   # L1
   $password = New-Password
   $l1 = Install-Isolation $password
@@ -276,7 +291,17 @@ try {
   $report.steps.L7_filterCounts = [ordered]@{ v4 = (Get-WfpFilterCount 'CompanyOS agent v4'); v6 = (Get-WfpFilterCount 'CompanyOS agent v6'); permit = (Get-WfpFilterCount 'CompanyOS agent broker permit') }
   Check 'L7.repair.noDuplicates' ($report.steps.L7_filterCounts.v4 -eq 1 -and $report.steps.L7_filterCounts.v6 -eq 1 -and $report.steps.L7_filterCounts.permit -eq 1) $report.steps.L7_filterCounts
 
-  # L8
+  # L8a (AUDIT-S6): an incomplete removal keeps the state file (phase=removing) so a retry can finish; status is not
+  # NOT_CONFIGURED while anything is left.
+  $l8a = Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath; TestFailAt = 'removalProfile' })
+  $report.steps.L8a_partialRemoval = Snap ($l8a)
+  Progress 'step' 'L8a_partialRemoval' $report.steps.L8a_partialRemoval
+  $l8aState = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+  Check 'L8a.partial.stateKept' ($l8a.code -eq 1 -and $l8a.json.profileLeft -eq $true -and $l8a.json.stateKept -eq $true -and $l8aState -and $l8aState.phase -eq 'removing') ([ordered]@{ result = $l8a.json; phase = $(if ($l8aState) { $l8aState.phase } else { $null }) })
+  $l8as = Invoke-Setup ([ordered]@{ Action = 'status'; StatePath = $statePath })
+  Check 'L8a.partial.statusDegraded' ($l8as.code -eq 2 -and (@($l8as.json.problems) -match '^state:incomplete:removing$').Count -gt 0) $l8as.json
+
+  # L8 (the retry finishes the removal)
   $l8 = Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })
   $report.steps.L8_uninstall = Snap ($l8)
   Progress 'step' 'L8_uninstall' $report.steps.L8_uninstall
@@ -297,7 +322,7 @@ finally {
   if (Test-Path -LiteralPath $statePath) { $report.finalCleanup = Snap ((Invoke-Setup ([ordered]@{ Action = 'uninstall'; StatePath = $statePath })).json) }
   Remove-LocalUser -Name $stdUser -ErrorAction SilentlyContinue
   foreach ($p in @($s1, $s2)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 47) { $exit = 1 }
+  if (@($report.checks | Where-Object { -not $_.ok }).Count -gt 0 -or $report.checks.Count -lt 52) { $exit = 1 }
   $report.finishedAt = (Get-Date).ToString('o')
   $report.verdict = if ($exit -eq 0) { 'ISOLATION_LIFECYCLE_PASS' } else { 'ISOLATION_LIFECYCLE_FAIL' }
   if ($report.fatal) { $report.fatal = Snap $report.fatal; Progress 'fatal' 'fatal' $report.fatal }

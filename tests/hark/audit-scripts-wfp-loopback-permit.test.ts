@@ -44,7 +44,7 @@ describe('AUDIT-S1 broker hole is loopback-only', () => {
     expect(lifecycle).toContain("Check 'L3.net.brokerPortOnLan.blocked'");
     expect(lifecycle).toContain("Check 'L3.control.runnerReachesBrokerOnLan' ($ctl -eq 200)");
     expect(lifecycle).toContain('$report.steps.L7_filterCounts.permit -eq 1');
-    expect(lifecycle).toContain('$report.checks.Count -lt 47');
+    expect(lifecycle).toContain('$report.checks.Count -lt 52');
     expect(child).toContain('if (spec.brokerLanHost) result.net.brokerLan = await get(http, `http://${spec.brokerLanHost}:${spec.brokerPort}/probe`);');
   });
 });

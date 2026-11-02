@@ -44,6 +44,6 @@ describe('AUDIT-S5 reader SID validated before any change', () => {
     expect(lifecycle).toContain("ReaderSid = 'S-1-5-32-544'");
     expect(lifecycle).toContain("Check 'L0.readerSid.groupRejected'");
     expect(lifecycle).toContain("Check 'L0.readerSid.noAccountNoState'");
-    expect(lifecycle).toContain('$report.checks.Count -lt 47');
+    expect(lifecycle).toContain('$report.checks.Count -lt 52');
   });
 });
