@@ -1597,7 +1597,9 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
               }),
         };
       case 'ROUTING':
-        return options.risk === 'HIGH' || options.risk === 'CRITICAL'
+        // AUDIT-P5: an approval granted for this route returns HERE; the route then resolves
+        // (asking again would loop on the approval gate forever).
+        return (options.risk === 'HIGH' || options.risk === 'CRITICAL') && run.history.at(-1)?.event !== 'APPROVAL_GRANTED'
           ? {
               type: 'APPROVAL.REQUEST',
               reason: `risk ${options.risk}`,

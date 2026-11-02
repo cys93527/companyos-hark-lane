@@ -243,7 +243,7 @@ A published version is immutable, so this "machine" is effectively an **oracle**
 | `ROUTING` | `ROUTE_RESOLVED` | `EXECUTING` | 模型 / 工具绑定完成 |
 | `ROUTING` | `ROUTE_FAILED` | `FAILED` | 无可用模型或工具 |
 | `PLANNING` · `ROUTING` · `EXECUTING` | `APPROVAL_REQUIRED` | `WAITING_APPROVAL` | 进入人工审批门 |
-| `WAITING_APPROVAL` | `APPROVAL_GRANTED` | `EXECUTING` | 审批通过，继续执行 |
+| `WAITING_APPROVAL` | `APPROVAL_GRANTED` | 发起审批的状态（`PLANNING` / `ROUTING` / `EXECUTING`；无记录时 `EXECUTING`） | 审批通过，回到发起审批的状态继续；不能借审批跳过 `PLAN_COMPLETE` / `ROUTE_RESOLVED`（AUDIT-P5） |
 | `WAITING_APPROVAL` | `APPROVAL_DENIED` | `FAILED` | 审批拒绝 |
 | `EXECUTING` | `EXECUTION_DONE` | `REVIEWING` | 进入独立评审 |
 | `EXECUTING` | `EXECUTION_FAILED` | `FAILED` | 不可恢复执行失败 |

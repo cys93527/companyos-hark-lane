@@ -147,7 +147,8 @@ describe('G. approvals survive a restart', () => {
     const decided = (await fixture.database().approvals.list()).items as readonly Approval[];
     expect(decided[0]?.status).toBe('approved');
     expect(decided[0]?.decidedBy).toBe('user_owner');
-    expect(((await fixture.database().runs.get(run.id)) as WorkflowRun).state).toBe('EXECUTING');
+    // AUDIT-P5: requested in ROUTING -> the grant returns to ROUTING (was EXECUTING: the gate skip).
+    expect(((await fixture.database().runs.get(run.id)) as WorkflowRun).state).toBe('ROUTING');
   });
 
   it('keeps a rejection and the resulting failure reason', async () => {
