@@ -88,6 +88,7 @@ interface Harness {
   readonly observations: PreflightObservation[];
   providerCalls(): number;
   drive(): ReturnType<WorkflowEngine['drive']>;
+  driveToExecuting(): ReturnType<WorkflowEngine['drive']>;
   advanceStage(): Promise<unknown>;
 }
 
@@ -245,6 +246,8 @@ const makeHarness = async (options: HarnessOptions = {}): Promise<Harness> => {
     observations,
     providerCalls: () => providerCalls.count,
     drive: () => engine.drive(runId, { stage: { stageId: STAGE, taskIds: [taskId as never] }, maxSteps: 6 }),
+    // No stage option: the driver stops at EXECUTING (needs_decision) without running a round.
+    driveToExecuting: () => engine.drive(runId, { maxSteps: 6 }),
     /*
      * The direct stage-execution port — the seam the supervisor uses per round. A
      * RETRY round is a NEW advance call, exactly like any executor failure retry.
@@ -299,11 +302,17 @@ describe('S25 claim ordering — canonical claim BEFORE preflight (Boss §9/§12
       maxAttempts: 2,
       configOf: () => null,
     });
-    // First drive: attempt 1 fails the preflight and the task goes to RETRY — the
-    // FROZEN retry semantics, exactly as any executor failure would.
-    const firstDrive = await harness.drive();
-    expect(firstDrive.ok).toBe(true);
+    // First stage round: attempt 1 fails the preflight and the task goes to RETRY —
+    // the FROZEN retry semantics, exactly as any executor failure would.
+    const toExecuting = await harness.driveToExecuting();
+    expect(toExecuting.ok).toBe(true);
+    if (toExecuting.ok) expect(toExecuting.value.run.state).toBe('EXECUTING');
+    await harness.advanceStage();
     expect(taskRow(harness.database, harness.taskId).state).toBe('READY'); // RETRY event → back to READY
+    // v0.1.1 CI root fix: a task still awaiting its retry keeps the run EXECUTING. The
+    // claim path used to dispatch EXECUTION.COMPLETE over the READY task (run ->
+    // VALIDATING), and the exhausted retry's EXECUTION.FAIL was then illegal.
+    expect((harness.database.db.prepare('SELECT state FROM runs WHERE id = ?').get(harness.runId) as { state: string }).state).toBe('EXECUTING');
     // The retry round is a NEW stage execution (the supervisor's per-round seam):
     // attempt 2 fails the same preflight and exhausts the task.
     await harness.advanceStage();
@@ -315,6 +324,7 @@ describe('S25 claim ordering — canonical claim BEFORE preflight (Boss §9/§12
     const finalTask = taskRow(harness.database, harness.taskId);
     expect(Number(finalTask.attempts)).toBe(2);
     expect(finalTask.state).toBe('FAILED');
+    expect((harness.database.db.prepare('SELECT state FROM runs WHERE id = ?').get(harness.runId) as { state: string }).state).toBe('FAILED');
     expect(harness.providerCalls()).toBe(0);
   });
 

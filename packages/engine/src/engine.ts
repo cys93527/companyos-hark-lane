@@ -1473,6 +1473,18 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
     if (blocked) return ok({ outcome: 'blocked', attempts, taskStates });
 
     /*
+     * v0.1.1 CI root fix: a task of this stage that settled READY (a retryable failure
+     * awaiting its next round, LIVE-SMOKE-FIX-04) is still open work. The run stays
+     * EXECUTING — dispatching EXECUTION.COMPLETE here moved it on to REVIEWING over an
+     * unfinished task, and the exhausted retry's EXECUTION.FAIL was then illegal. The
+     * stage outcome stays 'completed' so the supervisor loop continues as before; the
+     * execution-domain seam below already answers 'open' for the same case.
+     */
+    if (taskStates.some((state) => state !== 'DONE' && state !== 'SKIPPED')) {
+      return ok({ outcome: 'completed', attempts, taskStates });
+    }
+
+    /*
      * Sprint21 (generic orchestration): a multi-stage DAG stays in EXECUTING until the
      * whole EXECUTION DOMAIN is done — every pinned stage that is NOT a deployment-
      * declared review/validation gate stage has terminal-successful work. The single-
