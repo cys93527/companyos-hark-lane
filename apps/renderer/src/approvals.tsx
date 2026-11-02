@@ -110,7 +110,7 @@ export function ApprovalCardView(props: ApprovalCardViewProps): JSX.Element {
   if (approval === null) return h('div', { className: 'approval-card approval-card--none' });
   return h(
     'section',
-    { className: 'approval-card', 'aria-label': 'approval-card', role: 'alertdialog' },
+    { className: 'approval-card', 'data-testid': 'approval-card', 'aria-label': '待批准事项', role: 'alertdialog' },
     h('h3', { className: 'approval-card__title' }, '需要你的批准'),
     h('dl', { className: 'kv approval-card__kv' },
       h('dt', null, '操作'),

@@ -1178,6 +1178,7 @@ export function App() {
           setSelectedAccessPolicy(policy);
           setPopover(null);
         },
+        onClose: () => setPopover(null),
         // AUDIT-R4: only the open Goal's canonical read-back - never a default when it is unknown.
         effectiveGoalPolicy:
           ACCESS_POLICY_OPTIONS.find((option) => option.value === runtimeWorkspace?.accessPolicy)?.label ?? null,
@@ -1201,10 +1202,10 @@ export function App() {
         onToggle: () => setPopover(popover === 'runtime' ? null : 'runtime'),
         usageNote: telemetryNote,
       }),
-      h('fieldset', { disabled: submissionBusy, 'aria-label': 'file-delivery-requirement' },
+      h('fieldset', { disabled: submissionBusy, 'data-testid': 'file-delivery-requirement', 'aria-label': '文件交付要求' },
         h('legend', null, '文件交付要求（可选）'),
-        h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'aria-label': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
-        h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'aria-label': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
+        h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'data-testid': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
+        h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'data-testid': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
         h('p', null, '文件要求仅随明确提交发送，不包含在本地文字草稿中。')),
       h(LocalDraftControls, { companyId: COMPANY_ID, workspaceRoot, objective: draft, busy: submissionBusy, onRestore: setDraft }),
       h(ActionFailureLine, {

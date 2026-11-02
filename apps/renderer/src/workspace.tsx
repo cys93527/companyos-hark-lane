@@ -221,7 +221,7 @@ export function WorkspaceSelector({
   }, [selection, pending, setFailure, onWorkspaceOpened]);
 
   return (
-    <section className="card" aria-label="workspace-selector">
+    <section className="card" data-testid="workspace-selector" aria-label="工作空间选择">
       <h2>工作空间</h2>
       {failure !== null ? <ControlPlaneErrorView failure={failure} /> : null}
       {loaded ? (
@@ -289,10 +289,10 @@ export function GoalEntry({
   }, [objective, onGoalCreated, pending, workspaceReady, setFailure]);
 
   return (
-    <section className="card" aria-label="goal-entry">
+    <section className="card" data-testid="goal-entry" aria-label="新建目标">
       <h2>你想把什么事情变成现实？</h2>
       <textarea
-        aria-label="goal-objective"
+        data-testid="goal-objective" aria-label="目标描述"
         className="goal-entry__textarea"
         placeholder="用自然语言描述你想达成的目标…"
         rows={4}
@@ -353,7 +353,7 @@ export function GoalListView({
   readonly onOpen: (runId: string) => void;
 }) {
   return (
-    <section className="card" aria-label="goal-list">
+    <section className="card" data-testid="goal-list" aria-label="目标列表">
       <h2>目标</h2>
       {failure !== null ? <ControlPlaneErrorView failure={failure} /> : null}
       {goals === null ? (
@@ -467,7 +467,7 @@ export function GoalWorkspaceView({
   const failed = outcome === 'FAILED' || outcome === 'TIMED_OUT' || validation?.failed === true;
 
   return (
-    <section className="card" aria-label="goal-workspace">
+    <section className="card" data-testid="goal-workspace" aria-label="目标详情">
       <h2>目标工作区</h2>
       <p className="goal-workspace__objective">{goalObjective ?? '(未命名目标)'}</p>
       <dl className="kv">
@@ -629,7 +629,7 @@ export function GoalWorkspace({ bridge, runId, onBack }: { readonly bridge: Cont
 
   if (failure !== null && workspace === null) {
     return (
-      <section className="card" aria-label="goal-workspace">
+      <section className="card" data-testid="goal-workspace" aria-label="目标详情">
         <h2>目标工作区</h2>
         <ControlPlaneErrorView failure={failure} />
         {onBack !== undefined ? <button className="goal-back" onClick={onBack}>← 返回目标列表</button> : null}
@@ -638,7 +638,7 @@ export function GoalWorkspace({ bridge, runId, onBack }: { readonly bridge: Cont
   }
   if (workspace === null) {
     return (
-      <section className="card" aria-label="goal-workspace">
+      <section className="card" data-testid="goal-workspace" aria-label="目标详情">
         <h2>目标工作区</h2>
         <p className="muted">加载中…</p>
       </section>

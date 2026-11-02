@@ -18,6 +18,26 @@ import { createElement as h, type JSX } from 'react';
 import type { ModelOptionRow } from './models.js';
 import { projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
 
+/**
+ * AUDIT-R14: a popover dialog takes focus when it opens and closes on Escape, so keyboard and
+ * screen-reader users are not left on the trigger with an unannounced dialog.
+ */
+export const popoverDialogProps = (onClose: (() => void) | undefined): {
+  readonly tabIndex: number;
+  readonly ref: (element: { focus?: () => void } | null) => void;
+  readonly onKeyDown: (event: { readonly key: string; readonly stopPropagation?: () => void }) => void;
+} => ({
+  tabIndex: -1,
+  ref: (element) => {
+    if (element !== null && typeof element.focus === 'function') element.focus();
+  },
+  onKeyDown: (event) => {
+    if (event.key !== 'Escape' || onClose === undefined) return;
+    event.stopPropagation?.();
+    onClose();
+  },
+});
+
 /** Canonical, display-only authority modes derived from run state + blocker codes. */
 export type EffectiveAuthorityMode = 'read-only' | 'workspace-operations' | 'ask-permission';
 
@@ -92,7 +112,7 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
   const label = selected === null ? '选择模型' : selected.displayName;
   return h(
     'div',
-    { className: 'composer__model', 'aria-label': 'model-selector' },
+    { className: 'composer__model', 'data-testid': 'model-selector', 'aria-label': '模型选择' },
     h(
       'button',
       { type: 'button', className: 'composer__model-button', onClick: props.onToggle, disabled: props.busy },
@@ -102,7 +122,7 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
     props.open
       ? h(
           'div',
-          { className: 'popover', role: 'dialog', 'aria-label': 'model-selector-popover' },
+          { className: 'popover', role: 'dialog', 'data-testid': 'model-selector-popover', 'aria-label': '选择模型', ...popoverDialogProps(props.onToggle) },
           props.providerConfigured
             ? h(
                 'ul',
@@ -154,7 +174,7 @@ export function ModelRuntimePopover(props: ModelRuntimePopoverProps): JSX.Elemen
   const view = projectModelRuntime(props.snapshot);
   return h(
     'div',
-    { className: 'composer__runtime', 'aria-label': 'model-runtime' },
+    { className: 'composer__runtime', 'data-testid': 'model-runtime', 'aria-label': '模型运行状态' },
     h(
       'button',
       { type: 'button', className: 'composer__model-button', onClick: props.onToggle, 'aria-expanded': props.open },
@@ -164,7 +184,7 @@ export function ModelRuntimePopover(props: ModelRuntimePopoverProps): JSX.Elemen
     props.open
       ? h(
           'div',
-          { className: 'popover popover--runtime', role: 'dialog', 'aria-label': 'model-runtime-popover' },
+          { className: 'popover popover--runtime', role: 'dialog', 'data-testid': 'model-runtime-popover', 'aria-label': '模型运行详情', ...popoverDialogProps(props.onToggle) },
           h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '上下文'), h('span', null, view.contextWindow)),
           h(
             'div',
@@ -221,7 +241,7 @@ export interface ComposerViewProps {
 export function ComposerView(props: ComposerViewProps): JSX.Element {
   return h(
     'div',
-    { className: 'composer', 'aria-label': 'composer' },
+    { className: 'composer', 'data-testid': 'composer', 'aria-label': '目标输入区' },
     h(
       'div',
       { className: 'composer__left' },
@@ -261,7 +281,7 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
         : null,
       h('textarea', {
         className: 'composer__input',
-        'aria-label': 'goal-objective',
+        'data-testid': 'goal-objective', 'aria-label': '目标描述',
         placeholder: '用自然语言描述你想达成的目标…',
         rows: 3,
         value: props.draft,
@@ -297,6 +317,8 @@ export interface AuthorityPopoverProps {
   readonly onSelectPolicy?: (policy: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS') => void;
   /** The current Goal's canonical policy (read-back), shown as effective truth. */
   readonly effectiveGoalPolicy?: string | null;
+  /** AUDIT-R14: Escape closes the popover. */
+  readonly onClose?: () => void;
 }
 
 /** The three canonical policies with their user-facing labels (Section A vocabulary). */
@@ -311,7 +333,7 @@ export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
   const selectable = typeof props.onSelectPolicy === 'function';
   return h(
     'div',
-    { className: 'popover', role: 'dialog', 'aria-label': 'authority-popover' },
+    { className: 'popover', role: 'dialog', 'data-testid': 'authority-popover', 'aria-label': '访问权限', ...popoverDialogProps(props.onClose) },
     // AUDIT-R4: the next Goal's policy is the selection; the open Goal's run state is a status, not a permission.
     h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '下一个目标'), h('span', null, accessPolicyLabel(props.selectedPolicy) ?? '访问权限')),
     h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '当前目标状态'), h('span', null, authorityStatusLabel(props.authority))),
@@ -327,7 +349,7 @@ export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
     selectable
       ? h(
           'div',
-          { className: 'authority-options', 'aria-label': 'authority-options' },
+          { className: 'authority-options', 'data-testid': 'authority-options', 'aria-label': '访问权限选项' },
           ACCESS_POLICY_OPTIONS.map((option) =>
             h(
               'button',

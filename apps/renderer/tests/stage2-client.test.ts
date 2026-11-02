@@ -175,10 +175,10 @@ const renderShell = () =>
 describe('UX-01..05 chat-first shell', () => {
   it('UX-01 the three-area shell renders: sidebar nav, centre, runtime panel', () => {
     const html = renderShell();
-    expect(html).toContain('aria-label="app-shell"');
-    expect(html).toContain('aria-label="sidebar"');
-    expect(html).toContain('aria-label="composer"');
-    expect(html).toContain('aria-label="runtime-panel"');
+    expect(html).toContain('data-testid="app-shell"');
+    expect(html).toContain('data-testid="sidebar"');
+    expect(html).toContain('data-testid="composer"');
+    expect(html).toContain('data-testid="runtime-panel"');
     expect(html).toContain('CompanyOS');
     expect(html).toContain('+ 新建对话 / 新建目标');
     // Every nav item maps to a real canonical surface (nothing decorative).
@@ -251,7 +251,7 @@ describe('UX-06..08 model selector + honest telemetry', () => {
         providerConfigured: true,
       }),
     );
-    expect(html).toContain('aria-label="model-selector-popover"');
+    expect(html).toContain('data-testid="model-selector-popover"');
     expect(html).toContain('model-selector');
   });
 
@@ -445,7 +445,7 @@ describe('UX-13..17 runtime panel projections', () => {
       }),
     );
     expect(html).toContain('已收起');
-    expect(html).not.toContain('aria-label="runtime-lifecycle"');
+    expect(html).not.toContain('data-testid="runtime-lifecycle"');
     expect(RUNTIME_TABS.map((tab) => tab.label)).toEqual(['运行', '文件', '产出', '详情']);
   });
 

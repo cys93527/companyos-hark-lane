@@ -55,7 +55,7 @@ export interface ArtifactActionsViewProps {
 export function ArtifactActionsView(props: ArtifactActionsViewProps): JSX.Element {
   return h(
     'div',
-    { className: 'artifact-actions', 'aria-label': 'artifact-actions' },
+    { className: 'artifact-actions', 'data-testid': 'artifact-actions', 'aria-label': '产物操作' },
     h(
       'div',
       { className: 'artifact-actions__buttons' },

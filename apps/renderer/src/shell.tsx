@@ -49,7 +49,7 @@ export interface SidebarViewProps {
 export function SidebarView(props: SidebarViewProps): JSX.Element {
   return h(
     'nav',
-    { className: 'sidebar', 'aria-label': 'sidebar' },
+    { className: 'sidebar', 'data-testid': 'sidebar', 'aria-label': '侧边栏' },
     h(
       'div',
       { className: 'sidebar__brand' },
@@ -62,7 +62,7 @@ export function SidebarView(props: SidebarViewProps): JSX.Element {
     ),
     h(
       'ul',
-      { className: 'sidebar__nav', 'aria-label': 'shell-nav' },
+      { className: 'sidebar__nav', 'data-testid': 'shell-nav', 'aria-label': '导航' },
       SHELL_NAV.map((item) =>
         h(
           'li',
@@ -81,7 +81,7 @@ export function SidebarView(props: SidebarViewProps): JSX.Element {
     ),
     h(
       'div',
-      { className: 'sidebar__recent', 'aria-label': 'recent-goals' },
+      { className: 'sidebar__recent', 'data-testid': 'recent-goals', 'aria-label': '最近目标' },
       h('p', { className: 'sidebar__section' }, '最近'),
       props.recent.length === 0
         ? h('p', { className: 'sidebar__empty muted' }, '还没有目标')
@@ -173,7 +173,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const modelSelected = props.modelStatus.kind === 'selected';
   return h(
     'section',
-    { className: 'card settings', 'aria-label': 'settings' },
+    { className: 'card settings', 'data-testid': 'settings', 'aria-label': '设置' },
     h('h2', null, '设置'),
 
     h('h3', null, '工作区'),
@@ -271,7 +271,7 @@ export interface AppShellViewProps {
 export function AppShellView(props: AppShellViewProps): JSX.Element {
   return h(
     'div',
-    { className: 'shell-v2', 'aria-label': 'app-shell' },
+    { className: 'shell-v2', 'data-testid': 'app-shell', 'aria-label': 'CompanyOS' },
     h(SidebarView, props.sidebar),
     h(
       'main',

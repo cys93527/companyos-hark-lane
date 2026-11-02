@@ -323,7 +323,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
   const lifecycle = props.lifecycle;
   return h(
     'aside',
-    { className: `runtime-panel${props.expanded ? '' : ' runtime-panel--collapsed'}`, 'aria-label': 'runtime-panel' },
+    { className: `runtime-panel${props.expanded ? '' : ' runtime-panel--collapsed'}`, 'data-testid': 'runtime-panel', 'aria-label': '运行面板' },
     h(
       'div',
       { className: 'runtime-panel__head' },
@@ -358,7 +358,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
           props.tab === 'run'
             ? h(
                 'div',
-                { className: 'runtime-tree', 'aria-label': 'runtime-lifecycle' },
+                { className: 'runtime-tree', 'data-testid': 'runtime-lifecycle', 'aria-label': '运行阶段' },
                 lifecycle === null
                   ? h('div', { className: 'runtime-tree__row muted' }, '尚未选择目标。')
                   : h(
@@ -373,7 +373,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                   ? null
                   : h(
                       'div',
-                      { className: 'runtime-budget', 'aria-label': 'runtime-budget' },
+                      { className: 'runtime-budget', 'data-testid': 'runtime-budget', 'aria-label': '预算' },
                       ...budgetRows(props.budget.budget).map((row, index) =>
                         h('div', { className: index === 0 ? 'runtime-tree__row runtime-tree__row--goal' : 'runtime-tree__row', key: `b${String(index)}` }, row),
                       ),
@@ -382,7 +382,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                   ? null
                   : h(
                       'div',
-                      { className: 'runtime-plan-preview', 'aria-label': 'runtime-plan-preview' },
+                      { className: 'runtime-plan-preview', 'data-testid': 'runtime-plan-preview', 'aria-label': '计划预览' },
                       h('div', { className: 'runtime-tree__row runtime-tree__row--goal' }, `计划预览（未执行） · ${String(props.budget.plan.items.length)} 步`),
                       ...props.budget.plan.items.map((item) =>
                         h('div', { className: 'runtime-tree__row runtime-tree__row--task', key: `p${item.planItemId}` }, `${item.planItemId} · ${item.objective}`),
@@ -437,7 +437,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                     ? null
                     : h(
                         'div',
-                        { className: 'runtime-blockers', 'aria-label': 'runtime-blockers' },
+                        { className: 'runtime-blockers', 'data-testid': 'runtime-blockers', 'aria-label': '阻塞项' },
                         (props.pendingApproval ?? null) === null
                           ? null
                           : h(
@@ -453,7 +453,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                     ? null
                     : h(
                         'ul',
-                        { className: 'runtime-activity', 'aria-label': 'runtime-activity' },
+                        { className: 'runtime-activity', 'data-testid': 'runtime-activity', 'aria-label': '最近活动' },
                         props.timeline.map((entry) =>
                           h('li', { key: entry.key }, `${entry.kind} · ${entry.summary}`),
                         ),
@@ -463,7 +463,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                 ? [
                     h(
                       'ul',
-                      { key: 'files', className: 'runtime-files', 'aria-label': 'runtime-artifacts' },
+                      { key: 'files', className: 'runtime-files', 'data-testid': 'runtime-artifacts', 'aria-label': '产出文件' },
                       props.artifacts.length === 0
                         ? h('li', { className: 'muted' }, '尚无产物文件。')
                         : props.artifacts.map((artifact) =>
