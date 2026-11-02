@@ -44,6 +44,7 @@ import type { RouterAuditEmitter, RouterAuditPayload, HandoffAuditPayload } from
 
 import { composeCoreServices as composeCoreServicesImpl, lastCoreCompositionError, type ComposeCoreServicesOptions, type CoreServices } from './core-services.js';
 import { createDesktopAutonomyRunner, type DesktopAutonomyRunner } from './autonomy/desktop-autonomy-runner.js';
+import { recoveryFailurePolicy } from './startup-recovery-policy.js';
 import {
   exportArtifactCopy,
   readArtifactPreview,
@@ -204,6 +205,8 @@ let coreServices: CoreServices | null = null;
  * canonical durable truth (never from renderer memory).
  */
 let autonomyRunner: DesktopAutonomyRunner | null = null;
+/** AUDIT-E2: runs startup recovery could not recover (never driven in this process). */
+const quarantinedRunIds = new Set<string>();
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -966,7 +969,23 @@ async function main(): Promise<void> {
         engine: core.sprint13.engine,
         runs: shellDatabase.runs,
       }).run();
-      if (!recovery.ok) {
+      // AUDIT-E2: runs the engine could not recover are quarantined (untouched, no driver),
+      // every other recovery failure stays fatal.
+      const policy = recovery.ok ? null : recoveryFailurePolicy(recovery.error);
+      if (!recovery.ok && policy?.kind === 'quarantine') {
+        for (const runId of policy.runIds) quarantinedRunIds.add(runId);
+        logger.error('startup recovery: runs could not be recovered; quarantined', {
+          code: recovery.error.code,
+          detail: recovery.error.message,
+          runIds: policy.runIds,
+        });
+        void dialog.showMessageBox({
+          type: 'warning',
+          title: 'CompanyOS',
+          message: `有 ${policy.runIds.length} 个运行在启动恢复时无法恢复，已保持原状且不会自动继续。`,
+          detail: `${policy.runIds.join('\n')}\n\n其他目标照常运行。详情见日志 desktop.log。`,
+        });
+      } else if (!recovery.ok) {
         logger.error('startup failed: recovery safety failure', {
           code: recovery.error.code,
           detail: recovery.error.message,
@@ -976,7 +995,7 @@ async function main(): Promise<void> {
         app.exit(1);
         return;
       }
-      logger.info('startup recovery complete', { ...recovery.value });
+      if (recovery.ok) logger.info('startup recovery complete', { ...recovery.value });
 
       // ---- STAGE 2 autonomy resume (canonical, main-process-owned) ----
       // Every goal run that durable truth still shows as non-terminal gets its driver
@@ -988,6 +1007,7 @@ async function main(): Promise<void> {
           companyId: COMPANY_ID,
           driver: core.autonomyDriver,
           logger,
+          quarantinedRunIds,
           goalRunState: async (runId: string) => {
             const row = await shellDatabase!.runs.get(runId);
             return row === null ? null : row.state;

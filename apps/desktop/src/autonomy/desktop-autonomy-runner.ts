@@ -64,6 +64,11 @@ export interface DesktopAutonomyRunnerDeps {
    * run store). A null/terminal answer cancels the resume.
    */
   readonly goalRunState?: (runId: string) => Promise<string | null>;
+  /**
+   * AUDIT-E2 (desktop): runs startup recovery could not recover. They are left exactly as they are
+   * (no driver is ever started for them in this process) instead of blocking the whole app.
+   */
+  readonly quarantinedRunIds?: ReadonlySet<string>;
 }
 
 export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): DesktopAutonomyRunner => {
@@ -208,6 +213,10 @@ export const createDesktopAutonomyRunner = (deps: DesktopAutonomyRunnerDeps): De
   const start = (companyId: string, runId: string): boolean => {
     const driver = deps.driver;
     if (active.has(runId) || driver === null) return false;
+    if (deps.quarantinedRunIds?.has(runId) === true) {
+      deps.logger?.warn('autonomy driver not started: run is quarantined after a failed startup recovery', { runId });
+      return false;
+    }
     const attempt = (async () => {
       const result = await driver.run({ companyId, runId });
       if (result.ok) {
