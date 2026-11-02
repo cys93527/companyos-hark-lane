@@ -12,6 +12,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
 import { existsSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,9 +42,10 @@ import {
 import type { ModelRecord } from '@companyos/core';
 import type { RouterAuditEmitter, RouterAuditPayload, HandoffAuditPayload } from '@companyos/engine';
 
-import { composeCoreServices as composeCoreServicesImpl, type ComposeCoreServicesOptions, type CoreServices } from './core-services.js';
+import { composeCoreServices as composeCoreServicesImpl, lastCoreCompositionError, type ComposeCoreServicesOptions, type CoreServices } from './core-services.js';
 import { createDesktopAutonomyRunner, type DesktopAutonomyRunner } from './autonomy/desktop-autonomy-runner.js';
 import {
+  exportArtifactCopy,
   readArtifactPreview,
   resolveArtifactTarget,
 } from './artifacts.js';
@@ -212,7 +214,11 @@ async function composeCoreServices(
   options: ComposeCoreServicesOptions,
 ): Promise<CoreServices | null> {
   const composed = await composeCoreServicesImpl(database, activeLogger, options);
-  if (composed === null) return null;
+  if (composed === null) {
+    // AUDIT-D13: the UI shows the composition's own reason, not a generic "unavailable".
+    workflowError = lastCoreCompositionError() ?? 'core services composition failed';
+    return null;
+  }
   if (composed.compositionError !== null) workflowError = composed.compositionError;
   return composed as CoreServices;
 }
@@ -799,12 +805,15 @@ function registerIpcHandlers(): void {
       artifactId,
     );
     if (!target.ok) return target;
-    if (operation === 'reveal') {
-      shell.showItemInFolder(target.value.absolutePath);
-      return { ok: true, operation, artifactId };
-    }
-    if (operation === 'open') {
-      const failure = await shell.openPath(target.value.absolutePath);
+    if (operation === 'reveal' || operation === 'open') {
+      // AUDIT-D4: a hash-verified read-only copy, never the canonical CAS object.
+      const copy = await exportArtifactCopy(target.value, artifactFoundation.contentStore, join(tmpdir(), 'companyos-open'));
+      if (!copy.ok) return copy;
+      if (operation === 'reveal') {
+        shell.showItemInFolder(copy.value.path);
+        return { ok: true, operation, artifactId };
+      }
+      const failure = await shell.openPath(copy.value.path);
       return failure === ''
         ? { ok: true, operation, artifactId }
         : { ok: false, code: 'ARTIFACT_OPEN_FAILED', message: failure };
@@ -915,6 +924,8 @@ async function main(): Promise<void> {
         fatalFindings: foundation.report.fatal.length,
       });
       shellDatabase.db.close();
+      // AUDIT-D4: a fatal startup is never silent - the user sees why before the app exits.
+      dialog.showErrorBox('CompanyOS 无法启动', `产物存储完整性检查失败（${foundation.error.code}）：${foundation.error.message}\n\n详情见日志 desktop.log。`);
       app.exit(1);
       return;
     }
@@ -961,6 +972,7 @@ async function main(): Promise<void> {
           detail: recovery.error.message,
         });
         shellDatabase.db.close();
+        dialog.showErrorBox('CompanyOS 无法启动', `启动恢复安全检查失败（${recovery.error.code}）：${recovery.error.message}\n\n详情见日志 desktop.log。`);
         app.exit(1);
         return;
       }

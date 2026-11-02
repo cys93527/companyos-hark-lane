@@ -864,6 +864,18 @@ export async function composeCoreServices(
     options.runtimeInstanceId ?? `rt_${String(Date.now())}_${Math.random().toString(36).slice(2, 8)}`;
   /** The composition's own failure channel: the last error the bootstrap hit, if any. */
   let compositionError: string | null = null;
+  lastCompositionError = null;
+  /**
+   * AUDIT-D13: every early return records WHY (lastCompositionError + an error log line); before this only
+   * the thrown path did, so a refused tool registration or authorization bootstrap surfaced as
+   * "workflow service unavailable" with error: null in desktop.log.
+   */
+  const fail = (message: string): null => {
+    compositionError = message;
+    lastCompositionError = message;
+    activeLogger.error('core services composition failed', { error: message });
+    return null;
+  };
   try {
     /*
      * LIVE-SMOKE-FIX-02 — resolve the CompanyOS-owned production attempt time budget
@@ -935,9 +947,8 @@ export async function composeCoreServices(
       companyId: 'company_default',
     });
     if (!bootstrap.ok) {
-      compositionError = `authorization bootstrap failed: ${bootstrap.error.message}`;
       activeLogger.error('authorization bootstrap failed', { code: bootstrap.error.code });
-      return null;
+      return fail(`authorization bootstrap failed: ${bootstrap.error.message}`);
     }
     if (bootstrap.value.provisioned) {
       activeLogger.warn('authorization bootstrap: owner role provisioned', {
@@ -1127,8 +1138,7 @@ export async function composeCoreServices(
     // The ten repository ToolRecords (idempotent on restart: a stored tool is not an error).
     const repositoryToolsRegistered = await repositoryRuntime.registerTools(SESSION_ACTOR);
     if (!repositoryToolsRegistered.ok) {
-      compositionError = `repository tool registration failed: ${repositoryToolsRegistered.error.message}`;
-      return null;
+      return fail(`repository tool registration failed: ${repositoryToolsRegistered.error.message}`);
     }
 
     for (const validatorTool of options.validatorTools ?? []) {
@@ -1151,26 +1161,22 @@ export async function composeCoreServices(
         now: clock.nowIso(),
       });
       if (!validatorRecord.ok) {
-        compositionError = `validator tool registration failed: ${validatorRecord.error.message}`;
-        return null;
+        return fail(`validator tool registration failed: ${validatorRecord.error.message}`);
       }
       const validatorRegistered = await tools.register(validatorRecord.value, {actorId: SESSION_ACTOR});
       if (!validatorRegistered.ok && validatorRegistered.error.code !== 'CONFLICT') {
-        compositionError = `validator tool registration failed: ${validatorRegistered.error.message}`;
-        return null;
+        return fail(`validator tool registration failed: ${validatorRegistered.error.message}`);
       }
     }
     for (const spec of MOCK_TOOL_SPECS) {
       const record = createMockToolRecord(spec, clock.nowIso());
       if (!record.ok) {
-        compositionError = `tool registration failed: ${record.error.message}`;
-        return null;
+        return fail(`tool registration failed: ${record.error.message}`);
       }
       const registered = await tools.register(record.value, { actorId: SESSION_ACTOR });
       // Idempotent on restart: a tool that is already stored is not an error.
       if (!registered.ok && registered.error.code !== 'CONFLICT') {
-        compositionError = `tool registration failed: ${registered.error.message}`;
-        return null;
+        return fail(`tool registration failed: ${registered.error.message}`);
       }
     }
     const validatorRecord = createRepositoryValidationEvidenceRecord(
@@ -1178,15 +1184,13 @@ export async function composeCoreServices(
       clock.nowIso(),
     );
     if (!validatorRecord.ok) {
-      compositionError = `tool registration failed: ${validatorRecord.error.message}`;
-      return null;
+      return fail(`tool registration failed: ${validatorRecord.error.message}`);
     }
     const validatorRegistered = await tools.register(validatorRecord.value, {
       actorId: SESSION_ACTOR,
     });
     if (!validatorRegistered.ok && validatorRegistered.error.code !== 'CONFLICT') {
-      compositionError = `tool registration failed: ${validatorRegistered.error.message}`;
-      return null;
+      return fail(`tool registration failed: ${validatorRegistered.error.message}`);
     }
     /*
      * STAGE 4 P1 (DYNAMIC_PLAN_VALIDATION_CLOSURE): the GENERIC production validator for
@@ -1197,13 +1201,11 @@ export async function composeCoreServices(
      */
     const groundingRecord = createEvidenceGroundingRecord(EVIDENCE_GROUNDING_SPEC, clock.nowIso());
     if (!groundingRecord.ok) {
-      compositionError = `evidence grounding validator registration failed: ${groundingRecord.error.message}`;
-      return null;
+      return fail(`evidence grounding validator registration failed: ${groundingRecord.error.message}`);
     }
     const groundingRegistered = await tools.register(groundingRecord.value, { actorId: SESSION_ACTOR });
     if (!groundingRegistered.ok && groundingRegistered.error.code !== 'CONFLICT') {
-      compositionError = `evidence grounding validator registration failed: ${groundingRegistered.error.message}`;
-      return null;
+      return fail(`evidence grounding validator registration failed: ${groundingRegistered.error.message}`);
     }
     toolAdapters.set(EVIDENCE_GROUNDING_TOOL_ID, createEvidenceGroundingPort(EVIDENCE_GROUNDING_SPEC, {
       workspace: () => repositoryRuntime.currentWorkspace(),
@@ -1231,13 +1233,11 @@ export async function composeCoreServices(
      */
     const testCheckRecord = createRepoTestCheckRecord(REPO_TEST_CHECK_SPEC, clock.nowIso());
     if (!testCheckRecord.ok) {
-      compositionError = `repository test contract validator registration failed: ${testCheckRecord.error.message}`;
-      return null;
+      return fail(`repository test contract validator registration failed: ${testCheckRecord.error.message}`);
     }
     const testCheckRegistered = await tools.register(testCheckRecord.value, { actorId: SESSION_ACTOR });
     if (!testCheckRegistered.ok && testCheckRegistered.error.code !== 'CONFLICT') {
-      compositionError = `repository test contract validator registration failed: ${testCheckRegistered.error.message}`;
-      return null;
+      return fail(`repository test contract validator registration failed: ${testCheckRegistered.error.message}`);
     }
     const repoTestContractRunner = createRepoTestContractRunner({
       run: runRepoTestContract,
@@ -1258,13 +1258,11 @@ export async function composeCoreServices(
 
     const gitRecord = createRepositoryGitToolRecord(REPOSITORY_GIT_TOOL_SPEC, clock.nowIso());
     if (!gitRecord.ok) {
-      compositionError = `tool registration failed: ${gitRecord.error.message}`;
-      return null;
+      return fail(`tool registration failed: ${gitRecord.error.message}`);
     }
     const gitRegistered = await tools.register(gitRecord.value, { actorId: SESSION_ACTOR });
     if (!gitRegistered.ok && gitRegistered.error.code !== 'CONFLICT') {
-      compositionError = `tool registration failed: ${gitRegistered.error.message}`;
-      return null;
+      return fail(`tool registration failed: ${gitRegistered.error.message}`);
     }
 
     // ---- agent execution runtime (Sprint 8): executes, never chooses -----------------
@@ -4531,10 +4529,7 @@ export async function composeCoreServices(
       packProvenance,
     };
   } catch (error) {
-    compositionError = error instanceof Error ? error.message : String(error);
-    activeLogger.error('core services composition failed', { error: compositionError });
-    lastCompositionError = compositionError;
-    return null;
+    return fail(error instanceof Error ? error.message : String(error));
   }
 }
 

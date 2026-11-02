@@ -149,3 +149,86 @@ export const readArtifactPreview = async (
     },
   };
 };
+
+/*
+ * AUDIT-D4 — Open / Reveal never hand out the canonical CAS object. Opening the object itself let an
+ * external editor rewrite it in place; the next launch then failed CAS integrity (CAS_HASH_MISMATCH) and the
+ * app refused to start. Open/Reveal now materialise a hash-verified READ-ONLY copy in a per-user export
+ * directory (<temp>/companyos-open/<artifactId><ext>); editing that copy cannot touch canonical truth.
+ */
+const EXPORT_EXTENSIONS: Readonly<Record<string, string>> = {
+  'text/plain': '.txt',
+  'text/markdown': '.md',
+  'text/csv': '.csv',
+  'application/json': '.json',
+  'companyos:plan': '.json',
+  'companyos:plan-compilation': '.json',
+  'companyos:report': '.md',
+  'companyos:summary': '.md',
+};
+
+const SAFE_ID = /^[A-Za-z0-9_.-]{1,128}$/u;
+
+/** The extension for an exported copy: by kind, else sniffed (JSON / UTF-8 text), else .bin. */
+export const exportExtension = (kind: string, bytes: Uint8Array): string => {
+  const known = EXPORT_EXTENSIONS[kind];
+  if (known !== undefined) return known;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, 64 * 1024));
+  } catch {
+    return '.bin';
+  }
+  if (text.includes('\u0000')) return '.bin';
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try { JSON.parse(new TextDecoder('utf-8').decode(bytes)); return '.json'; } catch { /* plain text */ }
+  }
+  return '.txt';
+};
+
+export const exportArtifactCopy = async (
+  target: ArtifactTarget,
+  contentStore: ArtifactContentStore,
+  exportRoot: string,
+): Promise<ArtifactActionResult<{ readonly path: string }>> => {
+  const { createHash } = await import('node:crypto');
+  const { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = await import('node:fs');
+  if (!SAFE_ID.test(target.artifactId)) {
+    return { ok: false, code: 'ARTIFACT_ID_INVALID', message: '产物编号不合法。' };
+  }
+  const match = MANAGED_REF_PATTERN.exec(target.contentRef);
+  if (match === null) {
+    return { ok: false, code: 'ARTIFACT_REF_NOT_MANAGED', message: '该产物的内容引用不是受管 CAS 引用，已拒绝解引用。' };
+  }
+  const content = await contentStore.get(target.contentRef);
+  if (content === null) {
+    return { ok: false, code: 'ARTIFACT_CONTENT_MISSING', message: '产物内容不在受管存储中。' };
+  }
+  const bytes = content instanceof Uint8Array ? content : new Uint8Array(content as ArrayLike<number>);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  if (digest !== match[1]) {
+    return { ok: false, code: 'ARTIFACT_CONTENT_HASH_MISMATCH', message: '产物内容与受管哈希不一致，已拒绝打开。' };
+  }
+  const path = join(exportRoot, `${target.artifactId}${exportExtension(target.kind, bytes)}`);
+  try {
+    mkdirSync(exportRoot, { recursive: true });
+    if (existsSync(path)) {
+      const current = readFileSync(path);
+      if (createHash('sha256').update(current).digest('hex') === digest) {
+        chmodSync(path, 0o444);
+        return { ok: true, value: { path } };
+      }
+      // the user edited (or something replaced) an earlier copy: replace it with canonical bytes
+      chmodSync(path, 0o644);
+      rmSync(path, { force: true });
+    }
+    const staging = `${path}.${process.pid}.tmp`;
+    writeFileSync(staging, bytes, { mode: 0o644 });
+    renameSync(staging, path);
+    chmodSync(path, 0o444);
+  } catch (error) {
+    return { ok: false, code: 'ARTIFACT_EXPORT_FAILED', message: `无法生成产物的只读副本：${error instanceof Error ? error.message : String(error)}` };
+  }
+  return { ok: true, value: { path } };
+};
