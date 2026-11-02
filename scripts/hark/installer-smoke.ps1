@@ -195,3 +195,4 @@ Get-Content (Join-Path $Evidence 'installer-smoke.json')
 $failed = @($result.checks.GetEnumerator() | Where-Object { -not $_.Value.ok })
 if ($failed.Count -gt 0) { Write-Host "FAILED: $(($failed | ForEach-Object Key) -join ', ')"; exit 1 }
 Write-Host 'installer smoke: all checks passed'
+exit 0
