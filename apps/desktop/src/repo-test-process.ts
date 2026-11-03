@@ -282,10 +282,16 @@ export const createRepoTestContractRunner = (options: RepoTestContractRunnerOpti
     // Never configured: as the user, labelled, with a per-run scratch profile.
     const scratch = mkdtempSync(join(tmpdir(), 'companyos-validator-home-'));
     try {
-      const envOverrides: Record<string, string> = platform === 'win32'
-        ? { USERPROFILE: scratch, APPDATA: join(scratch, 'AppData', 'Roaming'), LOCALAPPDATA: join(scratch, 'AppData', 'Local'), TEMP: join(scratch, 'Temp'), TMP: join(scratch, 'Temp'), HOMEDRIVE: scratch.slice(0, 2), HOMEPATH: scratch.slice(2) }
+      // AUDIT-RUN7-1: only the DIRECTORY-valued keys are created. HOMEDRIVE ('C:') is a drive and
+      // HOMEPATH a drive-relative path naming the scratch itself: a recursive mkdir of a drive root
+      // throws EPERM on Windows, which made every unconfigured validator run a tool error.
+      const directories: Record<string, string> = platform === 'win32'
+        ? { USERPROFILE: scratch, APPDATA: join(scratch, 'AppData', 'Roaming'), LOCALAPPDATA: join(scratch, 'AppData', 'Local'), TEMP: join(scratch, 'Temp'), TMP: join(scratch, 'Temp') }
         : { HOME: scratch, TEMP: join(scratch, 'Temp'), TMP: join(scratch, 'Temp') };
-      for (const dir of new Set(Object.values(envOverrides))) mkdirSync(dir, { recursive: true });
+      for (const dir of new Set(Object.values(directories))) mkdirSync(dir, { recursive: true });
+      const envOverrides: Record<string, string> = platform === 'win32'
+        ? { ...directories, HOMEDRIVE: scratch.slice(0, 2), HOMEPATH: scratch.slice(2) }
+        : directories;
       const result = guard(await run({ cwd: input.cwd, timeoutMs: input.timeoutMs, envOverrides }));
       return { ...result, outputTail: `${UNISOLATED_LABEL}\n${result.outputTail}`.trim() };
     } finally {
