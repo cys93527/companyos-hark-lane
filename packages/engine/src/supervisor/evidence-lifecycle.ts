@@ -265,12 +265,23 @@ export function createEvidenceLifecycleApplicator(
       const rows = await deps.readers.listValidations(run.id);
       // The stage comes from the durable rows themselves (never a caller's claim), and the
       // required validators are read from that stage's PINNED snapshot.
-      const stageId = rows.find((row) => row.stageId !== null)?.stageId ?? null;
-      if (stageId === null) return ok(null);
-      const required = await deps.readers.requiredValidators({ runId: run.id, stageId });
-      if (!required.ok) return required;
-      if (required.value.length === 0) return ok(null);
-      const requiredIds = new Set(required.value);
+      //
+      // AUDIT-RUN7-2: EVERY stage that carries validation rows contributes its pinned required
+      // validators — not only the stage of the newest row. A multi-stage plan validates each
+      // stage's output; deciding from the newest stage alone let an earlier stage's blocking
+      // failure pass the gate (acceptance run 7: CHANGES.md stage grounding PASS hid two
+      // repo.test-check errors), so the run reached FINALIZING over failed validation while the
+      // supervisor context — latest row per validator over the WHOLE run — still saw them.
+      // The decision below is that same run-wide derivation (latestValidationPerValidator).
+      const stageIds = [...new Set(rows.map((row) => row.stageId).filter((id): id is string => id !== null))];
+      if (stageIds.length === 0) return ok(null);
+      const requiredIds = new Set<string>();
+      for (const stageId of stageIds) {
+        const required = await deps.readers.requiredValidators({ runId: run.id, stageId });
+        if (!required.ok) return required;
+        for (const validatorId of required.value) requiredIds.add(validatorId);
+      }
+      if (requiredIds.size === 0) return ok(null);
       // The latest row per required validator wins; an older PASS can never override a newer
       // failure (latest evidence semantics, the same rule the corrective provisioner uses).
       const latestByValidator = new Map<
