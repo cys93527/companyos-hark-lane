@@ -1,6 +1,6 @@
 {
   "name": "@companyos/desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "CompanyOS desktop shell - hardened Electron main process plus a typed, allow-listed preload bridge.",
   "type": "module",
