@@ -31,3 +31,13 @@ export const executionDomainVerdict = (
   if (failed.length > 0) return { kind: 'failed', stageIds: failed };
   return { kind: 'complete' };
 };
+
+/**
+ * AUDIT-RUN7-3 — the delivery invariant: a run is never delivered over open work. Every task of the run that
+ * is not terminal (DONE/FAILED/CANCELLED/SKIPPED) — a corrective child, a descendant reassessment, a retry —
+ * is work the delivery would silently drop (acceptance run 7: DELIVERY.COMPLETE with a PENDING reassessment
+ * left the Goal stalled forever). Returned newest-first by input order, ids only.
+ */
+export const openTaskIdsOf = (
+  tasks: readonly { readonly id: unknown; readonly state: string }[],
+): readonly string[] => tasks.filter((task) => !TERMINAL.has(task.state)).map((task) => String(task.id));

@@ -15,7 +15,7 @@
  * imports are `@companyos/core` contracts/ports (AGENTS.md §1.3). A real Agent
  * Runtime is plugged in behind `StageHandlerRegistry` in a later sprint.
  */
-import { executionDomainVerdict } from './execution-domain.js';
+import { executionDomainVerdict, openTaskIdsOf } from './execution-domain.js';
 import {
   DomainError,
   applyRunEvent,
@@ -600,6 +600,28 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
             `Outcome child run "${childRunId}" is "${String(child.state)}", not engine-terminal COMPLETED; the container cannot converge on an undelivered outcome.`,
             { commandId: command.commandId, runId: command.runId, childRunId, childState: String(child.state) },
           ),
+        );
+      }
+    }
+
+    /*
+     * 0c. AUDIT-RUN7-3 DELIVERY OPEN-WORK GATE: DELIVERY.COMPLETE is refused while any task of
+     * the run is still open. Acceptance run 7 delivered a run whose descendant reassessment
+     * task was PENDING (corrective work requested in FINALIZING); the child run became
+     * COMPLETED, the Goal could never converge (its success contract requires every task
+     * terminal) and the autonomy driver stalled. The engine is the authority: open work is
+     * never dropped by a delivery (the driver fails the delivery with the open ids instead).
+     */
+    if (command.type === 'DELIVERY.COMPLETE' && deps.tasksOfRun !== undefined) {
+      const open = openTaskIdsOf(await deps.tasksOfRun(String(command.runId)));
+      if (open.length > 0) {
+        return err(
+          domainError('CONFLICT', `Run ${String(command.runId)} cannot be delivered: ${String(open.length)} task(s) are still open.`, {
+            reason: 'RUN_DELIVERY_OPEN_WORK',
+            commandId: command.commandId,
+            runId: command.runId,
+            openTaskIds: open.slice(0, 16),
+          }),
         );
       }
     }
@@ -1712,6 +1734,30 @@ export function createWorkflowEngine(deps: WorkflowEngineDeps): WorkflowEngine {
           return ok({ run: after ?? current, steps, stopReason: 'needs_decision' });
         }
         continue;
+      }
+
+      /*
+       * AUDIT-RUN7-3: FINALIZING with open work has no legal way back to EXECUTING, and
+       * DELIVERY.COMPLETE is refused over it (gate 0c). The run therefore terminates with a
+       * clear, typed reason instead of being delivered over the open work or stalling.
+       */
+      if (current.state === 'FINALIZING' && deps.tasksOfRun !== undefined) {
+        const open = openTaskIdsOf(await deps.tasksOfRun(runId));
+        if (open.length > 0) {
+          const failed = await dispatch({
+            commandId: `delivery-open-work:${runId}:${String(current.revision)}`,
+            runId,
+            type: 'DELIVERY.FAIL',
+            expectedRevision: current.revision,
+            actorId: 'engine.driver',
+            traceId: deps.ids.id('trace'),
+            issuedAt: nowIso(),
+            reason: `RUN_DELIVERY_OPEN_WORK: ${String(open.length)} task(s) still open at delivery (${open.slice(0, 8).join(', ')})`,
+          });
+          if (!failed.ok) return failed;
+          steps += 1;
+          continue;
+        }
       }
 
       const next = nextCommandFor(current, options, reviewOutcomes, validationOutcomes);
