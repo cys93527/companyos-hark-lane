@@ -20,7 +20,8 @@
  */
 import { safeRequest } from './bridge.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isRunEnded, runStateLabel, runStateModifier, terminalOutcomeOf, type RunEndInput } from './run-outcome.js';
+import { isRunEnded, runStateModifier, terminalOutcomeOf, type RunEndInput } from './run-outcome.js';
+import { goalStateWord } from './format.js';
 
 /* ------------------------------------------------------------- the bridge --- */
 
@@ -359,17 +360,17 @@ export function GoalListView({
       {goals === null ? (
         <p className="muted">加载中…</p>
       ) : goals.length === 0 ? (
-        <p className="muted">还没有目标。在上面输入第一个目标。</p>
+        <p className="muted">还没有目标。在下方输入框描述第一个目标。</p>
       ) : (
         <ul className="goal-list">
           {sortGoalsNewestFirst(goals).map((goal) => (
             <li key={goal.runId}>
               <button className="goal-list__open" onClick={() => onOpen(goal.runId)}>
                 <span className="goal-list__objective">{goal.objective ?? '(未命名目标)'}</span>
-                <span className={`goal-list__state goal-list__state--${runStateModifier(goal)}`} title={goal.state}>{runStateLabel(goal)}</span>
+                <span className={`goal-list__state goal-list__state--${runStateModifier(goal)}${isRunEnded(goal) ? '' : ' goal-list__state--live'}`} title={goal.state}>{goalStateWord(goal)}</span>
                 <span className="goal-list__meta">
                   <span className="goal-list__runid">{goal.runId.slice(0, 14)}</span>
-                  {goal.createdAt !== undefined ? new Date(goal.createdAt).toLocaleString() : ''}
+                  {goal.createdAt !== undefined && Number.isFinite(Date.parse(goal.createdAt)) ? new Date(goal.createdAt).toLocaleString('zh-CN', { hour12: false }) : ''}
                 </span>
               </button>
             </li>
@@ -473,7 +474,7 @@ export function GoalWorkspaceView({
       <dl className="kv">
         <dt>状态</dt>
         <dd>
-          <span className={`goal-list__state goal-list__state--${runStateModifier(runEnd)}`} title={`${runEnd.state ?? ''}${runEnd.failureReason ? ` · ${runEnd.failureReason}` : ''}`}>{runStateLabel(runEnd)}</span>
+          <span className={`goal-list__state goal-list__state--${runStateModifier(runEnd)}`} title={`${runEnd.state ?? ''}${runEnd.failureReason ? ` · ${runEnd.failureReason}` : ''}`}>{goalStateWord(runEnd)}</span>
         </dd>
         {cancellationRequested === true && !terminal ? (
           <>

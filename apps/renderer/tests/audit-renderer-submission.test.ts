@@ -62,12 +62,12 @@ describe('AUDIT R2 — submission refusal vs unknown outcome', () => {
           ? { ok: false, error: { code: 'GOAL_WORKSPACE_NOT_OPEN', message: '工作空间未打开' } }
           : undefined,
     });
-    await app.click('提交并开始执行');
+    await app.click('发送');
     expect(app.callsOf('goal.create')).toHaveLength(1);
     expect(app.view.textContent).not.toContain('上一次提交尚未确认');
-    expect(app.button('提交并开始执行')?.getAttribute('disabled')).toBeNull();
+    expect(app.button('发送')?.getAttribute('disabled')).toBeNull();
     expect(storage.getItem(SUBMISSION_INTENT_STORAGE_KEY)).toBeNull();
-    await app.click('提交并开始执行');
+    await app.click('发送');
     const creates = app.callsOf('goal.create');
     expect(creates).toHaveLength(2);
     expect(creates[0]?.payload['commandId']).not.toBe(creates[1]?.payload['commandId']);
@@ -141,7 +141,7 @@ describe('AUDIT R6 — a submitted objective is not restored as an unsubmitted d
       control: (call) => (call.operation === 'goal.create' ? { ok: true, value: { runId: 'run_goal_7' } } : undefined),
     });
     expect(app.view.textContent).toContain('已恢复本地未提交草稿');
-    await app.click('提交并开始执行');
+    await app.click('发送');
     expect(app.callsOf('goal.create')).toHaveLength(1);
     expect(createLocalDraftStore(storage).load('company_default', WORKSPACE)).toBeNull();
     unmountApp();

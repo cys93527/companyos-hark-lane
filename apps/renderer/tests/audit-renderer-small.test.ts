@@ -75,7 +75,7 @@ describe('AUDIT R11/R12/R13', () => {
     };
     await setValue(fieldInLabel('INPUT'), 'out/result.txt');
     await setValue(fieldInLabel('TEXTAREA'), 'hello');
-    await app.click('提交并开始执行');
+    await app.click('发送');
     await waitFor(() => app.callsOf('goal.create').length > 0 && reactProps(fieldInLabel('INPUT'))['value'] === '');
     const first = app.callsOf('goal.create')[0];
     expect(JSON.stringify(first?.payload['structured'] ?? null)).toContain('out/result.txt');

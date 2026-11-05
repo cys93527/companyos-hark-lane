@@ -25,7 +25,7 @@
  */
 import { DomainError, domainError, err, isRunFailureReason, isRunState, ok, runTerminalOutcome, type GoalExecutionBudget, type Result, type RunTerminalOutcome } from '@companyos/core';
 import { projectGoalBudget, type BudgetCurrency } from './efficiency/goal-budget-projection.js';
-import { executionRunIdOf } from '@companyos/engine';
+import { compiledNodeId, executionRunIdOf } from '@companyos/engine';
 import { fileDeliveriesOf } from './verified-file-delivery.js';
 
 /**
@@ -1221,6 +1221,40 @@ const approvalRespond = async (
   const note = typeof payload['note'] === 'string' ? payload['note'].slice(0, 2_000) : undefined;
   const owned = await loadOwnedRun(deps, deps.companyId, runId.value);
   if (!owned.ok) return owned;
+  /*
+   * UI-AUDIT-04 — the decision is bound to the approval the user SAW. The renderer names the
+   * pending approval row it rendered; when that row is no longer the run's pending approval
+   * (decided elsewhere, superseded by a newer request) the decision is refused typed instead
+   * of silently approving/denying whatever is pending now. Absent = a caller that predates
+   * the binding (trusted tests/tools); the renderer always sends it.
+   */
+  if (payload['approvalId'] !== undefined) {
+    const approvalId = readString(payload, 'approvalId', 128);
+    if (!approvalId.ok) return approvalId;
+    const rows = deps.approvals === undefined ? [] : await deps.approvals.listByRun(runId.value);
+    const current = rows.find((row) => row.status === 'pending') ?? null;
+    if (current === null || current.id !== approvalId.value) {
+      return err(
+        domainError('CONFLICT', 'The approval you answered is no longer the pending request of this run.', {
+          reason: 'APPROVAL_STALE',
+          runId: runId.value,
+          approvalId: approvalId.value,
+          currentApprovalId: current === null ? null : current.id,
+        }),
+      );
+    }
+  }
+  /*
+   * UI-AUDIT-05 — a Goal with a durable cancellation intent is never resumed by an approval:
+   * cancelling promises "no new work"; an APPROVE would grant and resume the escalated run
+   * while the settlement is still converging. Deny stays allowed (it only ends work).
+   */
+  if (decision.value === 'approve' && (await deps.isGoalCancelled?.(runId.value)) === true) {
+    return err(domainError('CANCELLED', 'The Goal has a durable cancellation intent; the approval can no longer resume it.', {
+      reason: 'APPROVAL_GOAL_CANCELLED',
+      runId: runId.value,
+    }));
+  }
 
   if (deps.supervisor === null) {
     return err(
@@ -1469,9 +1503,17 @@ const decisionsPending = async (
   }
   // Aggregate the CANONICAL blockers of every non-terminal run of the active
   // company. There is deliberately no ui_pending_decisions truth (§14).
-  const page = await deps.runs.list({ limit: 100, offset: 0 });
+  // UI-AUDIT-22: page through EVERY run (same sweep as home.summary). A single first page
+  // of 100 runs (execution child runs count too) silently dropped the pending approval of an
+  // older live Goal, which then waited forever with no 批准 button anywhere.
+  const items: Awaited<ReturnType<ControlPlaneDeps['runs']['list']>>['items'][number][] = [];
+  for (let offset = 0; ; offset += HOME_SUMMARY_PAGE) {
+    const page = await deps.runs.list({ limit: HOME_SUMMARY_PAGE, offset });
+    items.push(...page.items);
+    if (page.items.length === 0 || offset + page.items.length >= page.total) break;
+  }
   const pending: unknown[] = [];
-  for (const run of page.items) {
+  for (const run of items) {
     if (run.companyId !== deps.companyId) continue;
     if (terminalOutcomeOfRun(run) !== null) continue;
     const blockers = await deps.observation.getRunBlockers({ companyId: deps.companyId, runId: run.id });
@@ -1541,7 +1583,7 @@ const runBudget = async (
     return err(domainError('PERSISTENCE_FAILED', 'The budget facts could not be read.', { reason: 'GOAL_BUDGET_READ_FAILED' }));
   }
   const projection = projectGoalBudget(runId.value, budget, { nowMs: deps.goalBudget.now(), currency: deps.goalBudget.currency });
-  let plan: { readonly artifactId: string; readonly items: readonly { readonly planItemId: string; readonly objective: string; readonly taskKind: string | null }[]; readonly criteria: readonly { readonly criterionId: string; readonly requirement: string }[] } | null = null;
+  let plan: { readonly artifactId: string; readonly items: readonly { readonly planItemId: string; readonly objective: string; readonly taskKind: string | null; readonly stageId: string | null }[]; readonly criteria: readonly { readonly criterionId: string; readonly requirement: string }[] } | null = null;
   const planRow = (await deps.artifacts.listByRun(runId.value)).filter((row) => row.kind === 'companyos:plan').at(-1);
   if (planRow !== undefined) {
     const command = await deps.artifacts.commandIdOf(planRow.id);
@@ -1552,9 +1594,17 @@ const runBudget = async (
         const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
         const items = Array.isArray(parsed['planItems']) ? (parsed['planItems'] as Record<string, unknown>[]) : [];
         const criteria = Array.isArray(parsed['acceptanceCriteria']) ? (parsed['acceptanceCriteria'] as Record<string, unknown>[]) : [];
+        // UI-PAPER-INK: the compiled stage of each plan item is the frozen deterministic
+        // derivation compiledNodeId(planId, planItemId) (plan-compiler) — derived, never
+        // stored — so the boss can see each step's canonical stage state. Unknown planId -> null.
+        // The plan artifact's creation command IS `plan:<planId>` (planArtifactCommandId).
+        const planId = command !== null && command.startsWith('plan:') && command.length > 5 ? command.slice(5) : null;
         plan = {
           artifactId: planRow.id,
-          items: items.map((item) => ({ planItemId: String(item['planItemId'] ?? ''), objective: String(item['objective'] ?? '').slice(0, 2000), taskKind: typeof item['taskKind'] === 'string' ? item['taskKind'] : null })),
+          items: items.map((item) => {
+            const planItemId = String(item['planItemId'] ?? '');
+            return { planItemId, objective: String(item['objective'] ?? '').slice(0, 2000), taskKind: typeof item['taskKind'] === 'string' ? item['taskKind'] : null, stageId: planId === null || planItemId === '' ? null : compiledNodeId(planId, planItemId) };
+          }),
           criteria: criteria.map((c) => ({ criterionId: String(c['criterionId'] ?? ''), requirement: String(c['requirement'] ?? '').slice(0, 2000) })),
         };
       } catch { plan = null; }

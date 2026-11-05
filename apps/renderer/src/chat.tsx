@@ -9,17 +9,18 @@
  * Activity is never progress. A FAILED Goal stays FAILED and is never relabelled
  * "completed with warning".
  */
-import { createElement as h, type JSX } from 'react';
+import { createElement as h, type JSX, type ReactNode } from 'react';
 
 import { projectRuntimePhase, type RuntimePhase, type CanonicalTimelineEntry, type CanonicalGoalWorkspace } from './runtime-panel.js';
-import { PHASE_LABELS } from './runtime-panel.js';
 import { terminalOutcomeOf } from './run-outcome.js';
+import { clockTime } from './format.js';
+import type { PlanStepView } from './plan-steps.js';
 
 export type ChatEntry =
   | { readonly kind: 'user'; readonly text: string }
   | { readonly kind: 'goal-accepted'; readonly runId: string; readonly objective: string }
   | { readonly kind: 'phase'; readonly phase: RuntimePhase; readonly runState: string }
-  | { readonly kind: 'activity'; readonly entryKind: string; readonly summary: string }
+  | { readonly kind: 'activity'; readonly entryKind: string; readonly summary: string; readonly occurredAt?: string | null }
   | { readonly kind: 'validation'; readonly completed: number; readonly failed: boolean; readonly missing: number }
   | { readonly kind: 'artifacts'; readonly artifacts: readonly { readonly artifactId: string; readonly kind: string }[] }
   | { readonly kind: 'outcome'; readonly delivered: boolean }
@@ -61,7 +62,7 @@ export const projectConversation = (
   }
 
   for (const entry of timeline.slice(-8)) {
-    entries.push({ kind: 'activity', entryKind: entry.kind, summary: entry.summary });
+    entries.push({ kind: 'activity', entryKind: entry.kind, summary: entry.summary, occurredAt: entry.occurredAt });
   }
 
   const overview = workspace.overview;
@@ -76,88 +77,223 @@ export const projectConversation = (
       kind: 'artifacts',
       artifacts: overview.artifacts.map((artifact) => ({ artifactId: artifact.id, kind: artifact.kind })),
     });
-    entries.push({ kind: 'outcome', delivered: overview.state === 'COMPLETED' });
+    // UI-AUDIT-19: the outcome is a fact of an ENDED Goal; a live Goal is not "未交付".
+    if (outcome !== null) entries.push({ kind: 'outcome', delivered: overview.state === 'COMPLETED' });
   }
   return entries;
 };
+
+export interface GoalHeaderView {
+  readonly stateWord: string;
+  readonly live: boolean;
+  readonly runId: string;
+  readonly tasksText: string | null;
+  readonly startedText: string | null;
+}
 
 export interface ChatViewProps {
   readonly objective: string | null;
   readonly entries: readonly ChatEntry[];
   readonly loading: boolean;
   readonly failure: { readonly code: string; readonly message: string } | null;
+  /** UI-PAPER-INK goal page extras (all optional; absent = plain conversation). */
+  readonly header?: GoalHeaderView | null;
+  readonly createdAt?: string | null;
+  readonly planSteps?: readonly PlanStepView[] | null;
+  readonly criteria?: readonly { readonly criterionId: string; readonly requirement: string }[] | null;
+  /** The inline approval block of THIS Goal. */
+  readonly approval?: ReactNode;
+  /** The one live line (what is running right now), accent dot. */
+  readonly liveLine?: string | null;
+  /** UI-AUDIT-17: an ended Goal can hand its description back to the composer (never auto-sends). */
+  readonly onReuseObjective?: (() => void) | null;
+  readonly reuseDisabledReason?: string | null;
 }
 
-/** Pure view: the conversation. User rows carry light chrome; responses do not. */
+const TITLE_MAX = 48;
+/** The H1 is the first line of the objective, bounded; the full text stays in the quote. */
+export const goalTitleOf = (objective: string): { readonly title: string; readonly truncated: boolean } => {
+  const firstLine = objective.split(/\r?\n/u)[0]?.trim() ?? '';
+  const base = firstLine === '' ? objective.trim() : firstLine;
+  if (base.length <= TITLE_MAX && base === objective.trim()) return { title: base, truncated: false };
+  return { title: base.length <= TITLE_MAX ? base : `${base.slice(0, TITLE_MAX)}…`, truncated: true };
+};
+
+const stepGlyphClass: Readonly<Record<PlanStepView['state'], string>> = {
+  DONE: 'step--done',
+  EXECUTING: 'step--exec',
+  AWAITING: 'step--wait',
+  PENDING: 'step--pend',
+  FAILED: 'step--fail',
+  CANCELLED: 'step--cancel',
+  NOT_RUN: 'step--cancel',
+};
+
+/** Pure view: the goal page (or the empty prompt when no Goal is open). */
 export function ChatView(props: ChatViewProps): JSX.Element {
   if (props.objective === null) {
     return h(
       'div',
       { className: 'chat chat--empty', 'data-testid': 'conversation', 'aria-label': '对话' },
       h('h1', { className: 'chat__title' }, '你想把什么事情变成现实？'),
-      h('p', { className: 'chat__subtitle muted' }, '用一句话描述目标，CompanyOS 会规划、执行并交付。'),
+      h('p', { className: 'chat__subtitle muted' }, '在下方用一句话描述目标，CompanyOS 会规划、执行并交付；高风险操作会停下来等你批准。'),
       // AUDIT R3: a failure is never swallowed by the empty state.
       props.failure === null
         ? null
         : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
     );
   }
+  const { title, truncated } = goalTitleOf(props.objective);
+  const accepted = clockTime(props.createdAt ?? null);
+  const rows: JSX.Element[] = [];
+  const row = (key: string, time: string | null, content: ReactNode, className = ''): void => {
+    rows.push(
+      h('div', { key: `t${key}`, className: 'tl__time num', 'aria-hidden': time === null ? true : undefined }, time ?? ''),
+      h('div', { key: `e${key}`, className: `tl__ev ${className}`.trim() }, content),
+    );
+  };
+  const steps = props.planSteps ?? null;
+  const criteria = props.criteria ?? [];
+  let lastActivityTime: string | null = null;
+  let activityBuffer: { key: string; kind: string; summary: string }[] = [];
+  const flushActivity = (): void => {
+    if (activityBuffer.length === 0) return;
+    const lines = activityBuffer;
+    activityBuffer = [];
+    row(`act${lines[0]!.key}`, lastActivityTime, h(
+      'div',
+      { className: 'activity', role: 'list', 'aria-label': '活动' },
+      lines.map((line) =>
+        h('div', { key: line.key, className: 'chat__row chat__row--activity', role: 'listitem' },
+          h('span', { className: 'activity__k' }, line.kind), ' · ', line.summary),
+      ),
+    ));
+  };
+  props.entries.forEach((entry, index) => {
+    if (entry.kind !== 'activity') flushActivity();
+    switch (entry.kind) {
+      case 'user':
+      case 'phase':
+        return;
+      case 'goal-accepted':
+        row(`g${String(index)}`, accepted, h(
+          'span',
+          { className: 'chat__row chat__row--system' },
+          h('b', null, '已接受目标'),
+          steps === null
+            ? null
+            : `，规划完成 · ${String(steps.length)} 步${criteria.length === 0 ? '' : ` · ${String(criteria.length)} 条验收标准`}`,
+        ));
+        if (steps !== null && steps.length > 0) {
+          row('plan', '计划', h(
+            'div',
+            { className: 'plan', 'data-testid': 'plan-steps' },
+            h(
+              'ol',
+              { className: 'steps', 'aria-label': '计划步骤' },
+              steps.map((step) =>
+                h(
+                  'li',
+                  { key: step.planItemId, className: `step ${stepGlyphClass[step.state]}`, 'data-state': step.state },
+                  h('span', { className: 'step__glyph', 'aria-hidden': true }),
+                  h('span', { className: 'step__title' }, step.title),
+                  h('span', { className: 'step__state num' }, step.label),
+                ),
+              ),
+            ),
+            criteria.length === 0
+              ? null
+              : h(
+                  'ul',
+                  { className: 'criteria', 'aria-label': '验收标准' },
+                  criteria.map((criterion) =>
+                    h(
+                      'li',
+                      { key: criterion.criterionId },
+                      h('span', { className: 'criteria__glyph', 'aria-hidden': true }),
+                      h('span', null, `验收 · ${criterion.requirement}`),
+                    ),
+                  ),
+                ),
+          ));
+        }
+        return;
+      case 'activity': {
+        const time = clockTime(entry.occurredAt ?? null);
+        if (activityBuffer.length > 0 && time !== lastActivityTime) flushActivity();
+        if (activityBuffer.length === 0) lastActivityTime = time;
+        activityBuffer.push({ key: `a${String(index)}`, kind: entry.entryKind, summary: entry.summary });
+        return;
+      }
+      case 'validation':
+        row(`v${String(index)}`, null, h('span', { className: 'chat__row chat__row--meta num' },
+          `验证 · 完成 ${entry.completed} · 失败 ${entry.failed ? 1 : 0} · 缺失 ${entry.missing}`));
+        return;
+      case 'artifacts':
+        row(`f${String(index)}`, null, h('span', { className: 'chat__row chat__row--meta' },
+          entry.artifacts.length === 0 ? '产物 · 暂无' : `产物 · ${entry.artifacts.map((a) => a.kind).join('、')}`));
+        return;
+      case 'outcome':
+        row(`o${String(index)}`, null, h('span', { className: entry.delivered ? 'chat__row chat__row--outcome' : 'chat__row chat__row--meta' },
+          entry.delivered ? '结果 · 已交付' : '结果 · 未交付'));
+        return;
+      case 'cancelled':
+        row(`c${String(index)}`, null, h('span', { className: 'chat__row chat__row--cancelled' }, '目标已取消 · 不再启动新的工作或模型调用'));
+        return;
+      case 'cancel-requested':
+        row(`q${String(index)}`, null, h('span', { className: 'chat__row chat__row--cancelled', role: 'status' }, '已请求取消，不再启动新的工作；正在收尾'));
+        return;
+      case 'failed':
+        row(`x${String(index)}`, null, h('span', { className: 'chat__row chat__row--failed', role: 'alert' },
+          h('span', { className: 'chat__fail-glyph', 'aria-hidden': true }),
+          `目标失败 · ${entry.reason ?? '未给出原因'}${entry.blockerCodes.length === 0 ? '' : ` · ${entry.blockerCodes.join('、')}`}`));
+        return;
+      default:
+        return;
+    }
+  });
+  flushActivity();
+  if (props.approval !== undefined && props.approval !== null && props.approval !== false) {
+    row('approval', null, props.approval);
+  }
+  if (props.liveLine !== undefined && props.liveLine !== null) {
+    row('live', null, h('div', { className: 'live-line', role: 'status' }, props.liveLine));
+  }
+  if (props.onReuseObjective !== undefined && props.onReuseObjective !== null) {
+    row('reuse', null, h(
+      'div',
+      { className: 'chat__next' },
+      h('button', {
+        type: 'button',
+        className: 'btn btn--quiet btn--small',
+        onClick: props.onReuseObjective,
+        disabled: props.reuseDisabledReason != null,
+        title: props.reuseDisabledReason ?? '把这个目标的描述放进输入框，修改后再发送（不会自动发送）',
+      }, '用这个描述新建目标'),
+      props.reuseDisabledReason == null ? null : h('span', { className: 'muted' }, props.reuseDisabledReason),
+    ));
+  }
   return h(
-    'div',
-    { className: 'chat', 'data-testid': 'conversation', 'aria-label': '对话' },
-    props.loading ? h('p', { className: 'muted' }, '读取 canonical 状态…') : null,
+    'article',
+    { className: 'chat goal-page', 'data-testid': 'conversation', 'aria-label': '对话' },
+    props.header === undefined || props.header === null
+      ? null
+      : h(
+          'div',
+          { className: 'goal-meta' },
+          h('span', { className: props.header.live ? 'goal-meta__state goal-meta__state--live' : 'goal-meta__state' }, props.header.stateWord),
+          h('span', { className: 'num mono-ish', title: '目标 Run' }, props.header.runId),
+          props.header.tasksText === null ? null : h('span', { className: 'num' }, props.header.tasksText),
+          props.header.startedText === null ? null : h('span', { className: 'num' }, props.header.startedText),
+        ),
+    h('h1', { className: 'goal-page__title', title: props.objective }, title),
+    truncated
+      ? h('blockquote', { className: 'ask' }, h('span', { className: 'ask__who' }, accepted === null ? '你' : `你 · ${accepted}`), props.objective)
+      : null,
+    props.loading ? h('p', { className: 'muted', role: 'status' }, '读取 canonical 状态…') : null,
     props.failure === null
       ? null
       : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
-    props.entries.map((entry, index) => {
-      switch (entry.kind) {
-        case 'user':
-          return h('div', { key: `u${index}`, className: 'chat__row chat__row--user' }, entry.text);
-        case 'goal-accepted':
-          return h(
-            'div',
-            { key: `g${index}`, className: 'chat__row chat__row--system' },
-            `已接受目标 · ${entry.runId}`,
-          );
-        case 'phase':
-          return h(
-            'div',
-            { key: `p${index}`, className: 'chat__row' },
-            `阶段 · ${PHASE_LABELS[entry.phase]}（canonical 状态 ${entry.runState}）`,
-          );
-        case 'activity':
-          return h('div', { key: `a${index}`, className: 'chat__row chat__row--activity' }, `${entry.entryKind} · ${entry.summary}`);
-        case 'validation':
-          return h(
-            'div',
-            { key: `v${index}`, className: 'chat__row' },
-            `验证 · 完成 ${entry.completed} · 失败 ${entry.failed ? 1 : 0} · 缺失 ${entry.missing}`,
-          );
-        case 'artifacts':
-          return h(
-            'div',
-            { key: `f${index}`, className: 'chat__row' },
-            entry.artifacts.length === 0 ? '产物 · 暂无' : `产物 · ${entry.artifacts.map((a) => a.kind).join('、')}`,
-          );
-        case 'outcome':
-          return h(
-            'div',
-            { key: `o${index}`, className: entry.delivered ? 'chat__row chat__row--outcome' : 'chat__row' },
-            entry.delivered ? '结果 · 已交付' : '结果 · 未交付',
-          );
-        case 'cancelled':
-          return h('div', { key: `c${index}`, className: 'chat__row chat__row--cancelled' }, '目标已取消 · 不再启动新的工作或模型调用');
-        case 'cancel-requested':
-          return h('div', { key: `q${index}`, className: 'chat__row chat__row--cancelled', role: 'status' }, '已请求取消，不再启动新的工作；正在收尾');
-        case 'failed':
-          return h(
-            'div',
-            { key: `x${index}`, className: 'chat__row chat__row--failed', role: 'alert' },
-            `目标失败 · ${entry.reason ?? '未给出原因'}${entry.blockerCodes.length === 0 ? '' : ` · ${entry.blockerCodes.join('、')}`}`,
-          );
-        default:
-          return null;
-      }
-    }),
+    rows.length === 0 ? null : h('div', { className: 'tl' }, rows),
   );
 }

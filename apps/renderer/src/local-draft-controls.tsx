@@ -12,18 +12,18 @@ export interface LocalDraftControlsProps {
 /** Loading/saving editor text has no canonical bridge or submission-controller dependency. */
 export function LocalDraftControls(props: LocalDraftControlsProps): JSX.Element {
   const store = useMemo(() => createLocalDraftStore(browserDraftStorage()), []);
-  const [notice, setNotice] = useState('本地未提交草稿（LOCAL_DRAFT）；保存不会创建任务或执行 AI。');
+  const [notice, setNotice] = useState('');
   const [failed, setFailed] = useState(false);
   const { companyId, workspaceRoot, onRestore } = props;
   useLayoutEffect(() => {
     // Clear old editor contents before paint; never carry one Workspace's draft into another.
     onRestore('');
     setFailed(false);
-    if (workspaceRoot === null) { setNotice('选择工作区后可保存本地未提交草稿。'); return; }
+    if (workspaceRoot === null) { setNotice('选择工作区后可保存草稿。'); return; }
     try {
       const record = store.load(companyId, workspaceRoot);
       onRestore(record?.objective ?? '');
-      setNotice(record === null ? '本地未提交草稿（LOCAL_DRAFT）；保存不会执行 AI。' : '已恢复本地未提交草稿（LOCAL_DRAFT），尚未提交或执行。');
+      setNotice(record === null ? '' : '已恢复本地未提交草稿，尚未发送。');
     } catch { setFailed(true); setNotice('读取草稿失败；未提交、未执行。'); }
   }, [store, companyId, workspaceRoot, onRestore]);
   const restore = () => {
@@ -31,18 +31,19 @@ export function LocalDraftControls(props: LocalDraftControlsProps): JSX.Element 
     try {
       const record = store.load(companyId, workspaceRoot);
       onRestore(record?.objective ?? '');
-      setFailed(false); setNotice(record === null ? '当前工作区没有已保存草稿。' : '已恢复本地未提交草稿（LOCAL_DRAFT），尚未执行。');
+      setFailed(false); setNotice(record === null ? '当前工作区没有已保存草稿。' : '已恢复本地未提交草稿，尚未发送。');
     } catch { setFailed(true); setNotice('读取草稿失败；未提交、未执行。'); }
   };
   const save = () => {
     if (workspaceRoot === null || props.busy) return;
     try {
       store.save(companyId, workspaceRoot, props.objective);
-      setFailed(false); setNotice('已保存本地未提交草稿（LOCAL_DRAFT）；未创建 Goal，未开始执行。');
+      setFailed(false); setNotice('草稿已保存在本机；未发送、未创建目标。');
     } catch { setFailed(true); setNotice('保存失败：存储不可用、内容过长或包含凭据；未提交、未执行。'); }
   };
   return h('section', { 'data-testid': 'local-draft', 'aria-label': '本地草稿' },
     h('button', { type: 'button', disabled: props.busy || workspaceRoot === null, onClick: save }, '保存草稿'),
     h('button', { type: 'button', disabled: props.busy || workspaceRoot === null, onClick: restore }, '恢复草稿'),
-    h('p', { role: failed ? 'alert' : 'status' }, notice));
+    // UI-PAPER-INK: the line speaks only when there is something to say (restored / saved / failed).
+    h('p', { role: failed ? 'alert' : 'status', title: '草稿只保存在本机，保存不会创建目标或调用模型' }, notice));
 }

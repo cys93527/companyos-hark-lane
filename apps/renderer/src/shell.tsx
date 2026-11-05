@@ -8,9 +8,9 @@
  * Settings stays BOTTOM LEFT. There is no Team Plan, Pro badge, monthly-task quota or
  * subscription-usage card anywhere in this shell.
  */
-import { createElement as h, type JSX } from 'react';
-import { runStateLabel } from './run-outcome.js';
+import { createElement as h, type JSX, type ReactNode } from 'react';
 import { authorityStatusLabel } from './composer.js';
+import { goalStateWord, isGoalLive } from './format.js';
 
 export type ShellView = 'home' | 'chat' | 'knowledge' | 'tools' | 'agents' | 'settings';
 
@@ -34,7 +34,18 @@ export interface RecentGoalRow {
   readonly state: string;
   /** H12b: typed terminal outcome (absent on older payloads). */
   readonly terminalOutcome?: string | null;
+  readonly createdAt?: string;
 }
+
+/** UI-AUDIT-12: the sidebar shows the newest Goals first, like the goal list (bounded). */
+export const RECENT_LIMIT = 30;
+export const sortRecentNewestFirst = (rows: readonly RecentGoalRow[]): readonly RecentGoalRow[] =>
+  [...rows].sort((a, b) => {
+    const at = a.createdAt ?? '';
+    const bt = b.createdAt ?? '';
+    if (at !== bt) return at < bt ? 1 : -1;
+    return a.runId < b.runId ? 1 : -1;
+  });
 
 export interface SidebarViewProps {
   readonly view: ShellView;
@@ -44,9 +55,15 @@ export interface SidebarViewProps {
   readonly onNewGoal: () => void;
   readonly onNavigate: (view: ShellView) => void;
   readonly onOpenGoal: (runId: string) => void;
+  /** UI-PAPER-INK: the brand line's version and the workspace path in the footer. */
+  readonly appVersion?: string | null;
+  readonly workspaceRoot?: string | null;
+  /** Run ids of Goals known to wait on THIS user's approval (state word 待批准). */
+  readonly approvalPendingRunIds?: ReadonlySet<string>;
 }
 
 export function SidebarView(props: SidebarViewProps): JSX.Element {
+  const recent = sortRecentNewestFirst(props.recent).slice(0, RECENT_LIMIT);
   return h(
     'nav',
     { className: 'sidebar', 'data-testid': 'sidebar', 'aria-label': '侧边栏' },
@@ -54,11 +71,20 @@ export function SidebarView(props: SidebarViewProps): JSX.Element {
       'div',
       { className: 'sidebar__brand' },
       h('span', { className: 'sidebar__logo' }, 'CompanyOS'),
+      props.appVersion == null ? null : h('span', { className: 'sidebar__version' }, props.appVersion),
     ),
     h(
       'button',
-      { type: 'button', className: 'sidebar__new', onClick: props.onNewGoal, disabled: props.busy },
-      '+ 新建对话 / 新建目标',
+      {
+        type: 'button',
+        className: 'sidebar__new',
+        onClick: props.onNewGoal,
+        disabled: props.busy,
+        'aria-keyshortcuts': 'Control+N',
+        title: '新建目标（Ctrl+N）',
+      },
+      h('span', null, '新建目标'),
+      h('kbd', null, 'Ctrl N'),
     ),
     h(
       'ul',
@@ -72,6 +98,7 @@ export function SidebarView(props: SidebarViewProps): JSX.Element {
             {
               type: 'button',
               className: props.view === item.id ? 'sidebar__item sidebar__item--active' : 'sidebar__item',
+              'aria-current': props.view === item.id ? 'page' : undefined,
               onClick: () => props.onNavigate(item.id),
             },
             item.label,
@@ -82,44 +109,81 @@ export function SidebarView(props: SidebarViewProps): JSX.Element {
     h(
       'div',
       { className: 'sidebar__recent', 'data-testid': 'recent-goals', 'aria-label': '最近目标' },
-      h('p', { className: 'sidebar__section' }, '最近'),
-      props.recent.length === 0
+      h('p', { className: 'sidebar__section label' }, '最近'),
+      recent.length === 0
         ? h('p', { className: 'sidebar__empty muted' }, '还没有目标')
         : h(
             'ul',
             null,
-            props.recent.map((goal) =>
-              h(
+            recent.map((goal) => {
+              const active = props.activeGoalRunId === goal.runId;
+              const live = isGoalLive(goal);
+              const word = goalStateWord({ ...goal, approvalPending: props.approvalPendingRunIds?.has(goal.runId) === true });
+              return h(
                 'li',
                 { key: goal.runId },
                 h(
                   'button',
                   {
                     type: 'button',
-                    className:
-                      props.activeGoalRunId === goal.runId ? 'sidebar__goal sidebar__goal--active' : 'sidebar__goal',
+                    className: active ? 'sidebar__goal sidebar__goal--active' : 'sidebar__goal',
+                    'aria-current': active ? 'true' : undefined,
+                    title: goal.objective ?? '(未命名目标)',
                     onClick: () => props.onOpenGoal(goal.runId),
                   },
                   h('span', { className: 'sidebar__goal-text' }, goal.objective ?? '(未命名目标)'),
-                  h('span', { className: 'sidebar__goal-state' }, runStateLabel(goal)),
+                  h('span', { className: live ? 'sidebar__goal-state sidebar__goal-state--live' : 'sidebar__goal-state' }, word),
                 ),
-              ),
-            ),
+              );
+            }),
           ),
     ),
     h(
       'div',
       { className: 'sidebar__bottom' },
       h(
+        'p',
+        { className: 'sidebar__workspace' },
+        h('span', { className: 'sidebar__workspace-label' }, '工作空间'),
+        h('span', { className: 'sidebar__workspace-path mono', title: props.workspaceRoot ?? undefined }, props.workspaceRoot ?? '--'),
+      ),
+      h(
         'button',
         {
           type: 'button',
           className: props.view === 'settings' ? 'sidebar__item sidebar__item--active' : 'sidebar__item',
+          'aria-current': props.view === 'settings' ? 'page' : undefined,
           onClick: () => props.onNavigate('settings'),
         },
         '设置',
       ),
     ),
+  );
+}
+
+/* --------------------------------------------------------------- top bar --- */
+
+export interface TopBarViewProps {
+  /** Breadcrumb trail, e.g. ['对话与任务', '修复库存…']; the last part is the current page. */
+  readonly crumbs: readonly string[];
+  /** Right side (elapsed time, the cancel control). */
+  readonly actions?: ReactNode;
+}
+
+export function TopBarView(props: TopBarViewProps): JSX.Element {
+  return h(
+    'header',
+    { className: 'topbar', 'data-testid': 'topbar' },
+    h(
+      'nav',
+      { className: 'topbar__crumb', 'aria-label': '位置' },
+      props.crumbs.map((crumb, index) =>
+        index === props.crumbs.length - 1
+          ? h('b', { key: `c${String(index)}`, 'aria-current': 'page', title: crumb }, crumb)
+          : [h('span', { key: `c${String(index)}` }, crumb), h('i', { key: `s${String(index)}`, 'aria-hidden': true }, '/')],
+      ),
+    ),
+    props.actions === undefined || props.actions === null ? null : h('div', { className: 'topbar__actions' }, props.actions),
   );
 }
 
@@ -189,7 +253,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       h('dt', null, '提供商'),
       h('dd', null, providerConfigured ? '已配置' : '未配置'),
       h('dt', null, '鉴权状态'),
-      h('dd', null, providerConfigured ? 'CONFIGURED' : 'NOT CONFIGURED'),
+      h('dd', null, providerConfigured ? '已配置' : '未配置'),
       h('dt', null, '可用模型（provider 目录）'),
       h('dd', null, String(props.catalogueCount)),
       h('dt', null, '已注册模型'),
@@ -199,7 +263,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         'dd',
         null,
         modelSelected
-          ? `${props.modelStatus.kind === 'selected' ? (props.modelStatus.displayName ?? props.modelStatus.modelKey) : ''}（COMPANY 策略，MANUAL）`
+          ? `${props.modelStatus.kind === 'selected' ? (props.modelStatus.displayName ?? props.modelStatus.modelKey) : ''}（公司策略 · 手动固定）`
           : '未选择',
       ),
       h('dt', null, '操作'),
@@ -212,7 +276,8 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     h(
       'p',
       { className: 'muted' },
-      '提供商凭证不在界面中管理（SECURE_PROVIDER_ONBOARDING_PENDING）：没有安全的客户端写入缝隙前，配置保持为受信外部配置路径。',
+      // UI-AUDIT-13: the real provisioning path since H17a (trusted helper outside the renderer).
+      '提供商凭证与预算不在界面中管理：请在开始菜单运行「CompanyOS 首次配置」（DPAPI 加密保存 Key 并设置每个目标的预算），完成后重新打开 CompanyOS。',
     ),
 
     h('h3', null, '权限与安全'),
@@ -249,11 +314,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       h('dt', null, 'Node 版本'),
       h('dd', null, props.nodeVersion ?? '--'),
       h('dt', null, '数据库'),
-      h('dd', null, props.databasePath ?? 'unavailable'),
+      h('dd', null, props.databasePath ?? '--'),
       h('dt', null, 'schema 版本'),
-      h('dd', null, props.schemaVersion === null ? '-' : String(props.schemaVersion)),
+      h('dd', null, props.schemaVersion === null ? '--' : String(props.schemaVersion)),
       h('dt', null, 'IPC 通道'),
-      h('dd', null, props.allowedChannels.join(', ')),
+      h('dd', null, props.allowedChannels.length === 0 ? '--' : props.allowedChannels.join(', ')),
     ),
   );
 }
@@ -266,17 +331,31 @@ export interface AppShellViewProps {
   readonly center: JSX.Element;
   readonly composer: JSX.Element | null;
   readonly runtime: JSX.Element;
+  /** UI-PAPER-INK: the 44px bar above the centre (breadcrumb + goal actions). */
+  readonly topbar?: JSX.Element | null;
+  /** A banner every view shows above its content (e.g. the database failure). */
+  readonly banner?: JSX.Element | null;
+  readonly runtimeCollapsed?: boolean;
 }
 
 export function AppShellView(props: AppShellViewProps): JSX.Element {
   return h(
     'div',
-    { className: 'shell-v2', 'data-testid': 'app-shell', 'aria-label': 'CompanyOS' },
+    {
+      className: props.runtimeCollapsed === true ? 'shell-v2 shell-v2--runtime-collapsed' : 'shell-v2',
+      'data-testid': 'app-shell',
+      'aria-label': 'CompanyOS',
+    },
     h(SidebarView, props.sidebar),
     h(
       'main',
       { className: 'shell-v2__center' },
-      h('div', { className: 'shell-v2__content' }, props.center),
+      props.topbar ?? null,
+      h(
+        'div',
+        { className: 'shell-v2__scroll' },
+        h('div', { className: 'shell-v2__content' }, props.banner ?? null, props.center),
+      ),
       props.composer,
     ),
     h('div', { className: 'shell-v2__right' }, props.runtime),

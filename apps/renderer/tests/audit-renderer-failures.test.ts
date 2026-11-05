@@ -33,7 +33,7 @@ describe('AUDIT R3 — action failures have a visible surface', () => {
           ? { ok: false, error: { code: 'MODEL_SELECTION_REQUIRED', message: '请先选择模型' } }
           : undefined,
     });
-    await app.click('提交并开始执行');
+    await app.click('发送');
     expect(app.view.textContent).toContain('MODEL_SELECTION_REQUIRED');
   });
 

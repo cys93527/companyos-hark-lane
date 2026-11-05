@@ -333,9 +333,10 @@ describe('S3-12..15 settings + readiness', () => {
     expect(html.toLowerCase()).not.toContain('api_key');
     expect(html).not.toContain('COS_MODEL_API_KEY');
     expect(html).not.toContain('NOT CONFIGURED"');
-    // Authentication status is a label, never a value.
-    expect(html).toContain('NOT CONFIGURED');
-    expect(html).toContain('SECURE_PROVIDER_ONBOARDING_PENDING');
+    // Authentication status is a label, never a value (UI-AUDIT-14: in Chinese, like every label).
+    expect(html).toContain('未配置');
+    // UI-AUDIT-13: provisioning points at the real trusted helper (H17a), not a pending placeholder.
+    expect(html).toContain('CompanyOS 首次配置');
   });
 
   it('S3-14 provider readiness renders safely (READY / NOT_CONFIGURED / DEGRADED labels)', () => {

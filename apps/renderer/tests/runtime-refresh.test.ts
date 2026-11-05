@@ -200,8 +200,12 @@ const openGoal = async (container: MiniElement, objective: string): Promise<void
 };
 
 const expandPanel = async (container: MiniElement): Promise<void> => {
+  // UI-PAPER-INK: the runtime view is open by default; expand only when it was collapsed.
   const button = clickableWithText(container, '展开');
-  expect(button, 'no expand control on the runtime panel').not.toBeNull();
+  if (button === null) {
+    expect(clickableWithText(container, '收起'), 'runtime panel neither open nor collapsible').not.toBeNull();
+    return;
+  }
   await act(async () => {
     dispatchMiniEvent(button as MiniElement, 'click');
   });

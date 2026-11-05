@@ -21,13 +21,13 @@ describe('AUDIT R10 — workspaceCurrent root is confirmed before use', () => {
       },
     });
     expect(opened).toEqual([WORKSPACE]);
-    expect(app.button('提交并开始执行')).toBeNull();
+    expect(app.button('发送')).toBeNull();
     expect(app.view.textContent).toContain('WORKSPACE_OPEN_FAILED');
     expect(app.view.textContent).toContain('选择一个工作空间目录');
   });
 
   it('a root that re-opens is used as the current workspace', async () => {
     const app = await mountApp({ control: () => undefined });
-    expect(app.button('提交并开始执行')).not.toBeNull();
+    expect(app.button('发送')).not.toBeNull();
   });
 });

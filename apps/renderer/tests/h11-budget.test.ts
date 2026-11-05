@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import { budgetRows, formatMoney, loadGoalBudget, parseGoalBudgetRead } from '../src/budget.js';
 import { RuntimePanelView } from '../src/runtime-panel.js';
+import { ChatView } from '../src/chat.js';
+import { projectPlanSteps } from '../src/plan-steps.js';
 
 const bucket = (calls: number, tokens: number, costMicros: number) => ({ calls, tokens, costMicros });
 const live = {
@@ -65,8 +67,20 @@ describe('H11 budget read model', () => {
       onToggleExpanded: () => undefined, onSelectTab: () => undefined, onSelectTask: () => undefined,
     }));
     expect(html).toContain('已结算 · ¥0.00574');
-    expect(html).toContain('计划预览（未执行） · 1 步');
-    expect(html).toContain('create-hello-txt · Create hello.txt');
-    expect(html).toContain('验收 · A file named hello.txt exists.');
+    // UI-PAPER-INK: the previewed plan moved from the runtime panel into the goal page's
+    // timeline (one place, with canonical step states); before any execution stage exists
+    // every step is 待开始 while the Goal is live and 未执行 once it ended.
+    const read = parseGoalBudgetRead(live)!;
+    const liveSteps = projectPlanSteps({ items: read.plan!.items, execution: null, phase: 'planning', outcome: null });
+    const page = renderToStaticMarkup(h(ChatView, {
+      objective: 'x', entries: [{ kind: 'goal-accepted', runId: 'run_x', objective: 'x' }], loading: false, failure: null,
+      planSteps: liveSteps, criteria: read.plan!.criteria,
+    }));
+    expect(page).toContain('规划完成 · 1 步 · 1 条验收标准');
+    expect(page).toContain('Create hello.txt');
+    expect(page).toContain('待开始');
+    expect(page).toContain('验收 · A file named hello.txt exists.');
+    const ended = projectPlanSteps({ items: read.plan!.items, execution: null, phase: 'completed', outcome: 'COMPLETED' });
+    expect(ended[0]?.label).toBe('未执行');
   });
 });

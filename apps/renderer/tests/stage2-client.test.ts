@@ -180,7 +180,8 @@ describe('UX-01..05 chat-first shell', () => {
     expect(html).toContain('data-testid="composer"');
     expect(html).toContain('data-testid="runtime-panel"');
     expect(html).toContain('CompanyOS');
-    expect(html).toContain('+ 新建对话 / 新建目标');
+    expect(html).toContain('新建目标');
+    expect(html).toContain('Ctrl N');
     // Every nav item maps to a real canonical surface (nothing decorative).
     expect(SHELL_NAV.map((item) => item.label)).toEqual(['首页', '对话与任务', '知识库', '工具', '智能体']);
   });

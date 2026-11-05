@@ -10,8 +10,10 @@
  * handoffs) · 详情 (run/goal facts). Default: collapsed — the centre stays conversation-first.
  */
 import { createElement as h, type JSX } from 'react';
-import { budgetRows, type GoalBudgetRead } from './budget.js';
+import { budgetRows, formatMoney, type GoalBudgetRead } from './budget.js';
 import { terminalOutcomeOf } from './run-outcome.js';
+import { riskWord } from './format.js';
+import type { ModelRuntimeView } from './telemetry.js';
 
 /* ------------------------------------------------- canonical input shapes --- */
 
@@ -282,6 +284,11 @@ export interface RuntimePanelViewProps {
   readonly pendingApproval?: { readonly riskLevel: string; readonly reason: string; readonly runId: string } | null;
   /** H11: canonical budget/spend projection + the previewed plan (read-only). */
   readonly budget?: GoalBudgetRead | null;
+  /** UI-PAPER-INK: the model telemetry projection (UNKNOWN renders --) + the coverage note. */
+  readonly model?: ModelRuntimeView | null;
+  readonly usageNote?: string | null;
+  /** Stage progress of the newest execution run (canonical counts), when known. */
+  readonly stageProgress?: { readonly done: number; readonly total: number } | null;
   readonly onToggleExpanded: () => void;
   readonly onSelectTab: (tab: RuntimeTab) => void;
   readonly onSelectTask: (taskId: string) => void;
@@ -312,6 +319,29 @@ export const failureClassificationOf = (task: CanonicalTaskObservation | null): 
     : 'FAILED（无 attempt 明细）';
 };
 
+const LIVE_PHASES: ReadonlySet<RuntimePhase> = new Set(['planning', 'executing', 'validating', 'correcting', 'awaiting-user', 'blocked']);
+
+const ENDED_PHASES: ReadonlySet<RuntimePhase> = new Set(['completed', 'failed', 'cancelled', 'timed-out']);
+/** UI-AUDIT-19: a live Goal is 进行中, never 未交付; unknown is --. */
+const outcomeWord = (lifecycle: RuntimeLifecycleView | null): string =>
+  lifecycle === null ? '--' : lifecycle.outcomeDelivered ? '已交付' : ENDED_PHASES.has(lifecycle.phase) ? '未交付' : '进行中';
+
+/** Cents for amounts of at least 0.01 (a known value rounded for display); tiny amounts stay exact. */
+const displayMoney = (micros: number, currency: Parameters<typeof formatMoney>[1]): string => {
+  if (micros < 10_000) return formatMoney(micros, currency);
+  const exact = formatMoney(micros, currency);
+  const value = (Math.round(micros / 10_000) / 100).toFixed(2);
+  return exact.replace(/[0-9]+(?:\.[0-9]+)?/u, value);
+};
+
+const kvRow = (label: string, value: string, key: string): JSX.Element[] => [
+  h('dt', { key: `${key}-k` }, label),
+  h('dd', { key: `${key}-v`, className: value === '--' ? 'unk' : undefined }, value),
+];
+
+const section = (label: string, key: string, ...children: (JSX.Element | JSX.Element[] | null)[]): JSX.Element =>
+  h('section', { className: 'rt-sec', key, 'aria-label': label }, h('h4', { className: 'label' }, label), ...children);
+
 export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
   if (!props.open) {
     return h(
@@ -321,245 +351,314 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
   }
 
   const lifecycle = props.lifecycle;
-  return h(
-    'aside',
-    { className: `runtime-panel${props.expanded ? '' : ' runtime-panel--collapsed'}`, 'data-testid': 'runtime-panel', 'aria-label': '运行面板' },
-    h(
-      'div',
-      { className: 'runtime-panel__head' },
-      h('span', { className: 'runtime-panel__title' }, 'CompanyOS 运行视图'),
-      h(
-        'button', { type: 'button', className: 'runtime-panel__collapse', onClick: props.onToggleExpanded },
-        props.expanded ? '收起' : '展开',
-      ),
-    ),
+  const tabLabel = (entry: { readonly id: RuntimeTab; readonly label: string }) =>
+    entry.id === 'files' && props.artifacts.length > 0
+      ? [entry.label, h('em', { key: 'n', className: 'num' }, String(props.artifacts.length))]
+      : entry.label;
+  const head = h(
+    'div',
+    { className: 'runtime-panel__head' },
     props.expanded
       ? h(
           'div',
-          { className: 'runtime-panel__body' },
+          { className: 'runtime-panel__tabs', role: 'tablist', 'aria-label': '运行视图' },
+          RUNTIME_TABS.map((entry) =>
+            h(
+              'button',
+              {
+                key: entry.id,
+                type: 'button',
+                role: 'tab',
+                'aria-selected': props.tab === entry.id,
+                className: props.tab === entry.id ? 'runtime-tab runtime-tab--active' : 'runtime-tab',
+                onClick: () => props.onSelectTab(entry.id),
+              },
+              tabLabel(entry),
+            ),
+          ),
+        )
+      : h('span', { className: 'runtime-panel__title' }, '运行视图'),
+    h(
+      'button',
+      { type: 'button', className: 'runtime-panel__collapse', onClick: props.onToggleExpanded, 'aria-expanded': props.expanded },
+      props.expanded ? '收起' : '展开',
+    ),
+  );
+  if (!props.expanded) {
+    return h(
+      'aside',
+      { className: 'runtime-panel runtime-panel--collapsed', 'data-testid': 'runtime-panel', 'aria-label': '运行面板' },
+      head,
+      h('p', { className: 'sr-only runtime-panel__hint' }, '已收起 — 对话优先。'),
+    );
+  }
+
+  const phaseLive = lifecycle !== null && LIVE_PHASES.has(lifecycle.phase);
+  const budget = props.budget ?? null;
+  const pending = props.pendingApproval ?? null;
+  const blockers = props.blockers ?? [];
+  const model = props.model ?? null;
+
+  const runTab = h(
+    'div',
+    { className: 'runtime-tree', 'data-testid': 'runtime-lifecycle', 'aria-label': '运行阶段' },
+    lifecycle === null
+      ? h('p', { className: 'rt-empty muted' }, '尚未打开目标。打开左侧的一个目标，或在下方描述新目标。')
+      : section(
+          '阶段',
+          'phase',
           h(
             'div',
-            { className: 'runtime-panel__tabs', role: 'tablist' },
-            RUNTIME_TABS.map((entry) =>
+            { className: phaseLive ? 'phase phase--live' : 'phase' },
+            PHASE_LABELS[lifecycle.phase],
+            props.stageProgress == null || props.stageProgress.total === 0
+              ? null
+              : h('small', { className: 'num' }, `阶段 ${String(props.stageProgress.done)}/${String(props.stageProgress.total)} 终态成功`),
+          ),
+          h('p', { className: 'rt-canonical num' }, `目标 · ${lifecycle.runState} · 规划 · ${lifecycle.planningState ?? '--'}`),
+        ),
+    blockers.length === 0 && pending === null
+      ? null
+      : h(
+          'div',
+          { className: 'runtime-blockers', 'data-testid': 'runtime-blockers', 'aria-label': '阻塞项', key: 'blockers' },
+          pending === null
+            ? null
+            : h(
+                'p',
+                { className: 'blocker blocker--approval runtime-blockers__approval', role: 'status', title: pending.reason },
+                h('b', null, '需要批准'),
+                // One strip for the approval: the APPROVAL_REQUIRED blocker is the same fact.
+                h('span', { className: 'blocker__text' }, `${blockers.some((blocker) => blocker.code === 'APPROVAL_REQUIRED') ? 'APPROVAL_REQUIRED · ' : ''}${pending.reason === '' ? '（未提供原因）' : pending.reason}`),
+                h('span', { className: 'blocker__risk', title: `风险等级 ${pending.riskLevel}` }, `风险 ${riskWord(pending.riskLevel)}`),
+              ),
+          blockers
+            .filter((blocker) => pending === null || blocker.code !== 'APPROVAL_REQUIRED')
+            .map((blocker, index) =>
               h(
-                'button',
-                {
-                  key: entry.id,
-                  type: 'button',
-                  role: 'tab',
-                  'aria-selected': props.tab === entry.id,
-                  className: props.tab === entry.id ? 'runtime-tab runtime-tab--active' : 'runtime-tab',
-                  onClick: () => props.onSelectTab(entry.id),
-                },
-                entry.label,
+                'p',
+                { key: `b${String(index)}`, className: blocker.code === 'APPROVAL_REQUIRED' ? 'blocker runtime-blockers__item' : 'blocker blocker--plain runtime-blockers__item' },
+                h('b', null, '阻塞'),
+                h('span', { className: 'blocker__text' }, `${blocker.code} · ${blocker.explanation}`),
+              ),
+            ),
+        ),
+    budget === null
+      ? null
+      : section(
+          '预算',
+          'budget',
+          h(
+            'div',
+            { className: 'runtime-budget', 'data-testid': 'runtime-budget', 'aria-label': '预算' },
+            h(
+              'div',
+              { className: 'cost' },
+              // Display figure: money to the cent (the exact settled amount is in the lines below).
+              h('span', { className: 'cost__big num', title: formatMoney(budget.budget.settled.costMicros, budget.budget.currency) }, displayMoney(budget.budget.settled.costMicros, budget.budget.currency)),
+              budget.budget.cap === null
+                ? h('span', { className: 'cost__of' }, '/ 上限 --')
+                : h('span', { className: 'cost__of num' }, `/ 上限 ${displayMoney(budget.budget.cap.costMicros, budget.budget.currency)}`),
+            ),
+            budget.budget.cap === null || budget.budget.cap.costMicros <= 0
+              ? null
+              : h(
+                  'div',
+                  { className: 'meter', 'aria-hidden': true },
+                  h('i', { style: { transform: `scaleX(${String(Math.min(1, budget.budget.settled.costMicros / budget.budget.cap.costMicros))})` } }),
+                ),
+            h(
+              'ul',
+              { className: 'rt-lines num' },
+              budgetRows(budget.budget).map((line, index) => h('li', { key: `b${String(index)}` }, line)),
+            ),
+          ),
+        ),
+    model === null
+      ? null
+      : section(
+          '模型',
+          'model',
+          h(
+            'dl',
+            { className: 'kv', 'data-testid': 'runtime-model' },
+            kvRow('公司模型', model.modelLabel, 'm'),
+            kvRow('上下文窗口', model.contextWindow, 'w'),
+            kvRow('已用 tokens', model.used, 'u'),
+            kvRow('生成速度', model.speed, 's'),
+            kvRow('缓存命中', model.cacheHit, 'c'),
+            kvRow('上下文剩余', model.remaining, 'r'),
+            kvRow('会话费用', model.cost, 'f'),
+          ),
+          props.usageNote === undefined || props.usageNote === null || props.usageNote === ''
+            ? null
+            : h('p', { className: 'rt-note' }, props.usageNote),
+        ),
+    lifecycle === null
+      ? null
+      : section(
+          '验证',
+          'validation',
+          h(
+            'dl',
+            { className: 'kv' },
+            kvRow('完成', String(lifecycle.validation.completed), 'c'),
+            kvRow('失败', String(lifecycle.validation.failed), 'f'),
+            kvRow('缺失', String(lifecycle.validation.missing), 'm'),
+            kvRow('纠正轮次', String(lifecycle.correctiveRounds), 'r'),
+            kvRow('移交', String(lifecycle.handoffCount), 'h'),
+            kvRow('结果', outcomeWord(lifecycle), 'o'),
+          ),
+          h('p', { className: 'sr-only' }, `验证 · 完成 ${String(lifecycle.validation.completed)} · 失败 ${String(lifecycle.validation.failed)} · 缺失 ${String(lifecycle.validation.missing)}`),
+        ),
+    lifecycle === null || lifecycle.tasks.length === 0
+      ? null
+      : section(
+          '执行中的任务',
+          'tasks',
+          h(
+            'ul',
+            { className: 'files' },
+            lifecycle.tasks.map((task) =>
+              h(
+                'li',
+                { className: 'runtime-tree__row--task', key: task.taskId },
+                h(
+                  'button',
+                  { type: 'button', className: 'runtime-task', onClick: () => props.onSelectTask(task.taskId), title: '查看任务明细' },
+                  h('span', { className: 'runtime-task__id mono' }, task.taskId),
+                  h('span', { className: 'runtime-task__meta' }, `${task.state}${task.attemptLabel === null ? '' : ` · 尝试 ${task.attemptLabel}`}`),
+                ),
+                task.roleId === null && task.modelKey === null
+                  ? null
+                  : h(
+                      'span',
+                      { className: 'runtime-task__bindings' },
+                      [task.roleId === null ? null : `角色 ${task.roleId}`, task.modelKey === null ? null : `模型 ${task.modelKey}`]
+                        .filter((part): part is string => part !== null)
+                        .join(' · '),
+                    ),
               ),
             ),
           ),
-          props.tab === 'run'
-            ? h(
-                'div',
-                { className: 'runtime-tree', 'data-testid': 'runtime-lifecycle', 'aria-label': '运行阶段' },
-                lifecycle === null
-                  ? h('div', { className: 'runtime-tree__row muted' }, '尚未选择目标。')
-                  : h(
-                      'div',
-                      { className: 'runtime-tree__row runtime-tree__row--goal' },
-                      `目标 · ${lifecycle.runState}`,
-                    ),
-                lifecycle === null
-                  ? null
-                  : h('div', { className: 'runtime-tree__row' }, `规划 · ${lifecycle.planningState ?? '—'}`),
-                props.budget === undefined || props.budget === null
-                  ? null
-                  : h(
-                      'div',
-                      { className: 'runtime-budget', 'data-testid': 'runtime-budget', 'aria-label': '预算' },
-                      ...budgetRows(props.budget.budget).map((row, index) =>
-                        h('div', { className: index === 0 ? 'runtime-tree__row runtime-tree__row--goal' : 'runtime-tree__row', key: `b${String(index)}` }, row),
-                      ),
-                    ),
-                props.budget === undefined || props.budget === null || props.budget.plan === null || (lifecycle !== null && lifecycle.tasks.length > 0)
-                  ? null
-                  : h(
-                      'div',
-                      { className: 'runtime-plan-preview', 'data-testid': 'runtime-plan-preview', 'aria-label': '计划预览' },
-                      h('div', { className: 'runtime-tree__row runtime-tree__row--goal' }, `计划预览（未执行） · ${String(props.budget.plan.items.length)} 步`),
-                      ...props.budget.plan.items.map((item) =>
-                        h('div', { className: 'runtime-tree__row runtime-tree__row--task', key: `p${item.planItemId}` }, `${item.planItemId} · ${item.objective}`),
-                      ),
-                      ...props.budget.plan.criteria.map((c) =>
-                        h('div', { className: 'runtime-tree__row muted', key: `c${c.criterionId}` }, `验收 · ${c.requirement}`),
-                      ),
-                    ),
-                lifecycle === null || lifecycle.tasks.length === 0
-                  ? h('div', { className: 'runtime-tree__row muted' }, '任务 0/0 · 编译前')
-                    : lifecycle.tasks.map((task) =>
-                        h(
-                          'div',
-                          { className: 'runtime-tree__row runtime-tree__row--task', key: task.taskId },
-                          h(
-                            'button',
-                            { type: 'button', className: 'runtime-task', onClick: () => props.onSelectTask(task.taskId) },
-                            h('span', { className: 'runtime-task__id' }, task.taskId),
-                            h('span', { className: 'runtime-task__meta' }, `${task.state}${task.attemptLabel === null ? '' : ` · 尝试 ${task.attemptLabel}`}`),
-                          ),
-                          h(
-                            'span',
-                            { className: 'runtime-task__bindings' },
-                            [
-                              task.roleId === null ? null : `角色 ${task.roleId}`,
-                              task.modelKey === null ? null : `模型 ${task.modelKey}`,
-                            ]
-                              .filter((part): part is string => part !== null)
-                              .join(' · '),
-                          ),
-                        ),
-                      ),
-                  lifecycle === null
-                    ? null
-                    : h(
-                        'div',
-                        { className: 'runtime-tree__row' },
-                        `验证 · 完成 ${lifecycle?.validation.completed ?? 0} · 失败 ${lifecycle?.validation.failed ?? 0} · 缺失 ${lifecycle?.validation.missing ?? 0}`,
-                      ),
-                  lifecycle === null
-                    ? null
-                    : h('div', { className: 'runtime-tree__row' }, `纠正轮次 · ${lifecycle.correctiveRounds}`),
-                  lifecycle === null
-                    ? null
-                    : h('div', { className: 'runtime-tree__row' }, `移交 · ${lifecycle.handoffCount}`),
-                  h(
-                    'div',
-                    { className: 'runtime-tree__row' },
-                    `结果 · ${lifecycle === null ? '未知' : lifecycle.outcomeDelivered ? '已交付' : '未交付'}`,
-                  ),
-                  (props.blockers ?? []).length === 0 && props.pendingApproval === null
-                    ? null
-                    : h(
-                        'div',
-                        { className: 'runtime-blockers', 'data-testid': 'runtime-blockers', 'aria-label': '阻塞项' },
-                        (props.pendingApproval ?? null) === null
-                          ? null
-                          : h(
-                              'p',
-                              { className: 'runtime-blockers__approval', role: 'alert' },
-                              `需要批准 · 风险 ${props.pendingApproval!.riskLevel} · ${props.pendingApproval!.reason}`,
-                            ),
-                        (props.blockers ?? []).map((blocker, index) =>
-                          h('p', { key: `b${index}`, className: 'runtime-blockers__item' }, `${blocker.code} · ${blocker.explanation}`),
-                        ),
-                      ),
-                  props.timeline.length === 0
-                    ? null
-                    : h(
-                        'ul',
-                        { className: 'runtime-activity', 'data-testid': 'runtime-activity', 'aria-label': '最近活动' },
-                        props.timeline.map((entry) =>
-                          h('li', { key: entry.key }, `${entry.kind} · ${entry.summary}`),
-                        ),
-                      ),
-                )
-              : props.tab === 'files'
-                ? [
-                    h(
-                      'ul',
-                      { key: 'files', className: 'runtime-files', 'data-testid': 'runtime-artifacts', 'aria-label': '产出文件' },
-                      props.artifacts.length === 0
-                        ? h('li', { className: 'muted' }, '尚无产物文件。')
-                        : props.artifacts.map((artifact) =>
-                            h(
-                              'li',
-                              { key: artifact.artifactId },
-                              h('span', { className: 'runtime-files__kind' }, artifact.kind),
-                              h('span', { className: 'runtime-files__id' }, artifact.artifactId),
-                              h(
-                                'span',
-                                { className: 'runtime-files__actions' },
-                                h(
-                                  'button',
-                                  { type: 'button', onClick: () => props.onArtifactPreview?.(artifact.artifactId, artifact.kind) },
-                                  '预览',
-                                ),
-                                h(
-                                  'button',
-                                  { type: 'button', onClick: () => props.onArtifactOpen?.(artifact.artifactId, artifact.kind) },
-                                  '打开',
-                                ),
-                                h(
-                                  'button',
-                                  { type: 'button', onClick: () => props.onArtifactReveal?.(artifact.artifactId, artifact.kind) },
-                                  '显示',
-                                ),
-                              ),
-                            ),
-                          ),
-                    ),
-                    props.artifactPreview === null
-                      ? null
-                      : h(
-                          'pre',
-                          { key: 'preview', className: 'artifact-actions__preview' },
-                          (props.artifactPreview!).text,
-                          (props.artifactPreview!).truncated
-                            ? h('span', { className: 'muted' }, '\n…（已截断，仅显示前 16 KiB）')
-                            : null,
-                        ),
-                    (props.artifactFailure ?? null) === null
-                      ? null
-                      : h(
-                          'p',
-                          { key: 'failure', className: 'typed-error__message', role: 'alert' },
-                          `${props.artifactFailure!.code} ${props.artifactFailure!.message}`,
-                        ),
-                  ]
-                : props.tab === 'output'
-                  ? h(
-                      'div',
-                      { className: 'runtime-output' },
-                      h('p', null, `Outcome · ${lifecycle === null ? '未知' : lifecycle.outcomeDelivered ? '已交付' : '未交付'}`),
-                      h(
-                        'p',
-                        null,
-                        `验证 · 完成 ${lifecycle?.validation.completed ?? 0} · 失败 ${lifecycle?.validation.failed ?? 0} · 缺失 ${lifecycle?.validation.missing ?? 0}`,
-                      ),
-                      h('p', null, `移交 · ${lifecycle?.handoffCount ?? 0}`),
-                      h('p', { className: 'muted' }, '产物说明不能替代 canonical 验证结果；此处只投影 canonical 状态。'),
-                    )
-                  : h(
-                      'div',
-                      { className: 'runtime-detail' },
-                      props.taskDetail === null
-                        ? h('p', { className: 'muted' }, '选择运行页中的任务以查看 canonical 明细。')
-                        : h(
-                            'dl',
-                            { className: 'kv' },
-                            h('dt', null, '任务'),
-                            h('dd', null, props.taskDetail.taskId),
-                            h('dt', null, '角色'),
-                            h('dd', null, props.taskDetail.roleId),
-                            h('dt', null, '模型'),
-                            h('dd', null, props.taskDetail.provenance[0]?.modelKey ?? '—'),
-                            h('dt', null, 'Provider'),
-                            h('dd', null, props.taskDetail.provider?.providerKey ?? '—'),
-                            h('dt', null, '状态'),
-                            h('dd', null, `${props.taskDetail.state} · 尝试 ${props.taskDetail.attempts}/${props.taskDetail.maxAttempts}`),
-                            h('dt', null, '开始'),
-                            h('dd', null, props.taskDetail.createdAt),
-                            h('dt', null, 'Provider 状态'),
-                            h('dd', null, props.taskDetail.provider?.state ?? '—'),
-                            h('dt', null, '耗时'),
-                            h('dd', null, formatElapsed(props.taskDetail.createdAt, props.taskDetail.updatedAt)),
-                            h('dt', null, '尝试'),
-                            h(
-                              'dd',
-                              null,
-                              `${props.taskDetail.attempts}/${props.taskDetail.maxAttempts}`,
-                            ),
-                            h('dt', null, '失败分类'),
-                            h('dd', null, failureClassificationOf(props.taskDetail)),
-                          ),
-                    ),
-          )
-      : h('p', { className: 'muted runtime-panel__hint' }, '已收起 — 对话优先。'),
+        ),
+    props.artifacts.length === 0
+      ? null
+      : section(
+          '产出文件',
+          'artifacts',
+          h(
+            'ul',
+            { className: 'files' },
+            props.artifacts.slice(0, 6).map((artifact) =>
+              h('li', { key: artifact.artifactId }, h('span', { className: 'mono' }, artifact.kind), h('span', { className: 'files__d mono', title: artifact.artifactId }, artifact.artifactId.slice(0, 14))),
+            ),
+          ),
+          props.artifacts.length > 6
+            ? h('button', { type: 'button', className: 'btn btn--text', onClick: () => props.onSelectTab('files') }, `全部 ${String(props.artifacts.length)} 个 · 在「文件」查看`)
+            : null,
+        ),
+    props.timeline.length === 0
+      ? null
+      : section(
+          '最近活动',
+          'activity',
+          h(
+            'ul',
+            { className: 'runtime-activity act', 'data-testid': 'runtime-activity', 'aria-label': '最近活动' },
+            props.timeline.map((entry) => h('li', { key: entry.key }, h('span', { className: 'activity__k' }, entry.kind), ` · ${entry.summary}`)),
+          ),
+        ),
+    h('p', { className: 'rt-note', key: 'note' }, '只投影 canonical 状态；未知值显示 --，不估算。'),
+  );
+
+  const filesTab = h(
+    'div',
+    { className: 'runtime-files-tab' },
+    h(
+      'ul',
+      { key: 'files', className: 'files runtime-files', 'data-testid': 'runtime-artifacts', 'aria-label': '产出文件' },
+      props.artifacts.length === 0
+        ? h('li', { className: 'muted' }, '尚无产物文件。')
+        : props.artifacts.map((artifact) =>
+            h(
+              'li',
+              { key: artifact.artifactId },
+              h('span', { className: 'runtime-files__kind mono' }, artifact.kind),
+              h('span', { className: 'runtime-files__id mono', title: artifact.artifactId }, artifact.artifactId),
+              h(
+                'span',
+                { className: 'runtime-files__actions' },
+                h('button', { type: 'button', className: 'btn btn--text', onClick: () => props.onArtifactPreview?.(artifact.artifactId, artifact.kind) }, '预览'),
+                h('button', { type: 'button', className: 'btn btn--text', onClick: () => props.onArtifactOpen?.(artifact.artifactId, artifact.kind) }, '打开'),
+                h('button', { type: 'button', className: 'btn btn--text', onClick: () => props.onArtifactReveal?.(artifact.artifactId, artifact.kind) }, '显示'),
+              ),
+            ),
+          ),
+    ),
+    (props.artifactPreview ?? null) === null
+      ? null
+      : h(
+          'pre',
+          { key: 'preview', className: 'artifact-actions__preview mono' },
+          props.artifactPreview!.text,
+          props.artifactPreview!.truncated ? h('span', { className: 'muted' }, '\n…（已截断，仅显示前 16 KiB）') : null,
+        ),
+    (props.artifactFailure ?? null) === null
+      ? null
+      : h('p', { key: 'failure', className: 'typed-error__message', role: 'alert' }, `${props.artifactFailure!.code} ${props.artifactFailure!.message}`),
+  );
+
+  const outputTab = h(
+    'div',
+    { className: 'runtime-output' },
+    section(
+      '结果',
+      'outcome',
+      h('dl', { className: 'kv' },
+        kvRow('结果', outcomeWord(lifecycle), 'o'),
+        kvRow('验证完成', lifecycle === null ? '--' : String(lifecycle.validation.completed), 'c'),
+        kvRow('验证失败', lifecycle === null ? '--' : String(lifecycle.validation.failed), 'f'),
+        kvRow('验证缺失', lifecycle === null ? '--' : String(lifecycle.validation.missing), 'm'),
+        kvRow('移交', lifecycle === null ? '--' : String(lifecycle.handoffCount), 'h'),
+      ),
+    ),
+    h('p', { className: 'rt-note' }, '产物说明不能替代 canonical 验证结果；此处只投影 canonical 状态。'),
+  );
+
+  const detailTab = h(
+    'div',
+    { className: 'runtime-detail' },
+    props.taskDetail === null
+      ? h('p', { className: 'muted' }, '选择运行页中的任务以查看 canonical 明细。')
+      : section(
+          '任务明细',
+          'task',
+          h(
+            'dl',
+            { className: 'kv kv--wrap' },
+            kvRow('任务', props.taskDetail.taskId, 't'),
+            kvRow('角色', props.taskDetail.roleId, 'r'),
+            kvRow('模型', props.taskDetail.provenance[0]?.modelKey ?? '--', 'm'),
+            kvRow('Provider', props.taskDetail.provider?.providerKey ?? '--', 'p'),
+            kvRow('状态', `${props.taskDetail.state} · 尝试 ${String(props.taskDetail.attempts)}/${String(props.taskDetail.maxAttempts)}`, 's'),
+            kvRow('开始', props.taskDetail.createdAt, 'b'),
+            kvRow('Provider 状态', props.taskDetail.provider?.state ?? '--', 'ps'),
+            kvRow('耗时', formatElapsed(props.taskDetail.createdAt, props.taskDetail.updatedAt), 'e'),
+            kvRow('尝试', `${String(props.taskDetail.attempts)}/${String(props.taskDetail.maxAttempts)}`, 'a'),
+            kvRow('失败分类', failureClassificationOf(props.taskDetail), 'fc'),
+          ),
+        ),
+  );
+
+  return h(
+    'aside',
+    { className: 'runtime-panel', 'data-testid': 'runtime-panel', 'aria-label': '运行面板' },
+    head,
+    h(
+      'div',
+      { className: 'runtime-panel__body', role: 'tabpanel' },
+      props.tab === 'run' ? runTab : props.tab === 'files' ? filesTab : props.tab === 'output' ? outputTab : detailTab,
+    ),
   );
 }

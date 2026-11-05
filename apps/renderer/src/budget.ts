@@ -29,7 +29,7 @@ export interface GoalBudgetView {
 
 export interface PreviewPlanView {
   readonly artifactId: string;
-  readonly items: readonly { readonly planItemId: string; readonly objective: string; readonly taskKind: string | null }[];
+  readonly items: readonly { readonly planItemId: string; readonly objective: string; readonly taskKind: string | null; readonly stageId: string | null }[];
   readonly criteria: readonly { readonly criterionId: string; readonly requirement: string }[];
 }
 
@@ -71,7 +71,7 @@ export const parseGoalBudgetRead = (value: unknown): GoalBudgetRead | null => {
   if (p !== null && typeof p['artifactId'] === 'string' && Array.isArray(p['items']) && Array.isArray(p['criteria'])) {
     plan = {
       artifactId: p['artifactId'],
-      items: (p['items'] as unknown[]).flatMap((i) => { const r = rec(i); return r === null ? [] : [{ planItemId: String(r['planItemId'] ?? ''), objective: String(r['objective'] ?? ''), taskKind: typeof r['taskKind'] === 'string' ? r['taskKind'] : null }]; }),
+      items: (p['items'] as unknown[]).flatMap((i) => { const r = rec(i); return r === null ? [] : [{ planItemId: String(r['planItemId'] ?? ''), objective: String(r['objective'] ?? ''), taskKind: typeof r['taskKind'] === 'string' ? r['taskKind'] : null, stageId: typeof r['stageId'] === 'string' && r['stageId'] !== '' ? r['stageId'] : null }]; }),
       criteria: (p['criteria'] as unknown[]).flatMap((c) => { const r = rec(c); return r === null ? [] : [{ criterionId: String(r['criterionId'] ?? ''), requirement: String(r['requirement'] ?? '') }]; }),
     };
   }

@@ -85,7 +85,7 @@ describe('real React controls: save/restore and explicit submission are separate
     const storage = memory(), submit = vi.fn(async () => {}); vi.stubGlobal('localStorage',storage);
     createLocalDraftStore(storage).save('c',workspace,'hello'); await render(harness(submit));
     await click('保存草稿'); await click('恢复草稿'); expect(submit).not.toHaveBeenCalled();
-    await click('提交并开始执行'); expect(submit).toHaveBeenCalledTimes(1);
+    await click('发送'); expect(submit).toHaveBeenCalledTimes(1);
   });
   it('unmount/remount restores saved editing text, but never submits on restart', async () => {
     const storage = memory(), submit = vi.fn(async () => {}); vi.stubGlobal('localStorage',storage);

@@ -11,7 +11,7 @@
  * so after Send the user never clicks 继续 again. This component only re-reads canonical
  * state through bounded, lifecycle-bound polling.
  */
-import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react';
 
 import {
   FALLBACK_APP_VERSION,
@@ -28,7 +28,6 @@ import {
   AuthorityPopover,
   ACCESS_POLICY_OPTIONS,
   ComposerView,
-  ModelRuntimePopover,
   ModelSelectorView,
 } from './composer.js';
 import type { WorkflowBridge } from './designer.js';
@@ -71,6 +70,8 @@ import {
 import {
   AppShellView,
   SettingsView,
+  SHELL_NAV,
+  TopBarView,
   type RecentGoalRow,
   type ReadinessRow,
   type ShellView,
@@ -87,12 +88,16 @@ import {
 import { runArtifactAction } from './artifacts-view.js';
 import { loadGoalUsage, projectTelemetry } from './usage.js';
 import { loadGoalBudget } from './budget.js';
-import type { ModelRuntimeSnapshot } from './telemetry.js';
+import { projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
-import { isRunEnded } from './run-outcome.js';
+import { isRunEnded, terminalOutcomeOf } from './run-outcome.js';
 import { GoalCancelControl } from './cancel-control.js';
 import { DatabaseFailureBanner, readDatabaseFailure } from './database-failure.js';
+import { goalTitleOf } from './chat.js';
+import { elapsedText, goalStateWord, sessionCostText, startedAtText } from './format.js';
+import { projectPlanSteps, type ExecutionOverviewInput } from './plan-steps.js';
+import { PHASE_LABELS } from './runtime-panel.js';
 
 /** Bounded, read-only, lifecycle-bound polling — never workflow authority. */
 const GOAL_POLL_INTERVAL_MS = 4_000;
@@ -121,6 +126,23 @@ function ActionFailureLine(props: {
       h('p', { key: failure.code, className: 'typed-error__message' }, `${failure.code} ${failure.message}`),
     ),
   );
+}
+
+/**
+ * UI-PAPER-INK: measured wall time since the Goal's canonical start, ticking only while the
+ * Goal is live and its start is known (its own 1 s timer, so the App does not re-render).
+ */
+function GoalElapsed(props: { readonly since: string | null; readonly live: boolean }): JSX.Element | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!props.live || props.since === null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [props.live, props.since]);
+  if (!props.live) return null;
+  const text = elapsedText(props.since, now);
+  return text === null ? null : h('span', { className: 'topbar__elapsed num' }, `已运行 ${text}`);
 }
 
 export function App() {
@@ -153,7 +175,10 @@ export function App() {
   const [pendingIntent, setPendingIntent] = useState(false);
   const [pendingObjective, setPendingObjective] = useState<string | null>(null);
   const [popover, setPopover] = useState<'model' | 'authority' | 'runtime' | null>(null);
-  const [runtimeExpanded, setRuntimeExpanded] = useState(false);
+  // UI-AUDIT-15: the runtime view is part of the goal page (open by default); 收起 keeps working.
+  const [runtimeExpanded, setRuntimeExpanded] = useState(true);
+  // UI-PAPER-INK: the newest execution run's overview (plan step states, stage progress).
+  const [executionOverview, setExecutionOverview] = useState<ExecutionOverviewInput | null>(null);
   const [runtimeTab, setRuntimeTab] = useState<RuntimeTab>('run');
   const [runtimeWorkspace, setRuntimeWorkspace] = useState<CanonicalGoalWorkspace | null>(null);
   const [runtimeTimeline, setRuntimeTimeline] = useState<readonly CanonicalTimelineEntry[]>([]);
@@ -174,6 +199,8 @@ export function App() {
   >('ASK_PERMISSION');
   const [pendingDecisions, setPendingDecisions] = useState<readonly PendingDecision[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
+  // UI-AUDIT-06: single-flight approval decision (two quick clicks never send two decisions).
+  const approvalInFlight = useRef(false);
   // AUDIT-R1: cancel control state of the OPEN Goal (reset on Goal switch).
   const [cancelConfirming, setCancelConfirming] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -429,6 +456,8 @@ export function App() {
       setDeliveryPath('');
       setDeliveryText('');
       setOpenGoalRunId(result.runId);
+      // UI-AUDIT-11: a created Goal opens in 对话与任务 (sending from 首页 lands on the Goal).
+      setView('chat');
       setRefreshKey((key) => key + 1);
       // Autonomy continues in the main process; the client only observes canonical state.
     } else if (result.status === 'refused') {
@@ -554,6 +583,7 @@ export function App() {
     setRuntimeTask(null);
     setRuntimeTimeline([]);
     setRuntimeArtifacts([]);
+    setExecutionOverview(null);
     setRuntimeReadFailure(null);
     // AUDIT R8: every other Goal-scoped projection belongs to the Goal it was read for,
     // so it is cleared before the new selection paints (no Goal-A preview/spend on B).
@@ -582,6 +612,7 @@ export function App() {
       setRuntimeTask(null);
       setRuntimeArtifacts([]);
       setRuntimeTimeline([]);
+      setExecutionOverview(null);
       return;
     }
     const goalRunId = openGoalRunId;
@@ -615,6 +646,21 @@ export function App() {
       }))) as BridgeEnvelope<{ readonly artifacts: readonly { artifactId: string; kind: string }[] }>;
       if (!isCurrent()) return;
       if (artifacts.ok !== true || artifacts.value === undefined) throw new Error('Invalid artifacts response');
+      // UI-PAPER-INK: the newest execution run's overview (stage states for the plan steps).
+      // Optional: a missing/invalid answer only means the steps show without stage truth.
+      const executionRunId = workspace.value.executionRuns?.at(-1)?.runId ?? null;
+      let execution: ExecutionOverviewInput | null = null;
+      if (executionRunId !== null) {
+        const read = (await runtimeReadBudget.current!.read(() => controlPlane.controlPlaneRequest({
+          operation: 'run.overview',
+          payload: { companyId: COMPANY_ID, runId: executionRunId },
+        }))) as BridgeEnvelope<ExecutionOverviewInput>;
+        if (!isCurrent()) return;
+        const value = read.ok === true ? read.value : undefined;
+        execution = value !== undefined && value !== null && value.runId === executionRunId &&
+          Array.isArray(value.stages) && Array.isArray(value.executing) ? value : null;
+      }
+      setExecutionOverview(execution);
       setRuntimeTimeline(timeline.value.entries);
       setRuntimeArtifacts(artifacts.value.artifacts);
       // Commit the complete projection together; a terminal workspace must not
@@ -873,21 +919,25 @@ export function App() {
   /** The ONE canonical approval command. The renderer never resumes the run itself. */
   const decideApproval = useCallback(
     async (decision: ApprovalDecision) => {
-      if (controlPlane === null || pendingApprovalDecision === null) return;
+      if (controlPlane === null || pendingApprovalDecision === null || approvalInFlight.current) return;
       const approval = pendingApprovalOf(pendingApprovalDecision);
       if (approval === null) return;
+      approvalInFlight.current = true;
       setApprovalBusy(true);
       setApprovalFailure(null);
       try {
+        // UI-AUDIT-04: name the approval row the user saw; main refuses a stale one typed.
         const result = await respondToApproval(controlPlane, {
           runId: approval.runId,
           decision,
+          approvalId: approval.id,
         });
-        if (!result.ok) setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: result.message ?? '审批提交失败。' });
+        if (!result.ok) setApprovalFailure({ code: result.code ?? 'APPROVAL_RESPOND_FAILED', message: result.message ?? '审批提交失败。' });
       } catch {
         setApprovalFailure({ code: 'APPROVAL_RESPOND_FAILED', message: '审批提交结果未确认（通信失败），请刷新后重试。' });
       } finally {
         // AUDIT R7: never leave 批准/拒绝 disabled forever.
+        approvalInFlight.current = false;
         setApprovalBusy(false);
       }
       await loadPendingDecisionsNow().catch(() => undefined);
@@ -965,10 +1015,17 @@ export function App() {
   );
 
 
-  const selectedObjective = useMemo(
-    () => recent.find((goal) => goal.runId === openGoalRunId)?.objective ?? null,
+  // UI-AUDIT-10: the open Goal's own canonical objective wins; the recent list (which may
+  // not have caught up yet, e.g. right after creation) is only a fallback.
+  const selectedRecent = useMemo(
+    () => recent.find((goal) => goal.runId === openGoalRunId) ?? null,
     [recent, openGoalRunId],
   );
+  const selectedObjective = useMemo(() => {
+    if (openGoalRunId === null) return null;
+    const own = runtimeWorkspace?.runId === openGoalRunId ? runtimeWorkspace.goal?.objective ?? null : null;
+    return own ?? selectedRecent?.objective ?? null;
+  }, [openGoalRunId, runtimeWorkspace, selectedRecent]);
 
   const conversation = useMemo(
     () =>
@@ -1023,20 +1080,100 @@ export function App() {
     }, [modelOptions, modelStatus, usageProjection]);
 
   // STAGE 3: the honest usage note under the popover (coverage truth, never a false total).
-  const telemetryNote = useMemo(() => projectTelemetry(usageProjection, null).note, [usageProjection]);
+  const telemetry = useMemo(() => projectTelemetry(usageProjection, null), [usageProjection]);
+  const telemetryNote = telemetry.note;
+  // UI-AUDIT-26: the session cost is main's canonical usage cost (format.ts sessionCostText).
+  const sessionCost = useMemo(() => sessionCostText(usageProjection), [usageProjection]);
 
   const modelLabel = modelStatus.kind === 'selected' ? (modelStatus.displayName ?? modelStatus.modelKey) : '选择模型';
   const modelReady = modelStatus.kind === 'selected';
+  const modelView = useMemo(() => ({ ...projectModelRuntime(modelSnapshot), cost: sessionCost }), [modelSnapshot, sessionCost]);
+  const databaseFailure = readDatabaseFailure(database?.failure);
+
+  /* ------------------------------------------------------- goal page facts --- */
+  const openWorkspace = runtimeWorkspace !== null && runtimeWorkspace.runId === openGoalRunId ? runtimeWorkspace : null;
+  const goalOutcome = openWorkspace === null ? null : terminalOutcomeOf(openWorkspace.overview);
+  const goalLive = openWorkspace !== null && openWorkspace.overview != null && goalOutcome === null;
+  const cancelRequested = openWorkspace?.cancellationRequested === true || (openGoalRunId !== null && cancelRequestedFor === openGoalRunId);
+  const planSteps = useMemo(
+    () =>
+      budgetRead?.plan == null || lifecycle === null
+        ? null
+        : projectPlanSteps({ items: budgetRead.plan.items, execution: executionOverview, phase: lifecycle.phase, outcome: goalOutcome }),
+    [budgetRead, executionOverview, lifecycle, goalOutcome],
+  );
+  const progress = executionOverview?.progress ?? openWorkspace?.overview?.progress ?? null;
+  const stageProgress = executionOverview?.progress?.stagesTotal === undefined
+    ? null
+    : { done: executionOverview.progress.stagesTerminalSuccessful ?? 0, total: executionOverview.progress.stagesTotal };
+  const goalHeader = openWorkspace === null || lifecycle === null
+    ? null
+    : {
+        stateWord: lifecycle.phase === 'idle' ? goalStateWord({ state: openWorkspace.planningRun?.state ?? '' }) : PHASE_LABELS[lifecycle.phase],
+        live: goalLive,
+        runId: openWorkspace.runId,
+        tasksText: progress === null || progress.tasksTotal === 0 ? null : `任务 ${String(progress.tasksDone)}/${String(progress.tasksTotal)} 完成`,
+        startedText: startedAtText(selectedRecent?.createdAt ?? null),
+      };
+  const liveLine = (() => {
+    if (!goalLive || lifecycle === null || pendingApprovalDecision !== null || cancelRequested) return null;
+    if (lifecycle.phase === 'planning') return '正在规划…';
+    const running = executionOverview?.executing[0] ?? null;
+    if (running === null) return null;
+    const step = budgetRead?.plan?.items.find((item) => item.stageId !== null && item.stageId === running.stageId) ?? null;
+    return `正在执行 · ${step === null ? `任务 ${running.taskId}` : goalTitleOf(step.objective === '' ? step.planItemId : step.objective).title}${running.attempt === null ? '' : ` · 尝试 ${String(running.attempt.attemptNumber)}`}`;
+  })();
+
+  // UI-AUDIT-07: a NEW pending request takes focus once (announced; no button pre-focused) and
+  // a stale failure of the previous request is cleared.
+  const pendingApprovalId = pendingApprovalDecision === null ? null : pendingApprovalOf(pendingApprovalDecision)?.id ?? null;
+  const focusedApproval = useRef<string | null>(null);
+  useEffect(() => {
+    if (pendingApprovalId === null || focusedApproval.current === pendingApprovalId) return;
+    if (focusedApproval.current !== null) setApprovalFailure(null);
+    focusedApproval.current = pendingApprovalId;
+    const doc = (globalThis as { document?: { querySelector?: (selector: string) => { focus?: () => void } | null } }).document;
+    const card = typeof doc?.querySelector === 'function' ? doc.querySelector(`[data-approval-id="${pendingApprovalId}"]`) : null;
+    if (card !== null && typeof card?.focus === 'function') card.focus();
+  }, [pendingApprovalId]);
+
+  /* ---------------------------------------------------------- new goal --- */
+  // UI-AUDIT-03: 新建目标 never discards an unconfirmed submission (a later resubmission could
+  // duplicate a Goal main already created) and never throws away the user's typed text.
+  const startNewGoal = useCallback(() => {
+    if (submissionInFlight.current) return;
+    setOpenGoalRunId(null);
+    setView('chat');
+    setPopover(null);
+    const doc = (globalThis as { document?: { querySelector?: (selector: string) => { focus?: () => void } | null } }).document;
+    const field = typeof doc?.querySelector === 'function' ? doc.querySelector('[data-testid="goal-objective"]') : null;
+    if (field !== null && typeof field?.focus === 'function') field.focus();
+  }, []);
+  // UI-AUDIT-23: Ctrl+N (⌘N) is the shortcut the sidebar button advertises; never during IME composition.
+  useEffect(() => {
+    type KeyTarget = { addEventListener?: (type: string, fn: (event: KeyboardEventLike) => void) => void; removeEventListener?: (type: string, fn: (event: KeyboardEventLike) => void) => void };
+    const target = ((globalThis as { window?: KeyTarget }).window ?? globalThis) as KeyTarget;
+    if (typeof target.addEventListener !== 'function') return;
+    const onKey = (event: KeyboardEventLike): void => {
+      if (event.isComposing === true || event.altKey === true || event.shiftKey === true) return;
+      if ((event.ctrlKey === true || event.metaKey === true) && (event.key === 'n' || event.key === 'N')) {
+        event.preventDefault?.();
+        startNewGoal();
+      }
+    };
+    target.addEventListener('keydown', onKey);
+    return () => target.removeEventListener?.('keydown', onKey);
+  }, [startNewGoal]);
 
   /* --------------------------------------------------------------- render --- */
   if (controlPlane === null || workspaceSelection === null || workflow === null) {
     return h(
       'main',
-      { className: 'shell' },
+      { className: 'shell shell--onboarding' },
       h(
         'section',
-        { className: 'card' },
-        h('h2', null, 'Desktop Bridge'),
+        { className: 'card onboarding-card' },
+        h('h1', null, 'CompanyOS'),
         h('p', null, `bridge ${availability} · appVersion ${version}`),
         h('p', { className: 'muted' }, '目标工作区需要桌面外壳（此处无 preload bridge）。'),
       ),
@@ -1049,7 +1186,7 @@ export function App() {
       { className: 'shell shell--onboarding' },
       h(
         'section',
-        { className: 'card' },
+        { className: 'card onboarding-card' },
         h('h1', null, 'CompanyOS'),
         h('p', { className: 'shell__tagline' }, '选择一个工作空间目录后开始你的第一个目标。'),
         h(WorkspaceSelector, { selection: workspaceSelection, onWorkspaceOpened: setWorkspaceRoot }),
@@ -1057,15 +1194,76 @@ export function App() {
     );
   }
 
-  const onboarding = h(ModelOnboardingView, {
-    status: modelStatus,
-    options: modelOptions,
-    selectedProviderModelId: null,
-    busy: modelBusy,
-    failure: modelFailure,
-    explanation: modelExplanation,
-    onSelect: (option: ModelOptionRow) => void chooseModel(option),
-    onOpenSettings: () => setView('settings'),
+  // UI-AUDIT-13: the model card is shown only when it needs the user (nothing selected, or the
+  // feedback of a choice just made) — not as a permanent block on every Goal.
+  const onboarding = modelStatus.kind !== 'selected' || modelFailure !== null || modelExplanation !== null
+    ? h(ModelOnboardingView, {
+        status: modelStatus,
+        options: modelOptions,
+        selectedProviderModelId: null,
+        busy: modelBusy,
+        failure: modelFailure,
+        explanation: modelExplanation,
+        onSelect: (option: ModelOptionRow) => void chooseModel(option),
+        onOpenSettings: () => setView('settings'),
+      })
+    : null;
+
+  const approvalBlock = pendingApprovalDecision === null
+    ? null
+    : h(ApprovalCardView, {
+        decision: pendingApprovalDecision,
+        busy: approvalBusy,
+        failure: approvalFailure,
+        cancelRequested,
+        scopeNote: ACCESS_POLICY_OPTIONS.find((option) => option.value === openWorkspace?.accessPolicy)?.label === undefined
+          ? null
+          : `策略 ${ACCESS_POLICY_OPTIONS.find((option) => option.value === openWorkspace?.accessPolicy)!.label}`,
+        onDecide: (decision: ApprovalDecision) => void decideApproval(decision),
+      });
+
+  const otherApprovals = otherPendingApprovals.length === 0
+    ? null
+    : h(
+        'div',
+        { className: 'other-approvals', role: 'status', 'data-testid': 'other-goal-approvals' },
+        h('p', null, `其他目标待批准 · ${otherPendingApprovals.length} 项（在左侧打开对应目标后处理）`),
+        h('ul', null, otherPendingApprovals.map((decision) => h('li', { key: decision.runId }, `${pendingApprovalOf(decision)?.reason ?? '需要批准'} · 范围 Run ${decision.runId}`))),
+      );
+
+  const goalList = h(GoalList, {
+    bridge: controlPlane,
+    onOpen: (runId: string) => {
+      setOpenGoalRunId(runId);
+      setView('chat');
+    },
+    refreshKey,
+    onRefreshTick: () => setRefreshKey((key) => key + 1),
+  });
+
+  const reuseObjective = goalOutcome !== null && selectedObjective !== null
+    ? () => {
+        if (draft.trim() !== '') return;
+        setDraft(selectedObjective);
+        setView('chat');
+      }
+    : null;
+
+  const conversationView = h(ChatView, {
+    objective: selectedObjective,
+    entries: conversation,
+    loading: runtimeWorkspace === null && openGoalRunId !== null && runtimeReadFailure === null,
+    // AUDIT R3: only the open Goal's read failure here; action failures
+    // (submission / workspace / model) have their own line in the dock.
+    failure: runtimeReadFailure,
+    header: goalHeader,
+    createdAt: selectedRecent?.createdAt ?? null,
+    planSteps,
+    criteria: budgetRead?.plan?.criteria ?? null,
+    approval: approvalBlock,
+    liveLine,
+    onReuseObjective: reuseObjective,
+    reuseDisabledReason: reuseObjective !== null && draft.trim() !== '' ? '输入框里已有内容' : null,
   });
 
   const center =
@@ -1083,10 +1281,8 @@ export function App() {
           authority,
           electronVersion: platformInfo?.electron ?? null,
           nodeVersion: platformInfo?.nodeVersion ?? null,
-          onOpenModelSelector: () => {
-            setView('home');
-            setPopover('model');
-          },
+          // The model selector is the composer's popover; it opens where the user is.
+          onOpenModelSelector: () => setPopover('model'),
           onChangeWorkspace: changeWorkspace,
         })
       : view === 'tools'
@@ -1095,71 +1291,72 @@ export function App() {
           ? h(KnowledgeSurfaceView, { rows: knowledgeRows, failure: surfaceFailure })
           : view === 'agents'
             ? h(AgentsSurfaceView, { rows: agentRows, failure: surfaceFailure })
-            : h(
-                'div',
-                { className: 'chat-column' },
-                h(DatabaseFailureBanner, { failure: readDatabaseFailure(database?.failure) }),
-                onboarding,
-                pendingApprovalDecision === null
-                  ? null
-                  : h(ApprovalCardView, {
-                      decision: pendingApprovalDecision,
-                      busy: approvalBusy,
-                      failure: approvalFailure,
-                      onDecide: (decision: ApprovalDecision) => void decideApproval(decision),
-                    }),
-                otherPendingApprovals.length === 0
-                  ? null
-                  : h(
-                      'div',
-                      { className: 'other-approvals', role: 'status', 'data-testid': 'other-goal-approvals' },
-                      h('p', null, `其他目标待批准 · ${otherPendingApprovals.length} 项（在左侧打开对应目标后处理）`),
-                      h('ul', null, otherPendingApprovals.map((decision) => h('li', { key: decision.runId }, `${pendingApprovalOf(decision)?.reason ?? '需要批准'} · 范围 Run ${decision.runId}`))),
-                    ),
-                h(GoalCancelControl, {
-                  visible: openGoalRunId !== null && runtimeWorkspace?.runId === openGoalRunId &&
-                    runtimeWorkspace.overview != null && !isRunEnded(runtimeWorkspace.overview),
-                  requested: runtimeWorkspace?.cancellationRequested === true || (openGoalRunId !== null && cancelRequestedFor === openGoalRunId),
-                  confirming: cancelConfirming,
-                  busy: cancelBusy,
-                  failure: cancelFailure,
-                  onRequest: () => setCancelConfirming(true),
-                  onConfirm: () => void cancelGoal(),
-                  onDismiss: () => setCancelConfirming(false),
-                }),
-                h(ChatView, {
-                  objective: selectedObjective,
-                  entries: conversation,
-                  loading: runtimeWorkspace === null && openGoalRunId !== null && runtimeReadFailure === null,
-                  // AUDIT R3: only the open Goal's read failure here; action failures
-                  // (submission / workspace / model) have their own line in the dock.
-                  failure: runtimeReadFailure,
-                }),
-                h(GoalList, {
-                  bridge: controlPlane,
-                  onOpen: (runId: string) => {
-                    setOpenGoalRunId(runId);
-                    setView('chat');
-                  },
-                  refreshKey,
-                  onRefreshTick: () => setRefreshKey((key) => key + 1),
-                }),
-              );
+            : view === 'home'
+              // UI-AUDIT-11: 首页 = the start prompt + every Goal; it never re-renders the open Goal.
+              ? h(
+                  'div',
+                  { className: 'chat-column home' },
+                  onboarding,
+                  otherApprovals,
+                  h(ChatView, { objective: null, entries: [], loading: false, failure: null }),
+                  goalList,
+                )
+              : h(
+                  'div',
+                  { className: 'chat-column' },
+                  onboarding,
+                  otherApprovals,
+                  conversationView,
+                );
+
+  const viewLabel = SHELL_NAV.find((item) => item.id === view)?.label ?? (view === 'settings' ? '设置' : '');
+  const crumbs = view === 'chat'
+    ? (selectedObjective === null ? ['对话与任务', openGoalRunId === null ? '新目标' : '读取中…'] : ['对话与任务', goalTitleOf(selectedObjective).title])
+    : [viewLabel];
+  const topbar = h(TopBarView, {
+    crumbs,
+    actions: view !== 'chat' || openWorkspace === null
+      ? null
+      : [
+          h(GoalElapsed, { key: 'elapsed', since: selectedRecent?.createdAt ?? null, live: goalLive }),
+          h(GoalCancelControl, {
+            key: 'cancel',
+            visible: goalLive,
+            requested: cancelRequested,
+            confirming: cancelConfirming,
+            busy: cancelBusy,
+            failure: cancelFailure,
+            approvalPending: pendingApprovalDecision !== null,
+            onRequest: () => setCancelConfirming(true),
+            onConfirm: () => void cancelGoal(),
+            onDismiss: () => setCancelConfirming(false),
+          }),
+        ],
+  });
+
+  const blockedReason = databaseFailure !== null
+    ? '本地数据库不可用，暂时不能创建目标（见上方说明）。'
+    : modelStatus.kind === 'provider-not-configured'
+      ? '尚未配置模型提供商：请在开始菜单运行「CompanyOS 首次配置」，完成后重新打开 CompanyOS。'
+      : !modelReady
+        ? '先选择公司模型（输入框右下角）后才能发送。'
+        : null;
 
   return h(AppShellView, {
     view,
+    runtimeCollapsed: !runtimeExpanded,
+    topbar,
+    // UI-AUDIT-09: the database failure is visible on every view, not only on 首页.
+    banner: h(DatabaseFailureBanner, { failure: databaseFailure }),
     sidebar: {
       view,
       recent,
       activeGoalRunId: openGoalRunId,
       busy: submissionBusy,
-      onNewGoal: () => {
-        setOpenGoalRunId(null);
-        setView('home');
-        setDraft('');
-        controllerRef.current?.discard();
-        syncPending();
-      },
+      appVersion: version,
+      workspaceRoot,
+      approvalPendingRunIds: pendingApprovalDecision === null || openGoalRunId === null ? new Set<string>() : new Set([openGoalRunId]),
+      onNewGoal: startNewGoal,
       onNavigate: (next: ShellView) => setView(next),
       onOpenGoal: (runId: string) => {
         setOpenGoalRunId(runId);
@@ -1170,44 +1367,6 @@ export function App() {
     composer: h(
       'div',
       { className: 'composer-dock' },
-      h(AuthorityPopover, {
-        authority,
-        open: popover === 'authority',
-        selectedPolicy: selectedAccessPolicy,
-        onSelectPolicy: (policy) => {
-          setSelectedAccessPolicy(policy);
-          setPopover(null);
-        },
-        onClose: () => setPopover(null),
-        // AUDIT-R4: only the open Goal's canonical read-back - never a default when it is unknown.
-        effectiveGoalPolicy:
-          ACCESS_POLICY_OPTIONS.find((option) => option.value === runtimeWorkspace?.accessPolicy)?.label ?? null,
-      }),
-      h(ModelSelectorView, {
-        options: modelOptions,
-        selectedModelKey: modelStatus.kind === 'selected' ? modelStatus.modelKey : null,
-        open: popover === 'model',
-        busy: modelBusy,
-        onToggle: () => setPopover(popover === 'model' ? null : 'model'),
-        onChoose: (option: ModelOptionRow) => void chooseModel(option),
-        onOpenSettings: () => {
-          setPopover(null);
-          setView('settings');
-        },
-        providerConfigured: modelOptions.length > 0,
-      }),
-      h(ModelRuntimePopover, {
-        snapshot: modelSnapshot,
-        open: popover === 'runtime',
-        onToggle: () => setPopover(popover === 'runtime' ? null : 'runtime'),
-        usageNote: telemetryNote,
-      }),
-      h('fieldset', { disabled: submissionBusy, 'data-testid': 'file-delivery-requirement', 'aria-label': '文件交付要求' },
-        h('legend', null, '文件交付要求（可选）'),
-        h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'data-testid': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
-        h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'data-testid': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
-        h('p', null, '文件要求仅随明确提交发送，不包含在本地文字草稿中。')),
-      h(LocalDraftControls, { companyId: COMPANY_ID, workspaceRoot, objective: draft, busy: submissionBusy, onRestore: setDraft }),
       h(ActionFailureLine, {
         failures: [
           submissionFailure,
@@ -1217,7 +1376,7 @@ export function App() {
       }),
       h(ComposerView, {
         draft,
-        ready: modelReady && workspaceRoot !== null && !pendingIntent,
+        ready: modelReady && workspaceRoot !== null && !pendingIntent && databaseFailure === null,
         busy: submissionBusy,
         authority,
         nextPolicy: selectedAccessPolicy,
@@ -1235,6 +1394,57 @@ export function App() {
         onOpenModel: () => setPopover(popover === 'model' ? null : 'model'),
         authorityOpen: popover === 'authority',
         modelOpen: popover === 'model',
+        blockedReason,
+        footHint: openGoalRunId !== null && view === 'chat'
+          ? '发送会创建一个新目标，当前目标不受影响；高风险操作会停在批准边界，由你决定'
+          : '高风险操作会停在批准边界，由你决定',
+        sessionCost: openGoalRunId === null ? null : modelView.cost,
+        popovers: [
+          h(AuthorityPopover, {
+            key: 'authority',
+            authority,
+            open: popover === 'authority',
+            selectedPolicy: selectedAccessPolicy,
+            onSelectPolicy: (policy) => {
+              setSelectedAccessPolicy(policy);
+              setPopover(null);
+            },
+            onClose: () => setPopover(null),
+            // AUDIT-R4: only the open Goal's canonical read-back - never a default when it is unknown.
+            effectiveGoalPolicy:
+              ACCESS_POLICY_OPTIONS.find((option) => option.value === runtimeWorkspace?.accessPolicy)?.label ?? null,
+          }),
+          h(ModelSelectorView, {
+            key: 'model',
+            triggerless: true,
+            options: modelOptions,
+            selectedModelKey: modelStatus.kind === 'selected' ? modelStatus.modelKey : null,
+            open: popover === 'model',
+            busy: modelBusy,
+            onToggle: () => setPopover(popover === 'model' ? null : 'model'),
+            onChoose: (option: ModelOptionRow) => void chooseModel(option),
+            onOpenSettings: () => {
+              setPopover(null);
+              setView('settings');
+            },
+            providerConfigured: modelOptions.length > 0,
+          }),
+        ],
+        extras: h(
+          'div',
+          { className: 'composer__extras' },
+          h(
+            'details',
+            { className: 'composer__details' },
+            h('summary', null, deliveryPath.trim() === '' && deliveryText === '' ? '文件交付要求（可选）' : '文件交付要求（已填写）'),
+            h('fieldset', { disabled: submissionBusy, 'data-testid': 'file-delivery-requirement', 'aria-label': '文件交付要求' },
+              h('legend', { className: 'sr-only' }, '文件交付要求（可选）'),
+              h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'data-testid': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
+              h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'data-testid': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
+              h('p', { className: 'muted' }, '文件要求仅随明确提交发送，不包含在本地文字草稿中。')),
+          ),
+          h(LocalDraftControls, { companyId: COMPANY_ID, workspaceRoot, objective: draft, busy: submissionBusy, onRestore: setDraft }),
+        ),
       }),
     ),
     runtime: h(RuntimePanelView, {
@@ -1246,6 +1456,9 @@ export function App() {
       timeline: runtimeTimeline,
       taskDetail: runtimeTask,
       budget: budgetRead,
+      model: openGoalRunId === null ? null : modelView,
+      usageNote: telemetryNote,
+      stageProgress,
       // STAGE 3 — canonical blockers + the pending approval behind them.
       blockers: runtimeWorkspace?.blockers ?? [],
       pendingApproval:
@@ -1271,4 +1484,14 @@ export function App() {
       artifactFailure,
     }),
   });
+}
+
+interface KeyboardEventLike {
+  readonly key?: string;
+  readonly ctrlKey?: boolean;
+  readonly metaKey?: boolean;
+  readonly altKey?: boolean;
+  readonly shiftKey?: boolean;
+  readonly isComposing?: boolean;
+  readonly preventDefault?: () => void;
 }

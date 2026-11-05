@@ -13,7 +13,7 @@
  * No permanent token card lives in the composer: telemetry belongs in the model popover,
  * runtime detail belongs in the collapsible runtime panel.
  */
-import { createElement as h, type JSX } from 'react';
+import { createElement as h, type JSX, type ReactNode } from 'react';
 
 import type { ModelOptionRow } from './models.js';
 import { projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
@@ -105,6 +105,8 @@ export interface ModelSelectorViewProps {
   readonly onChoose: (option: ModelOptionRow) => void;
   readonly onOpenSettings: () => void;
   readonly providerConfigured: boolean;
+  /** UI-PAPER-INK: the trigger lives in the composer row (the model chip); render the popover only. */
+  readonly triggerless?: boolean;
 }
 
 export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
@@ -112,13 +114,15 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
   const label = selected === null ? '选择模型' : selected.displayName;
   return h(
     'div',
-    { className: 'composer__model', 'data-testid': 'model-selector', 'aria-label': '模型选择' },
-    h(
-      'button',
-      { type: 'button', className: 'composer__model-button', onClick: props.onToggle, disabled: props.busy },
-      h('span', { className: 'composer__model-label' }, label),
-      h('span', { className: 'composer__caret' }, '▾'),
-    ),
+    { className: props.triggerless === true ? 'composer__model composer__model--popover-only' : 'composer__model', 'data-testid': 'model-selector', 'aria-label': '模型选择' },
+    props.triggerless === true
+      ? null
+      : h(
+          'button',
+          { type: 'button', className: 'composer__model-button', onClick: props.onToggle, disabled: props.busy, 'aria-expanded': props.open, 'aria-haspopup': 'dialog' },
+          h('span', { className: 'composer__model-label' }, label),
+          h('span', { className: 'composer__caret' }, '▾'),
+        ),
     props.open
       ? h(
           'div',
@@ -236,74 +240,141 @@ export interface ComposerViewProps {
   readonly onOpenModel: () => void;
   readonly authorityOpen: boolean;
   readonly modelOpen: boolean;
+  /** UI-PAPER-INK: why Send is unavailable (database down, no model, …), shown under the field. */
+  readonly blockedReason?: string | null;
+  /** The line under the field: the approval-boundary hint and the session cost (`--` when unknown). */
+  readonly footHint?: string | null;
+  readonly sessionCost?: string | null;
+  /** Popovers anchored to the composer (model selector, access policy). */
+  readonly popovers?: ReactNode;
+  /** Secondary controls under the field (file requirement, local draft). */
+  readonly extras?: ReactNode;
 }
 
+/**
+ * UI-AUDIT-01: Ctrl+Enter (⌘+Enter) sends; plain Enter is a newline. A key event that is part
+ * of an IME composition (Chinese/Japanese input: `isComposing`, or the legacy keyCode 229 that
+ * Chromium reports for the composition-confirming Enter) NEVER sends.
+ */
+export const isSubmitShortcut = (event: {
+  readonly key?: string;
+  readonly ctrlKey?: boolean;
+  readonly metaKey?: boolean;
+  readonly shiftKey?: boolean;
+  readonly altKey?: boolean;
+  readonly keyCode?: number;
+  readonly isComposing?: boolean;
+  readonly nativeEvent?: { readonly isComposing?: boolean; readonly keyCode?: number };
+}): boolean => {
+  if (event.key !== 'Enter') return false;
+  if (event.isComposing === true || event.nativeEvent?.isComposing === true) return false;
+  if (event.keyCode === 229 || event.nativeEvent?.keyCode === 229) return false;
+  if (event.altKey === true || event.shiftKey === true) return false;
+  return event.ctrlKey === true || event.metaKey === true;
+};
+
+/** UI-AUDIT-02: Send needs a non-blank objective (whitespace never "sends" into a silent no-op). */
+export const canSend = (props: { readonly ready: boolean; readonly busy: boolean; readonly draft: string }): boolean =>
+  props.ready && !props.busy && props.draft.trim() !== '';
+
 export function ComposerView(props: ComposerViewProps): JSX.Element {
+  const sendable = canSend(props);
   return h(
     'div',
     { className: 'composer', 'data-testid': 'composer', 'aria-label': '目标输入区' },
+    props.popovers ?? null,
+    props.pendingIntent
+      ? h(
+          'div',
+          { className: 'composer__pending', role: 'status', 'data-testid': 'pending-submission' },
+          h(
+            'p',
+            null,
+            props.pendingObjective === null || props.pendingObjective === undefined
+              ? '上一次提交尚未确认。'
+              : `上一次提交尚未确认：「${props.pendingObjective}」`,
+          ),
+          props.onRetryPending === undefined
+            ? null
+            : h('button', { type: 'button', className: 'btn btn--quiet', disabled: props.busy, onClick: props.onRetryPending }, '重试'),
+          props.onDiscardPending === undefined
+            ? null
+            : h('button', { type: 'button', className: 'btn btn--text', disabled: props.busy, onClick: props.onDiscardPending }, '放弃'),
+        )
+      : null,
     h(
       'div',
-      { className: 'composer__left' },
-      h(
-        'button',
-        { type: 'button', className: 'composer__chip', onClick: props.onChangeWorkspace, title: '切换工作空间' },
-        '+',
-      ),
-      h(
-        'button',
-        { type: 'button', className: 'composer__chip', onClick: props.onOpenAuthority, 'aria-expanded': props.authorityOpen },
-        `${accessPolicyLabel(props.nextPolicy) ?? '访问权限'} ▾`,
-      ),
-      h('button', { type: 'button', className: 'composer__chip', onClick: props.onOpenTools }, '工具'),
-    ),
-    h(
-      'div',
-      { className: 'composer__center' },
-      props.pendingIntent
-        ? h(
-            'div',
-            { className: 'composer__pending', role: 'status', 'data-testid': 'pending-submission' },
-            h(
-              'p',
-              null,
-              props.pendingObjective === null || props.pendingObjective === undefined
-                ? '上一次提交尚未确认。'
-                : `上一次提交尚未确认：「${props.pendingObjective}」`,
-            ),
-            props.onRetryPending === undefined
-              ? null
-              : h('button', { type: 'button', disabled: props.busy, onClick: props.onRetryPending }, '重试'),
-            props.onDiscardPending === undefined
-              ? null
-              : h('button', { type: 'button', disabled: props.busy, onClick: props.onDiscardPending }, '放弃'),
-          )
-        : null,
+      { className: 'composer__field' },
       h('textarea', {
         className: 'composer__input',
         'data-testid': 'goal-objective', 'aria-label': '目标描述',
-        placeholder: '用自然语言描述你想达成的目标…',
-        rows: 3,
+        placeholder: '描述一个新目标…（Ctrl+Enter 发送）',
+        rows: 2,
         value: props.draft,
-        disabled: props.busy,
+        // UI-AUDIT-25: read-only (not disabled) while sending, so keyboard focus stays in the field.
+        readOnly: props.busy,
+        'aria-busy': props.busy,
+        'aria-keyshortcuts': 'Control+Enter',
         onChange: (event: { target: { value: string } }) => props.onDraftChange(event.target.value),
-      }),
-    ),
-    h(
-      'div',
-      { className: 'composer__right' },
-      h('span', { className: 'composer__model-slot' }, props.modelLabel),
-      h(
-        'button',
-        {
-          type: 'button',
-          className: 'composer__send',
-          disabled: !props.ready || props.busy,
-          onClick: props.onSubmit,
+        onKeyDown: (event: Parameters<typeof isSubmitShortcut>[0] & { preventDefault: () => void }) => {
+          if (!isSubmitShortcut(event)) return;
+          event.preventDefault();
+          if (canSend(props)) props.onSubmit();
         },
-        props.busy ? '提交中…' : '提交并开始执行',
+      }),
+      h(
+        'div',
+        { className: 'composer__row' },
+        h(
+          'button',
+          { type: 'button', className: 'composer__chip composer__chip--mono', onClick: props.onChangeWorkspace, title: props.workspaceLabel === null ? '选择工作空间' : `切换工作空间（当前 ${props.workspaceLabel}）`, 'aria-label': '切换工作空间' },
+          props.workspaceLabel ?? '选择工作空间',
+        ),
+        h('span', { className: 'composer__sep', 'aria-hidden': true }),
+        h(
+          'button',
+          { type: 'button', className: 'composer__chip', onClick: props.onOpenAuthority, 'aria-expanded': props.authorityOpen, 'aria-haspopup': 'dialog', title: '下一个目标的访问权限' },
+          h('span', { className: 'composer__chip-k' }, '权限'),
+          `${accessPolicyLabel(props.nextPolicy) ?? '访问权限'} ▾`,
+        ),
+        h('span', { className: 'composer__sep', 'aria-hidden': true }),
+        h('button', { type: 'button', className: 'composer__chip', onClick: props.onOpenTools }, '工具'),
+        h(
+          'span',
+          { className: 'composer__right' },
+          h(
+            'button',
+            { type: 'button', className: 'composer__chip composer__model-slot', onClick: props.onOpenModel, 'aria-expanded': props.modelOpen, 'aria-haspopup': 'dialog', title: '选择公司模型' },
+            props.modelLabel,
+            h('span', { className: 'composer__chip-k', 'aria-hidden': true }, '▾'),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'composer__send',
+              disabled: !sendable,
+              onClick: props.onSubmit,
+              'aria-keyshortcuts': 'Control+Enter',
+            },
+            props.busy ? '提交中…' : '发送',
+            props.busy ? null : h('kbd', { 'aria-hidden': true }, 'Ctrl ↵'),
+          ),
+        ),
       ),
     ),
+    props.blockedReason === undefined || props.blockedReason === null
+      ? null
+      : h('p', { className: 'composer__blocked', role: 'status', 'data-testid': 'composer-blocked' }, props.blockedReason),
+    h(
+      'div',
+      { className: 'composer__foot' },
+      h('span', null, props.footHint ?? '发送会创建一个新目标；高风险操作会停在批准边界，由你决定'),
+      props.sessionCost === undefined || props.sessionCost === null
+        ? null
+        : h('span', { className: 'num', 'data-testid': 'session-cost' }, `会话费用 ${props.sessionCost}`),
+    ),
+    props.extras ?? null,
   );
 }
 

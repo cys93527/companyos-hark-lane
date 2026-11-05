@@ -67,6 +67,8 @@ export interface MountOptions {
   readonly workspaceSwitch?: (root: string) => Promise<unknown>;
   readonly workspaceSelect?: () => Promise<string | null>;
   readonly workspaceOpen?: (root: string) => Promise<unknown>;
+  /** UI-PAPER-INK: a typed database bootstrap failure (databaseStatus().failure). */
+  readonly databaseFailure?: unknown;
 }
 
 export const mountApp = async (options: MountOptions) => {
@@ -77,7 +79,10 @@ export const mountApp = async (options: MountOptions) => {
   const bridge = {
     appVersion: async () => '0.0.0-audit',
     platformInfo: async () => ({ platform: 'win32', arch: 'x64', electron: '0', node: '0', chrome: '0' }),
-    databaseStatus: async () => ({ path: 'C:/db.sqlite', journalMode: 'wal', schemaVersion: 1 }),
+    databaseStatus: async () => ({
+      path: 'C:/db.sqlite', journalMode: 'wal', schemaVersion: 1,
+      ...(options.databaseFailure === undefined ? {} : { failure: options.databaseFailure }),
+    }),
     channels: () => [],
     workflowRequest: async (request: { operation: string; payload?: unknown }) => {
       const payload = (request.payload ?? {}) as Record<string, unknown>;

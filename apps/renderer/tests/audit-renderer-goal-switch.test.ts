@@ -65,7 +65,8 @@ const setup = async (artifactAction: (request: { operation: string; artifactId: 
     },
   });
   await app.click('Goal A');
-  await app.click('展开');
+  // UI-PAPER-INK: the runtime view is open by default (收起 / 展开 still toggles it).
+  if (app.button('展开') !== null) await app.click('展开');
   return app;
 };
 
