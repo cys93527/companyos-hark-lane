@@ -1,6 +1,6 @@
 {
   "name": "@companyos/engine",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "CompanyOS workflow engine — the deterministic outer-ring interpreter of Core commands. Depends on @companyos/core contracts/ports only.",
   "type": "module",

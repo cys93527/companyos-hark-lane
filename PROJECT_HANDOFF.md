@@ -1,3 +1,6 @@
+## Hark lane — v0.1.3 release (2026-11-05)
+- Version 0.1.2 → 0.1.3 on top of 14efff1 (38071cf 「纸与墨」 UI redesign + UI-AUDIT interaction fixes; 14efff1 CI all green: windows 41939016576, ubuntu 41939016544, installer 41939016547, restart 41941529395, upgrade 41941529523). Summary docs/hark-lane/V013_RELEASE.md; tag hark-v0.1.3 (prerelease, unsigned installer, SmartScreen warning). No real model calls, no new deps. Hark self-review only; real-PC acceptance and independent review NOT RUN.
+
 ## Hark lane — UI paper-ink redesign + interaction audit (2026-11-05)
 - 38071cf: renderer 「纸与墨」 visual redesign (paper/ink tokens, single vermilion accent, no cards/shadows) + UI-AUDIT interaction fixes 01–15/19/22/23/25/26 (composer Ctrl+Enter + IME guard, stale/cancelled approval refused in main via approvalId — APPROVAL_STALE / APPROVAL_GOAL_CANCELLED, single-flight approve, decisions.pending pages every run, Ctrl+N, session cost from canonical usage). Docs docs/hark-lane/UI_PAPER_INK.md + UI_AUDIT_INTERACTION.md. Version stays 0.1.2, no tag. No real model calls. Hark self-review only; real-PC acceptance and independent review NOT RUN.
 

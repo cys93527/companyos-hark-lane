@@ -1,6 +1,6 @@
 {
   "name": "@companyos/persistence",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "CompanyOS persistence — SQLite (node:sqlite) EntityStore and checksum-verified migration runner.",
   "type": "module",
