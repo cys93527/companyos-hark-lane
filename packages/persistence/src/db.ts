@@ -650,3 +650,69 @@ export const tableExists = (db: Database, table: string): boolean => {
   const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
   return row !== undefined;
 };
+
+/* ------------------------------------------------------------ backup primitives -- */
+
+/**
+ * DB-BACKUP — write a point-in-time copy of the SQLite file at `sourcePath` into the NEW
+ * file `destPath` with `VACUUM INTO`, read through a SEPARATE read-only connection.
+ *
+ * Why this shape (docs/hark-lane/DB_BACKUP.md):
+ *   - `VACUUM INTO` runs as ONE read transaction, so the copy is a consistent snapshot of
+ *     everything COMMITTED at that instant — WAL frames included, uncommitted rows of any
+ *     open transaction (on the app's own connection or any other) excluded. No restart
+ *     loop under continuous writes (unlike the page-stepping backup API).
+ *   - the dedicated read-only connection never joins the app connection's write fence:
+ *     it cannot capture, block or be captured by an app transaction, and it can never
+ *     write the live file.
+ *   - the destination is passed as a BOUND parameter, so spaces, quotes and CJK in the
+ *     userData path need no SQL escaping.
+ * `destPath` must not exist yet (SQLite refuses to overwrite).
+ */
+export function snapshotDatabaseFile(
+  sourcePath: string,
+  destPath: string,
+  options: { readonly busyTimeoutMs?: number } = {},
+): void {
+  const source = new DatabaseSync(sourcePath, { readOnly: true });
+  try {
+    source.exec(`PRAGMA busy_timeout = ${pragmaInt(options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS)}`);
+    source.prepare('VACUUM INTO ?').run(destPath);
+  } finally {
+    source.close();
+  }
+}
+
+export interface DatabaseFileInspection {
+  /** `PRAGMA integrity_check` rows; exactly `['ok']` for a healthy file. */
+  readonly integrity: readonly string[];
+  /** Applied migration names, or null when the file has no `schema_migrations` table. */
+  readonly migrationNames: readonly string[] | null;
+}
+
+/**
+ * DB-BACKUP — read-only inspection of a database FILE (a backup candidate): integrity and
+ * the applied migration names. A file that is not a database (or is truncated) throws the
+ * driver error; callers classify it.
+ */
+export function inspectDatabaseFile(path: string): DatabaseFileInspection {
+  const file = new DatabaseSync(path, { readOnly: true });
+  try {
+    const integrity = file
+      .prepare('PRAGMA integrity_check')
+      .all()
+      .map((row) => String(Object.values(row as Record<string, unknown>)[0] ?? ''));
+    const hasTable =
+      file.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get() !==
+      undefined;
+    const migrationNames = hasTable
+      ? file
+          .prepare('SELECT name FROM schema_migrations ORDER BY name')
+          .all()
+          .map((row) => String((row as { name: unknown }).name))
+      : null;
+    return { integrity, migrationNames };
+  } finally {
+    file.close();
+  }
+}

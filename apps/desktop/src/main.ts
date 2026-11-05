@@ -23,7 +23,7 @@ import {
   nullLogger,
   type Logger,
 } from '@companyos/observability';
-import { isMigrationFromNewerVersionError, openDurableDatabase, type DurableDatabase } from '@companyos/persistence';
+import { isMigrationFromNewerVersionError, openDurableDatabase, shippedMigrationNames, type DurableDatabase } from '@companyos/persistence';
 import { DomainError, defineEvent } from '@companyos/core';
 import { switchWorkspace } from './workspace-switch.js';
 import {
@@ -53,6 +53,14 @@ import {
 } from './artifacts.js';
 import { projectReadiness } from './readiness.js';
 import { isDatabaseBootstrapRetryable } from './database-bootstrap-policy.js';
+import {
+  applyPendingDatabaseRestore,
+  createDatabaseBackupScheduler,
+  databaseBackupDir,
+  databaseBackupSettings,
+  preMigrationBackupHook,
+  type DatabaseBackupScheduler,
+} from './db-backup.js';
 import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
 import { productionCompositionOptions, productionIsolationResourcesDir, productionResourcesRoot } from './production-composition.js';
 import { captureRuntimeEnv, createProviderRuntimeEnv, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
@@ -87,6 +95,14 @@ let databaseFailure: DatabaseFailure | null = null;
  * application surface was exposed.
  */
 let artifactFoundation: Extract<ArtifactFoundation, { ok: true }> | null = null;
+/**
+ * DB-BACKUP (db-backup.ts, docs/hark-lane/DB_BACKUP.md): start / periodic snapshots of the
+ * durable database into <userData>/backups. Created in main() before the first open; its
+ * failures are diagnostics (databaseStatus.backup), never startup blockers.
+ */
+let backupScheduler: DatabaseBackupScheduler | null = null;
+const DATABASE_FILE_NAME = 'companyos.sqlite';
+const databaseDataDir = (): string => join(app.getPath('userData'), 'data');
 
 function createAppLogger(): Logger {
   const logDir = join(app.getPath('userData'), 'logs');
@@ -111,10 +127,20 @@ function createAppLogger(): Logger {
  */
 function bootstrapDatabase(activeLogger: Logger): DurableDatabase | null {
   try {
-    const dataDir = join(app.getPath('userData'), 'data');
+    const dataDir = databaseDataDir();
+    const backupKeep = backupScheduler?.status().keep ?? databaseBackupSettings(runtimeEnv).keep;
     const opened = openDurableDatabase({
       dataDir,
+      fileName: DATABASE_FILE_NAME,
       appliedAt: new Date().toISOString(),
+      // DB-BACKUP: existing data is snapshotted before any pending migration; a failed
+      // snapshot aborts the open (typed OPEN_FAILED below) instead of migrating unprotected.
+      beforeMigrations: preMigrationBackupHook({
+        backupDir: databaseBackupDir(app.getPath('userData')),
+        keep: backupKeep,
+        logger: activeLogger,
+        onSnapshot: (snapshot) => backupScheduler?.recordSnapshot(snapshot),
+      }),
       chains: ['core', 'engine', 'lifecycle', 'provider', 'registry', 'selection', 'agent', 'tools', 'router', 'handoff', 'memory', 'artifact', 'pack'],
       logger: activeLogger,
     });
@@ -238,7 +264,11 @@ async function composeCoreServices(
 const runtimeStarter = createRuntimeStarter<DurableDatabase, Extract<ArtifactFoundation, { ok: true }>, CoreServices>({
   openDatabase: () => {
     const opened = bootstrapDatabase(logger);
-    if (opened !== null) shellDatabase = opened;
+    if (opened !== null) {
+      shellDatabase = opened;
+      // DB-BACKUP: the `start` snapshot (once per process, best effort) + the periodic timer.
+      backupScheduler?.start();
+    }
     return opened;
   },
   databaseRetryable: () => isDatabaseBootstrapRetryable(databaseFailure),
@@ -795,6 +825,7 @@ function registerIpcHandlers(): void {
       journalMode: shellDatabase?.journalMode ?? null,
       schemaVersion: shellDatabase?.migrations.core.currentVersion ?? 0,
       failure: databaseFailure,
+      backup: backupScheduler?.status() ?? null,
     }),
   );
 
@@ -1001,6 +1032,44 @@ function applyContentSecurityPolicy(activeLogger: Logger): void {
   });
 }
 
+/**
+ * DB-BACKUP — runs in quiescent startup, BEFORE the database is opened: builds the backup
+ * scheduler and applies a staged restore (restore-request.json, written by
+ * resources/setup/restore-database.mjs). The live database is closed by construction here;
+ * the normal bootstrap then reopens the restored file. A refused restore keeps the current
+ * database and is reported in the log, a dialog and databaseStatus.backup.lastRestore.
+ */
+function prepareDatabaseBackups(): void {
+  const userData = app.getPath('userData');
+  const settings = databaseBackupSettings(runtimeEnv);
+  for (const warning of settings.warnings) logger.warn('database backup setting ignored', { warning });
+  const backupDir = databaseBackupDir(userData);
+  backupScheduler = createDatabaseBackupScheduler({
+    sourcePath: () => shellDatabase?.path ?? null,
+    backupDir,
+    intervalMs: settings.intervalMs,
+    keep: settings.keep,
+    logger,
+  });
+  const restore = applyPendingDatabaseRestore({
+    backupDir,
+    livePath: join(databaseDataDir(), DATABASE_FILE_NAME),
+    knownMigrationNames: shippedMigrationNames(),
+    keep: settings.keep,
+    logger,
+  });
+  if (restore.kind === 'none') return;
+  backupScheduler.recordRestore(restore);
+  if (restore.kind === 'refused') {
+    void dialog.showMessageBox({
+      type: 'warning',
+      title: 'CompanyOS',
+      message: '数据库恢复未执行，当前数据保持不变。',
+      detail: `${restore.backup ?? ''}\n${restore.code}: ${restore.message}\n\n详情见日志 desktop.log。`,
+    });
+  }
+}
+
 async function main(): Promise<void> {
   if (!app.requestSingleInstanceLock()) {
     app.quit();
@@ -1022,6 +1091,7 @@ async function main(): Promise<void> {
   });
 
   await applyInstalledProviderSetup();
+  prepareDatabaseBackups();
   // Sprint 13/14 + AUDIT-D8: the quiescent startup sequence (DB -> CAS gate -> composition ->
   // recovery -> autonomy -> rehydrate) runs BEFORE any IPC handler / window exists. A fatal
   // finding fails startup CLOSED - never a partially healthy runtime.
@@ -1047,6 +1117,7 @@ async function main(): Promise<void> {
   });
 
   app.on('before-quit', () => {
+    backupScheduler?.stop();
     shellDatabase?.db.close();
     logger.info('companyos desktop stopping', { databaseError });
   });
