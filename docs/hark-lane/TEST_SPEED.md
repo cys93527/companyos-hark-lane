@@ -66,7 +66,7 @@ Measured in the Hark sandbox (4 workers), evidence `lane/evidence/test-speed/`.
 | `test:changed` vs the branch, one throwaway commit touching `apps/renderer/src/cancel-control.tsx` | — | 7.6–8.7 s Vitest (10.6–11.2 s wall), 14 files / 128 tests |
 | `test:changed` with no change vs the base | — | 1.1 s wall |
 | `test:changed`, throwaway commit touching `packages/persistence/src/entity-store.ts` | — | > 110 s (most of the suite is downstream) |
-| Full suite, CI `hark-ubuntu` "Full vitest" step | 167 s (run 41948918316, v0.1.3) | measured on the first hark-ubuntu run of the merged head; see PROJECT_HANDOFF.md |
+| Full suite, CI `hark-ubuntu` "Full vitest" step | 167 s (run 41948918316, v0.1.3) | measured by the first hark-ubuntu run on the merged hark-lane head (recorded in the lane STAGE_HISTORY, outside the repository) |
 
 The `test:changed` measurement used `TEST_BASE_REF=<the test-speed commit>` so that only the
 throwaway commit differed (as on a feature branch cut from hark-lane after this merge); the

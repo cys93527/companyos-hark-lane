@@ -78,6 +78,13 @@ jobs:
           node scripts/check-architecture.mjs 2>&1 | Tee-Object hark-evidence/check-architecture.log
           exit $LASTEXITCODE
 
+      # DB-BACKUP (docs/hark-lane/DB_BACKUP.md): snapshot rename, rotation unlink and staged
+      # restore over the live file on a real NTFS volume. The vitest setup file
+      # (tests/support/offline-test-setup.ts) installs the offline guard in every worker.
+      - name: DB backup tests (real Windows rename/unlink)
+        shell: pwsh
+        run: npx vitest run packages/persistence/tests/db-backup.test.ts apps/desktop/tests/db-backup.test.ts 2>&1 | Tee-Object hark-evidence/db-backup-vitest.log; exit $LASTEXITCODE
+
       - name: Fetch koffi 3.3.3 (CI only, integrity pinned, no lifecycle scripts)
         shell: pwsh
         env:
