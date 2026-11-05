@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // DB-BACKUP: restore helper for the local SQLite backups (docs/hark-lane/DB_BACKUP.md).
 //   CompanyOS.exe (ELECTRON_RUN_AS_NODE=1) restore-database.mjs list    --user-data <dir>
 //   CompanyOS.exe (ELECTRON_RUN_AS_NODE=1) restore-database.mjs request --user-data <dir> --backup <file name>
@@ -9,6 +8,8 @@
 // of the current database first). It never touches the live database itself, so it is safe to run
 // while the app is open. Shipped at <install>/resources/setup/ like configure-provider.mjs; the app
 // modules live at <install>/resources/app/apps/desktop/dist/. Answers one JSON line.
+// No hashbang on purpose: it is always started through node/Electron, and a hashbang in a CRLF
+// (Windows) checkout makes the Vitest module runner fail to load the file (hark-windows 41963722718).
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 

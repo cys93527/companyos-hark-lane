@@ -248,6 +248,10 @@ describe('DB-BACKUP staged restore', () => {
 });
 
 describe('DB-BACKUP restore helper + main-process wiring', () => {
+  it('restore-database.mjs carries no hashbang (a CRLF checkout breaks module loading on Windows)', () => {
+    const source = readFileSync(new URL('../../../scripts/hark/setup/restore-database.mjs', import.meta.url), 'utf8');
+    expect(source.startsWith('#!')).toBe(false);
+  });
   it('restore-database.mjs parses list/request/cancel/status and refuses incomplete input', () => {
     expect(parseRestoreArgs(['list', '--user-data', 'C:\\Users\\陈 雁松\\AppData\\Roaming\\CompanyOS'])).toEqual({ command: 'list', 'user-data': 'C:\\Users\\陈 雁松\\AppData\\Roaming\\CompanyOS' });
     expect(parseRestoreArgs(['request', '--user-data', 'u', '--backup', 'companyos-start-20261105T020304005Z.sqlite']).backup).toBe('companyos-start-20261105T020304005Z.sqlite');
