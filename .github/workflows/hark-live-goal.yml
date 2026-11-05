@@ -17,7 +17,11 @@ on:
         required: false
         default: planning
         type: choice
-        options: [planning, execute, acceptance]
+        options: [planning, execute, acceptance, custom]
+      goal_text:
+        description: "custom mode only: the user's goal, typed verbatim into the installed app's composer (real GUI driven over CDP)"
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -25,6 +29,7 @@ permissions:
 
 jobs:
   live-goal:
+    if: inputs.mode != 'custom'
     runs-on: windows-2022
     timeout-minutes: 50
     env:
@@ -96,6 +101,91 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          $u = Join-Path $env:APPDIR 'unins000.exe'
+          if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hark-live-goal-evidence
+          path: hark-evidence
+
+  # LIVE-CUSTOM (user request 2026-11-06 00:16 CST, budget 00:17: per-run cap CNY 8, every
+  # run reserved in installer/budget/live-contract-fill-ledger.json BEFORE dispatch). The
+  # user's own requirement goes through the INSTALLED app exactly as a user runs it: the real
+  # GUI (main-process autonomy driver, its own desktop.log and database), driven over the
+  # Chrome DevTools Protocol by scripts/hark/live-goal-gui.mjs (types the goal, picks the
+  # model / access policy, clicks 批准, screenshots every minute, read-only DB progress).
+  live-goal-custom:
+    if: inputs.mode == 'custom'
+    runs-on: windows-2022
+    timeout-minutes: 200
+    env:
+      COS_MODEL_PROVIDER_ID: model.deepseek
+      COS_MODEL_BASE_URL: https://api.deepseek.com
+      COS_MODEL_ID: deepseek-flash
+      COS_MODEL_TIMEOUT_MS: '90000'
+      COS_MODEL_STRUCTURED_OUTPUT: json_object
+      COS_MODEL_MAX_OUTPUT_TOKENS: '4096'
+      COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: '0'
+      COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
+      GOAL_TEXT: ${{ inputs.goal_text }}
+      LIVE_WATCHDOG_MS: '9300000'
+      LIVE_IDLE_STOP_MS: '900000'
+    steps:
+      - uses: actions/checkout@v4
+      - name: verify the installer run belongs to this commit (AUDIT-S12)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.installer_run_id }}
+        run: |
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RUN_ID" > installer-run.json
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node scripts/hark/verify-workflow-runs.mjs --mode installer --sha "$env:GITHUB_SHA" --installer-run "$env:RUN_ID" --runs installer-run.json
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/download-artifact@v4
+        with:
+          name: hark-installer
+          path: hark-installer
+          run-id: ${{ inputs.installer_run_id }}
+          github-token: ${{ github.token }}
+      - name: Install (per-user, silent)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          if ([string]::IsNullOrWhiteSpace($env:COMPANYOS_MODEL_API_KEY)) { Write-Host 'secret missing: no model call made'; exit 3 }
+          if ([string]::IsNullOrWhiteSpace($env:GOAL_TEXT)) { Write-Host 'goal_text missing'; exit 3 }
+          $env:GOAL_TEXT | Out-File -Encoding utf8 hark-evidence/goal.txt
+          $setup = (Get-ChildItem hark-installer\*.exe | Select-Object -First 1).FullName
+          "$((Get-FileHash $setup -Algorithm SHA256).Hash)  $(Split-Path $setup -Leaf)" | Tee-Object hark-evidence/installer-sha256.txt
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\CompanyOS'
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$dir`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          "APPDIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Operator budget approval into the app's userData (per-run cap CNY 8)
+        shell: pwsh
+        run: |
+          $budget = Join-Path $env:APPDATA 'CompanyOS\budget'
+          node scripts/hark/make-budget-approval.mjs $budget installer/budget/deepseek-flash.contract-fill.approval-template.json | Tee-Object hark-evidence/budget-approval.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: The user's goal through the installed GUI (CDP driver, screenshots, read-only DB progress)
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          $ws = Join-Path $env:USERPROFILE 'ContractFillProject'
+          $argv = @('scripts/hark/live-goal-gui.mjs', "`"$env:APPDIR`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$ws`"")
+          $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
+          $code = $p.ExitCode
+          Get-Content hark-evidence\harness-stdout.txt -ErrorAction SilentlyContinue | Select-Object -Last 120
+          Write-Host "driver exit=$code"
+          $leak = Get-ChildItem hark-evidence -Recurse -File | Where-Object { $_.Length -lt 200MB } | Select-String -SimpleMatch $env:COMPANYOS_MODEL_API_KEY -List -ErrorAction SilentlyContinue
+          if ($leak) { Write-Host "KEY LEAKED in $($leak.Path -join ',')"; Remove-Item hark-evidence\* -Recurse -Force; exit 9 }
+          exit $code
+      - name: Uninstall
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process CompanyOS -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           $u = Join-Path $env:APPDIR 'unins000.exe'
           if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
       - uses: actions/upload-artifact@v4

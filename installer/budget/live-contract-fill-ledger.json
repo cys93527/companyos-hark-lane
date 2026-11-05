@@ -1,0 +1,9 @@
+{
+  "purpose": "Real DeepSeek spend for the live contract-fill runs (user 2026-11-06 00:16/00:17 CST: run the user's real requirement through installed CompanyOS; multiple runs; per-run cap CNY 8; total open-ended, stop on insufficient balance). Each run is RESERVED at its cap before dispatch and SETTLED after (KNOWN at usage, anything else at bound).",
+  "currency": "CNY",
+  "perRunCapMicros": 8000000,
+  "capMicros": null,
+  "runs": [],
+  "entries": [],
+  "totalMicros": 0
+}

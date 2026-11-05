@@ -30,7 +30,7 @@ describe('H15c live goal (execute mode)', () => {
     expect(wf).toMatch(/workflow_dispatch:/u);
     expect(wf).toMatch(/default: planning/u);
     expect(wf).toMatch(/COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: \$\{\{ inputs\.mode == 'planning' && '1' \|\| '0' \}\}/u);
-    expect(wf).toMatch(/options: \[planning, execute, acceptance\]/u);
+    expect(wf).toMatch(/options: \[planning, execute, acceptance, custom\]/u);
     expect(wf).toMatch(/live-goal-execute\.mjs/u);
     expect(wf).toMatch(/deepseek-flash\.h15c\.approval-template\.json/u);
     const harness = readFileSync('scripts/hark/live-goal-execute.mjs', 'utf8');
