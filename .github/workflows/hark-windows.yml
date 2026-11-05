@@ -80,10 +80,46 @@ jobs:
 
       # DB-BACKUP (docs/hark-lane/DB_BACKUP.md): snapshot rename, rotation unlink and staged
       # restore over the live file on a real NTFS volume. The vitest setup file
-      # (tests/support/offline-test-setup.ts) installs the offline guard in every worker.
-      - name: DB backup tests (real Windows rename/unlink)
+      # (tests/support/offline-test-setup.ts) installs the offline guard in every worker, and
+      # on win32 the guard only admits a repository (and temp) on drive F: (the development
+      # machine layout; scripts/test-offline-git.cjs). The runner has only C:/D:, so the step
+      # attaches a small expandable VHDX as a real NTFS volume F:, clones this exact commit
+      # there and installs the same frozen lockfile. The guard itself is unchanged.
+      - name: 'DB backup — real NTFS volume F: (VHDX) with this commit'
         shell: pwsh
-        run: npx vitest run packages/persistence/tests/db-backup.test.ts apps/desktop/tests/db-backup.test.ts 2>&1 | Tee-Object hark-evidence/db-backup-vitest.log; exit $LASTEXITCODE
+        run: |
+          if (Test-Path 'F:\') { Write-Error 'drive F: already exists on the runner'; exit 1 }
+          $vhd = Join-Path $env:RUNNER_TEMP 'hark-f.vhdx'
+          $script = Join-Path $env:RUNNER_TEMP 'hark-f-diskpart.txt'
+          @(
+            "create vdisk file=`"$vhd`" maximum=4096 type=expandable",
+            "select vdisk file=`"$vhd`"",
+            'attach vdisk',
+            'create partition primary',
+            'format fs=ntfs quick label=HARKF',
+            'assign letter=F'
+          ) | Set-Content -Encoding ascii $script
+          diskpart /s $script 2>&1 | Tee-Object hark-evidence/db-backup-diskpart.log
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path 'F:\')) { Write-Error 'could not attach the F: VHDX'; exit 1 }
+          (Get-Volume -DriveLetter F | Select-Object DriveLetter, FileSystem, Size | ConvertTo-Json) | Tee-Object hark-evidence/db-backup-volume.json
+          git clone --quiet --no-checkout $env:GITHUB_WORKSPACE F:\repo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C F:\repo checkout --quiet $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force F:\tmp | Out-Null
+          Push-Location F:\repo
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/db-backup-install.log')
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
+      - name: 'DB backup tests (real Windows rename/unlink on F:)'
+        shell: pwsh
+        working-directory: F:\repo
+        env:
+          TEMP: F:\tmp
+          TMP: F:\tmp
+        run: npx vitest run packages/persistence/tests/db-backup.test.ts apps/desktop/tests/db-backup.test.ts 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/db-backup-vitest.log'); exit $LASTEXITCODE
 
       - name: Fetch koffi 3.3.3 (CI only, integrity pinned, no lifecycle scripts)
         shell: pwsh
