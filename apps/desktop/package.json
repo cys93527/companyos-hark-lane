@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -b tsconfig.json",
     "start": "electron .",
-    "dev": "pnpm run build && electron .",
+    "dev": "pnpm -w run build && electron .",
     "clean": "node ../../scripts/clean.mjs"
   },
   "dependencies": {

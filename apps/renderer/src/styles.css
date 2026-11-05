@@ -1977,7 +1977,8 @@ p.approval-card__hint {
   justify-content: space-between;
 }
 
-.database-failure {
+.database-failure,
+.services-failure {
   margin-bottom: var(--sp-4);
 }
 

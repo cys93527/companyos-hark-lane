@@ -21,6 +21,8 @@ export interface DatabaseStatus {
   readonly schemaVersion: number;
   /** H12c: typed bootstrap failure from the main process (see database-failure.tsx). */
   readonly failure?: unknown;
+  /** STARTUP-VISIBLE: typed core-services failure / degraded model provider (see services-failure.tsx). */
+  readonly services?: unknown;
 }
 
 export interface WorkflowBridgeRequest {

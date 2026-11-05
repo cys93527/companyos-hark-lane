@@ -32,12 +32,13 @@
     "build:desktop": "pnpm --filter @companyos/desktop build",
     "check": "node scripts/check.mjs",
     "clean": "node scripts/clean.mjs",
-    "dev": "pnpm --filter @companyos/desktop dev",
+    "dev": "pnpm run build && pnpm --filter @companyos/desktop start",
     "test:sandbox": "vitest run --config vitest.kernel.config.ts tests/sandbox-lab",
     "test:hardened-security-research": "vitest run --config vitest.hardened-research.config.ts",
     "test:stage6": "vitest run apps/desktop/tests/stage6-model-pool.test.ts",
     "test:stage7": "vitest run apps/desktop/tests/stage7-role-orchestration.test.ts",
-    "test:stage8": "vitest run apps/desktop/tests/stage8-role-collaboration.test.ts apps/desktop/tests/stage8-smart-routing.test.ts"
+    "test:stage8": "vitest run apps/desktop/tests/stage8-role-collaboration.test.ts apps/desktop/tests/stage8-smart-routing.test.ts",
+    "start": "pnpm run build && pnpm --filter @companyos/desktop start"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

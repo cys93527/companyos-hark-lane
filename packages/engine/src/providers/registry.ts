@@ -309,6 +309,45 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
     });
   };
 
+  /**
+   * PROVIDER-RECONCILE: make the durable catalogue snapshot equal what the provider offers
+   * now (add + update offered rows, delete rows the provider no longer offers) and audit any
+   * change. The snapshot is what the model selector lists without a live call, so a retired
+   * upstream model must leave it instead of accumulating forever.
+   */
+  const reconcileCatalogue = async (
+    providerId: string,
+    offered: readonly ModelInfo[],
+    actorId: string | undefined,
+    phase: 'rebind' | 'catalogue',
+  ): Promise<void> => {
+    if (deps.models === undefined) return;
+    const storedRows = (await deps.models.list({ limit: 500 })).items.filter(
+      (row) => row.providerId === providerId,
+    );
+    const offeredIds = new Set(offered.map((model) => model.modelId));
+    const storedIds = new Set(storedRows.map((row) => row.modelId));
+    const added = [...offeredIds].filter((id) => !storedIds.has(id)).sort();
+    const removedRows = storedRows.filter((row) => !offeredIds.has(row.modelId));
+    for (const model of offered) await upsertModel(providerId, model);
+    for (const row of removedRows) await deps.models.delete(row.id);
+    if (added.length === 0 && removedRows.length === 0) return;
+    const removed = removedRows.map((row) => row.modelId).sort();
+    deps.logger?.info('provider catalogue reconciled', {
+      providerId,
+      phase,
+      added: added.length,
+      removed: removed.length,
+    });
+    await audit('provider.catalogue_reconciled', providerId, actorId, {
+      providerId,
+      phase,
+      added,
+      removed,
+      models: offered.length,
+    });
+  };
+
   /** Capability + limit pre-flight, shared by invoke and stream (tests I, M). */
   const preflight = async (
     providerId: string,
@@ -435,27 +474,34 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
         /*
          * Restart semantics (descriptor/adapter split): the durable row is CONFIGURATION truth
          * and the adapter is PROCESS-LOCAL capability, so a later composition over the same
-         * storage must be able to re-bind its configured adapter. The rebind is an idempotent
-         * registration, and it fails closed on any drift between the trusted configured
-         * adapter and the persisted descriptor — no silent replacement, ever.
+         * storage must be able to re-bind its configured adapter.
+         *
+         * PROVIDER-RECONCILE (docs/hark-lane/PROVIDER_DESCRIPTOR_RECONCILE.md): the adapter
+         * IDENTITY is its descriptor (kind + displayName) under this providerId. Any drift is a
+         * different adapter claiming a persisted id and is refused fail-closed (CONFLICT, the
+         * mismatch named; T18-07 B6) - unless this build DELIBERATELY supersedes exactly the
+         * persisted descriptor (`describe().supersedes`), which updates the row and audits
+         * `provider.descriptor_updated` {from, to, version}. The model CATALOGUE is not
+         * identity: it is live upstream data (an HTTP adapter reads its endpoint catalogue)
+         * and is reconciled, audited, never compared:
+         *   - the durable snapshot is replaced by what the endpoint offers now,
+         *     `provider.catalogue_reconciled` {added, removed}. Before this, the snapshot only
+         *     ever grew (models() upserted, never removed) and was compared with the live list,
+         *     so the first time an endpoint retired or renamed a model - or the user pointed
+         *     the base URL at another endpoint - the app refused to compose at all;
+         *   - an unreachable catalogue (offline, 401, 5xx) does not block the bind: the
+         *     persisted snapshot stands, `provider.rebound` records catalogueVerified=false,
+         *     and every invocation still runs its own live catalogue preflight.
          */
         const mismatches: string[] = [];
         if (persisted.kind !== descriptor.kind) mismatches.push('kind');
         if (persisted.displayName !== descriptor.displayName) mismatches.push('displayName');
-        const catalogue = await provider.listModels();
-        if (!catalogue.ok) {
-          return refuse(catalogue.error, classifyProviderFailure(catalogue.error, descriptor.providerId).kind);
-        }
-        const offered = catalogue.value.map(normalizeModelInfo).map((model) => model.modelId).sort();
-        const stored =
-          deps.models === undefined
-            ? []
-            : (await deps.models.list({ limit: 500 }))
-                .items.filter((row) => row.providerId === descriptor.providerId)
-                .map((row) => row.modelId)
-                .sort();
-        if (offered.join(' ') !== stored.join(' ')) mismatches.push('models');
-        if (mismatches.length > 0) {
+        const superseded =
+          mismatches.length > 0 &&
+          (descriptor.supersedes ?? []).some(
+            (earlier) => earlier.kind === persisted.kind && earlier.displayName === persisted.displayName,
+          );
+        if (mismatches.length > 0 && !superseded) {
           return refuse(
             domainError(
               'CONFLICT',
@@ -463,6 +509,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
               {
                 providerId: descriptor.providerId,
                 mismatches,
+                reason: 'PROVIDER_DESCRIPTOR_CONFLICT',
                 persisted: { kind: persisted.kind, displayName: persisted.displayName },
                 offered: { kind: descriptor.kind, displayName: descriptor.displayName },
               },
@@ -470,11 +517,33 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
             'invalid_request',
           );
         }
+        const catalogue = await provider.listModels();
+        const offered = catalogue.ok ? catalogue.value.map(normalizeModelInfo) : null;
+        if (!catalogue.ok) {
+          deps.logger?.warn('provider catalogue unavailable at rebind; persisted catalogue kept', {
+            providerId: descriptor.providerId,
+            code: catalogue.error.code,
+          });
+        }
         // Task-18-08: the durable descriptor is verified; the process-local bind has not
         // happened yet. A crash here must leave the descriptor intact and the adapter unbound.
         await deps.faultCheckpoints?.checkpoint(
           FAULT_CHECKPOINTS.providerDescriptorBeforeRuntimeBind,
         );
+        let current = persisted;
+        if (superseded) {
+          current = { ...persisted, kind: descriptor.kind, displayName: descriptor.displayName, updatedAt: nowIso() };
+          await deps.registrations.put(current);
+          deps.logger?.info('provider descriptor updated', { providerId: descriptor.providerId, version: descriptor.version });
+          await audit('provider.descriptor_updated', descriptor.providerId, options.actorId, {
+            providerId: descriptor.providerId,
+            version: descriptor.version,
+            fields: mismatches,
+            from: { kind: persisted.kind, displayName: persisted.displayName },
+            to: { kind: descriptor.kind, displayName: descriptor.displayName },
+          });
+        }
+        if (offered !== null) await reconcileCatalogue(descriptor.providerId, offered, options.actorId, 'rebind');
         bound.set(descriptor.providerId, provider);
         // `enabled` is registry STATE, not descriptor: a disabled provider stays disabled and
         // its adapter is still bound (invocation keeps its own gates).
@@ -482,9 +551,10 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
         await audit('provider.rebound', descriptor.providerId, options.actorId, {
           providerId: descriptor.providerId,
           kind: descriptor.kind,
-          models: offered.length,
+          models: offered === null ? null : offered.length,
+          catalogueVerified: offered !== null,
         });
-        return ok(persisted);
+        return ok(current);
       }
       const raw = await provider.listModels();
       if (!raw.ok) {
@@ -579,7 +649,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): ProviderRegi
         return err(providerErrorToDomainError(classifyProviderFailure(raw.error, providerId)));
       }
       const models = raw.value.map(normalizeModelInfo);
-      for (const model of models) await upsertModel(providerId, model);
+      await reconcileCatalogue(providerId, models, undefined, 'catalogue');
       return ok(models);
     },
 

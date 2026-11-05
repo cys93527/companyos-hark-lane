@@ -52,6 +52,9 @@ export function hardenedWebPreferences(mainDir: string): HardenedWebPreferences 
   };
 }
 
+/** --paper-1 in apps/renderer/src/styles.css (the paper-ink app background). */
+export const WINDOW_BACKGROUND = '#f1eee9';
+
 export function createWindowOptions(mainDir: string): BrowserWindowConstructorOptions {
   return {
     width: 1440,
@@ -59,7 +62,9 @@ export function createWindowOptions(mainDir: string): BrowserWindowConstructorOp
     minWidth: 1024,
     minHeight: 640,
     show: false,
-    backgroundColor: '#0f1115',
+    // The paper-ink app background (apps/renderer/src/styles.css --paper-1): no dark flash before
+    // the first paint, and the built-in startup error page uses the same paper.
+    backgroundColor: WINDOW_BACKGROUND,
     autoHideMenuBar: true,
     title: 'CompanyOS',
     webPreferences: hardenedWebPreferences(mainDir),

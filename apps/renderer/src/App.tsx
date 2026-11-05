@@ -94,6 +94,7 @@ import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget
 import { isRunEnded, terminalOutcomeOf } from './run-outcome.js';
 import { GoalCancelControl } from './cancel-control.js';
 import { DatabaseFailureBanner, readDatabaseFailure } from './database-failure.js';
+import { ServicesFailureBanner, readServicesFailure } from './services-failure.js';
 import { goalTitleOf } from './chat.js';
 import { elapsedText, goalStateWord, sessionCostText, startedAtText } from './format.js';
 import { projectPlanSteps, type ExecutionOverviewInput } from './plan-steps.js';
@@ -1089,6 +1090,7 @@ export function App() {
   const modelReady = modelStatus.kind === 'selected';
   const modelView = useMemo(() => ({ ...projectModelRuntime(modelSnapshot), cost: sessionCost }), [modelSnapshot, sessionCost]);
   const databaseFailure = readDatabaseFailure(database?.failure);
+  const servicesFailure = readServicesFailure(database?.services);
 
   /* ------------------------------------------------------- goal page facts --- */
   const openWorkspace = runtimeWorkspace !== null && runtimeWorkspace.runId === openGoalRunId ? runtimeWorkspace : null;
@@ -1347,7 +1349,16 @@ export function App() {
     runtimeCollapsed: !runtimeExpanded,
     topbar,
     // UI-AUDIT-09: the database failure is visible on every view, not only on 首页.
-    banner: h(DatabaseFailureBanner, { failure: databaseFailure }),
+    // STARTUP-VISIBLE: a degraded or failed core composition is visible on every view too.
+    banner:
+      databaseFailure === null && servicesFailure === null
+        ? null
+        : h(
+            'div',
+            { className: 'startup-banners' },
+            h(DatabaseFailureBanner, { failure: databaseFailure }),
+            h(ServicesFailureBanner, { failure: servicesFailure }),
+          ),
     sidebar: {
       view,
       recent,

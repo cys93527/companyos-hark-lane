@@ -92,6 +92,17 @@ export interface DatabaseStatus {
    * the last snapshot, the last best-effort failure and the last staged restore outcome.
    */
   readonly backup?: DatabaseBackupDiagnostics | null;
+  /**
+   * STARTUP-VISIBLE: the core services did not compose
+   * (CORE_SERVICES_UNAVAILABLE) or composed DEGRADED without the configured model provider
+   * (MODEL_PROVIDER_REFUSED). The renderer shows it as a banner on every view; null = healthy.
+   */
+  readonly services?: ServicesFailure | null;
+}
+
+export interface ServicesFailure {
+  readonly code: 'CORE_SERVICES_UNAVAILABLE' | 'MODEL_PROVIDER_REFUSED';
+  readonly message: string;
 }
 
 export interface DatabaseBackupDiagnostics {

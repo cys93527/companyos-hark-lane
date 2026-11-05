@@ -282,5 +282,5 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
   [hark-lane/H16_WINDOWS_ISOLATION.md](./hark-lane/H16_WINDOWS_ISOLATION.md) ·
   [hark-lane/H17_REAL_PC_ACCEPTANCE_CHECKLIST.md](./hark-lane/H17_REAL_PC_ACCEPTANCE_CHECKLIST.md) ·
   [hark-lane/H17_INDEPENDENT_REVIEW_PACKET.md](./hark-lane/H17_INDEPENDENT_REVIEW_PACKET.md) ·
-  [hark-lane/H18_RELEASE.md](./hark-lane/H18_RELEASE.md) · [hark-lane/V011_AUDIT_FIXES.md](./hark-lane/V011_AUDIT_FIXES.md) · [hark-lane/V012_RELEASE.md](./hark-lane/V012_RELEASE.md) · [hark-lane/V013_RELEASE.md](./hark-lane/V013_RELEASE.md) · [hark-lane/UI_PAPER_INK.md](./hark-lane/UI_PAPER_INK.md) · [hark-lane/UI_AUDIT_INTERACTION.md](./hark-lane/UI_AUDIT_INTERACTION.md) · [hark-lane/DB_BACKUP.md](./hark-lane/DB_BACKUP.md) ·
+  [hark-lane/H18_RELEASE.md](./hark-lane/H18_RELEASE.md) · [hark-lane/V011_AUDIT_FIXES.md](./hark-lane/V011_AUDIT_FIXES.md) · [hark-lane/V012_RELEASE.md](./hark-lane/V012_RELEASE.md) · [hark-lane/V013_RELEASE.md](./hark-lane/V013_RELEASE.md) · [hark-lane/UI_PAPER_INK.md](./hark-lane/UI_PAPER_INK.md) · [hark-lane/UI_AUDIT_INTERACTION.md](./hark-lane/UI_AUDIT_INTERACTION.md) · [hark-lane/DB_BACKUP.md](./hark-lane/DB_BACKUP.md) · [hark-lane/PROVIDER_DESCRIPTOR_RECONCILE.md](./hark-lane/PROVIDER_DESCRIPTOR_RECONCILE.md) ·
   [hark-lane/ROADMAP.md](./hark-lane/ROADMAP.md)

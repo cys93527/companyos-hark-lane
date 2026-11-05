@@ -61,7 +61,8 @@ import {
   preMigrationBackupHook,
   type DatabaseBackupScheduler,
 } from './db-backup.js';
-import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo } from './channels.js';
+import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type PlatformInfo, type ServicesFailure } from './channels.js';
+import { resolveRendererEntry, startupErrorUrl, type StartupErrorPage } from './renderer-entry.js';
 import { productionCompositionOptions, productionIsolationResourcesDir, productionResourcesRoot } from './production-composition.js';
 import { captureRuntimeEnv, createProviderRuntimeEnv, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
 import { loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
@@ -647,7 +648,10 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
           });
         }
         const registeredProviders = await core.providers.list();
-        const provider = registeredProviders[0] ?? null;
+        // PROVIDER-RECONCILE: a persisted row whose adapter is not bound in this process
+        // (refused / not configured) is not a usable provider.
+        const provider = registeredProviders.find((entry) => core.providers.get(entry.providerId) !== null) ?? null;
+        const refusedAdapter = core.modelAdapterStatus.state === 'REFUSED' ? core.modelAdapterStatus : null;
         const health = provider === null ? null : await core.providers.health(provider.providerId).catch(() => null);
         const healthStatus = health === null || !health.ok ? 'unknown' : health.value.status;
         const policy = await policies.resolveFor([{ scopeType: 'COMPANY', scopeId: 'company_default' }]).catch(() => null);
@@ -661,7 +665,7 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
           providerHealthy: healthStatus === 'healthy',
           providerDetail:
             provider === null
-              ? '尚未注册模型提供商（受信外部配置路径）。'
+              ? (refusedAdapter?.message ?? '尚未注册模型提供商（受信外部配置路径）。')
               : `提供商 ${provider.providerId} · 健康 ${healthStatus}`,
           modelSelected: typeof modelKey === 'string' && modelKey.length > 0,
           modelDetail:
@@ -764,6 +768,22 @@ function controlPlaneIpc(core: CoreServices): (request: unknown) => Promise<unkn
   return controlPlaneIpcHandler;
 }
 
+/**
+ * PROVIDER-RECONCILE / STARTUP-VISIBLE: what the renderer banner says when the core is not
+ * fully usable. The database failure has its own typed banner, so it is not repeated here.
+ */
+function servicesFailure(): ServicesFailure | null {
+  if (databaseFailure !== null) return null;
+  if (coreServices === null) {
+    return workflowError === null ? null : { code: 'CORE_SERVICES_UNAVAILABLE', message: workflowError };
+  }
+  const adapter = coreServices.modelAdapterStatus;
+  if (adapter.state === 'REFUSED') {
+    return { code: 'MODEL_PROVIDER_REFUSED', message: adapter.message ?? '模型提供商未启用。' };
+  }
+  return null;
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(CHANNELS.appVersion, (): string => app.getVersion());
 
@@ -826,6 +846,7 @@ function registerIpcHandlers(): void {
       schemaVersion: shellDatabase?.migrations.core.currentVersion ?? 0,
       failure: databaseFailure,
       backup: backupScheduler?.status() ?? null,
+      services: servicesFailure(),
     }),
   );
 
@@ -997,11 +1018,33 @@ async function createMainWindow(): Promise<BrowserWindow> {
     window.show();
   });
 
-  const devServerUrl = process.env['COMPANYOS_RENDERER_URL'];
-  if (devServerUrl !== undefined && devServerUrl.length > 0) {
-    await window.loadURL(devServerUrl);
-  } else {
-    await window.loadFile(join(mainDir, '..', '..', 'renderer', 'dist', 'index.html'));
+  // STARTUP-VISIBLE (renderer-entry.ts): a missing or failing renderer is answered with the
+  // built-in error page - never an unhandled loadFile rejection and an empty window.
+  const entry = resolveRendererEntry(mainDir, process.env, existsSync);
+  const showStartupError = async (page: StartupErrorPage): Promise<void> => {
+    logger.error('renderer unavailable; showing the built-in startup page', { ...page });
+    try {
+      await window.loadURL(startupErrorUrl(page));
+    } catch (error) {
+      logger.error('startup page failed to load', { error: error instanceof Error ? error.message : String(error) });
+    }
+    if (!window.isVisible()) window.show();
+  };
+  if (entry.kind === 'missing') {
+    await showStartupError({ reason: 'RENDERER_MISSING', target: entry.path, detail: null, packaged: !isDev });
+    return window;
+  }
+  try {
+    if (entry.kind === 'dev-server') await window.loadURL(entry.url);
+    else await window.loadFile(entry.path);
+  } catch (error) {
+    await showStartupError({
+      reason: 'RENDERER_LOAD_FAILED',
+      target: entry.kind === 'dev-server' ? entry.url : entry.path,
+      detail: error instanceof Error ? error.message : String(error),
+      packaged: !isDev,
+    });
+    return window;
   }
 
   logger.info('window ready', { bridge: BRIDGE_KEY, dev: isDev });

@@ -210,6 +210,13 @@ export interface ModelProviderDescriptor {
   readonly kind: string;
   readonly displayName: string;
   readonly version: string;
+  /**
+   * PROVIDER-RECONCILE: the exact earlier descriptors (same providerId) this build of the
+   * adapter deliberately supersedes. A persisted descriptor that differs from this one is
+   * re-bound and updated (audited `provider.descriptor_updated`) ONLY when it is listed here;
+   * any other drift is a different adapter and stays refused fail-closed. Omitted = none.
+   */
+  readonly supersedes?: readonly { readonly kind: string; readonly displayName: string }[];
 }
 
 /** What the registry persists so a restart can rebind the same provider ids (test O). */

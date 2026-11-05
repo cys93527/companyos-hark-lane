@@ -329,6 +329,14 @@ const projectWorkEnvelope = (
  * recovery and the normal runtime share the SAME instances (no second registry, no
  * second event store; ADR-0021 D10 / Task-14-02 §30/§31).
  */
+/** PROVIDER-RECONCILE: the configured model adapter's bind outcome (message is user-facing zh-CN). */
+export interface ModelAdapterStatus {
+  readonly state: 'NOT_CONFIGURED' | 'BOUND' | 'REFUSED';
+  readonly providerId: string | null;
+  readonly code: string | null;
+  readonly message: string | null;
+}
+
 export interface CoreServices {
   /** H15: the packaged agent kernel's first-start health report (null when no packaged kernel was checked). */
   readonly kernelHealth?: () => KernelHealthReport | null;
@@ -448,6 +456,8 @@ export interface CoreServices {
   readonly repositoryRuntime: RepositoryRuntime;
   /** The last composition error (null when the core composed cleanly). */
   readonly compositionError: string | null;
+  /** PROVIDER-RECONCILE: whether the configured model adapter is bound (REFUSED = degraded, see message). */
+  readonly modelAdapterStatus: ModelAdapterStatus;
   /**
    * Industry-pack live availability (T15-04 corrective). Constructed ONCE here and shared
    * by the authorization service (new role assignments) and the workflow lifecycle service
@@ -1053,6 +1063,7 @@ export async function composeCoreServices(
       './models/openai-compatible-provider.js'
     );
     const modelAdapterConfig = resolveOpenAiCompatibleConfig(runtimeEnv);
+    let modelAdapterStatus: ModelAdapterStatus = { state: 'NOT_CONFIGURED', providerId: null, code: null, message: null };
     if (!modelAdapterConfig.ok) {
       throw new Error(`the model adapter configuration is invalid: ${modelAdapterConfig.error.message}`);
     }
@@ -1063,7 +1074,26 @@ export async function composeCoreServices(
       });
       const modelAdapterRegistration = await providers.register(modelAdapter, { actorId: SESSION_ACTOR });
       if (!modelAdapterRegistration.ok) {
-        throw new Error(`the model adapter could not be registered: ${modelAdapterRegistration.error.message}`);
+        /*
+         * PROVIDER-RECONCILE: a refused model adapter (a different adapter kind persisted
+         * under this provider id) is a DEGRADED state, not a dead application: the rest of
+         * the core still composes, the adapter stays unbound (model calls fail closed with
+         * the provider-binding guard), and the user sees why and what to do in the UI
+         * (databaseStatus.services → renderer startup banner, readiness provider row).
+         */
+        modelAdapterStatus = {
+          state: 'REFUSED',
+          providerId: modelAdapterConfig.value.providerId,
+          code: modelAdapterRegistration.error.code,
+          message: `模型提供商 ${modelAdapterConfig.value.providerId} 未启用：${modelAdapterRegistration.error.message}`,
+        };
+        activeLogger.error('model adapter registration refused; continuing without a model provider', {
+          providerId: modelAdapterConfig.value.providerId,
+          code: modelAdapterRegistration.error.code,
+          error: modelAdapterRegistration.error.message,
+        });
+      } else {
+        modelAdapterStatus = { state: 'BOUND', providerId: modelAdapterConfig.value.providerId, code: null, message: null };
       }
     }
 
@@ -4491,6 +4521,7 @@ export async function composeCoreServices(
       kernelHealth: () => kernelHealthHolder.report,
       database,
       compositionError,
+      modelAdapterStatus,
       repositoryRuntime,
       clock,
       ids,

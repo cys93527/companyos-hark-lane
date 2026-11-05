@@ -26,6 +26,7 @@ pnpm test:scripts
 node scripts/check-workspace.mjs
 
 # 启动桌面外壳（需要 Electron 运行时二进制；首次运行会下载）
+# pnpm dev = 先 pnpm run build（packages + 渲染层 + 桌面端），再启动 Electron
 pnpm dev
 ```
 
