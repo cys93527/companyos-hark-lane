@@ -16,6 +16,10 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:full": "vitest run",
+    "test:since": "vitest run --since-last-run",
+    "test:changed": "node scripts/hark/test-changed.mjs",
+    "test:shard": "vitest run --shard",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:scripts": "node --test \"scripts/tests/**/*.test.mjs\"",
@@ -44,6 +48,6 @@
     "prettier": "^3.4.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.1",
-    "vitest": "^3.2.7"
+    "vitest": "^5.1.0"
   }
 }

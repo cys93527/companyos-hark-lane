@@ -82,7 +82,7 @@ test('Git discovery cannot escape a registered empty fixture into its parent rep
   assert.equal(result.status,128); assert.match(result.stderr,/not a git repository/i);
 }));
 test('framework entry cannot select live config, external reporter or a custom setup',()=>{
-  const entry=require.resolve('vitest/vitest.mjs');
+  const entry=require('../test-offline-guard.cjs').vitestFrameworkEntries().cli;
   for (const args of [['--config','vitest.kernel.config.ts'],['--reporter=foreign.mjs'],['--setupFiles','foreign.ts'],['--config']]) {
     denied(()=>guard.check(process.execPath,[entry,'run',...args]));
   }

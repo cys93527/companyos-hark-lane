@@ -20,12 +20,23 @@ const secretName = /(?:TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|ACCESS_KE
 const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const frameworkIdentities = new Map();
 let crashConfig = null;
+// Vitest >= 4 no longer exports `vitest/vitest.mjs` and forks its own pool
+// worker (dist/workers/forks.js) instead of tinypool's entry. Resolve both
+// from the installed package root; any missing file stays fail-closed.
+function vitestPackageRoot() { return path.dirname(require.resolve('vitest/package.json')); }
+function vitestFrameworkEntries() {
+  const root = vitestPackageRoot();
+  return { cli: path.join(root, 'vitest.mjs'), forks: path.join(root, 'dist', 'workers', 'forks.js'), suppressWarnings: path.join(root, 'suppress-warnings.cjs') };
+}
+// The framework's own pool preload (Vitest >= 4 forks workers with
+// `--require <vitest>/suppress-warnings.cjs`). Pinned by identity like the entries.
+let frameworkPreload = null;
 try {
-  const vitest = require.resolve('vitest/vitest.mjs');
-  const pool = require.resolve('tinypool', {paths:[path.dirname(vitest)]});
-  for (const entry of [vitest,path.join(path.dirname(pool),'entry','process.js')]) {
+  const entries = vitestFrameworkEntries();
+  for (const entry of [entries.cli, entries.forks]) {
     const id=fixtureIdentity(entry);frameworkIdentities.set(id.path,id);
   }
+  frameworkPreload=fixtureIdentity(entries.suppressWarnings);
   crashConfig=fixtureIdentity(path.join(ROOT,'tests','sprint18','child','vitest.config.ts'));
 } catch { /* Unavailable framework stays fail-closed. */ }
 // Vite's config transform starts this fixed build service, not a business tool.
@@ -40,7 +51,7 @@ function resolveBuildService() {
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) refuse('esbuild-outside-installed-dependencies');
     return full;
   };
-  const vite = inside(require.resolve('vite', { paths: [path.dirname(require.resolve('vitest/vitest.mjs'))] }));
+  const vite = inside(require.resolve('vite', { paths: [vitestPackageRoot()] }));
   const esbuild = inside(require.resolve('esbuild', { paths: [path.dirname(vite)] }));
   const host = inside(require.resolve('esbuild/package.json', { paths: [path.dirname(esbuild)] }));
   const pkg = inside(require.resolve(`${name}/package.json`, { paths: [path.dirname(esbuild)] }));
@@ -171,6 +182,23 @@ function installOfflineGuard() {
       state.gateCommands.push({script:fixtureIdentity(command.argv[0]),argv:command.argv.slice(1),cwd:directoryIdentity(command.cwd)});
     }
     return plan;
+  }
+  // Exact shape of the framework's own worker options: an optional
+  // `--experimental-import-meta-resolve`, an optional `--require` of the pinned
+  // framework preload, then `--conditions <known>` pairs. Anything else denies.
+  function frameworkForkExecArgv(execArgv) {
+    let index = 0;
+    if (execArgv[index] === '--experimental-import-meta-resolve') index++;
+    if (execArgv[index] === '--require') {
+      const preload = execArgv[index + 1];
+      if (typeof preload !== 'string' || !frameworkPreload) return false;
+      const full = canonical(preload);
+      if (full !== frameworkPreload.path || JSON.stringify(fixtureIdentity(full)) !== JSON.stringify(frameworkPreload)) return false;
+      index += 2;
+    }
+    const rest = execArgv.slice(index);
+    return rest.length % 2 === 0
+      && rest.every((arg, i) => i % 2 === 0 ? arg === '--conditions' : ['node', 'module', 'development', 'production', 'node-addons'].includes(arg));
   }
   function frameworkScript(file) {
     const full = canonical(file), expected=frameworkIdentities.get(full);
@@ -308,8 +336,7 @@ function installOfflineGuard() {
     if (!Array.isArray(argv)) { options = argv; argv = []; }
     check(options.execPath ?? process.execPath, [file, ...argv], options, 'fork');
     const execArgv = options.execArgv ?? process.execArgv;
-    const frameworkConditions = frameworkScript(file) && execArgv.length % 2 === 0
-      && execArgv.every((arg, i) => i % 2 === 0 ? arg === '--conditions' : ['node', 'module', 'development', 'production', 'node-addons'].includes(arg));
+    const frameworkConditions = frameworkScript(file) && frameworkForkExecArgv(execArgv);
     if (execArgv.length && !frameworkConditions) refuse('unreviewed-fork-exec-options');
     return remember(nativeFork.call(this, file, argv, childOptions({ ...options, execArgv })));
   };
@@ -346,7 +373,7 @@ function installOfflineGuard() {
   Object.assign(state, { registerFixture, registerInline, registerGitWorkspace: git.register, registerReadOnlyGitRepository: git.registerReadOnlyRepository, registerSpawnFailure, registerPackageSnapshot: packages.register, registerCheckCommands, packageTraces: packages.traces, check });
   return state;
 }
-module.exports = { installOfflineGuard, safeEnvironment, protectedPath, resolveBuildService };
+module.exports = { installOfflineGuard, safeEnvironment, protectedPath, resolveBuildService, vitestFrameworkEntries };
 if (process.env.COMPANYOS_TEST_MODE === 'OFFLINE') {
   const fixtureChild = Boolean(process.env.COMPANYOS_OFFLINE_FIXTURE_LEDGER);
   installOfflineGuard();

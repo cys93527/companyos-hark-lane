@@ -35,7 +35,7 @@ function model(platform='linux',arch='x64',givenRoot=null) {
   const name=platform==='win32'?'@esbuild/win32-x64':`@esbuild/linux-${arch}`;
   const pkg=file(p.join(dep,'.pnpm','platform','package.json'),JSON.stringify({name,version:'0.25.12'}));
   const binary=file(p.join(p.dirname(pkg),platform==='win32'?'esbuild.exe':'bin/esbuild'));
-  const resolution={'vitest/vitest.mjs':file(p.join(dep,'vitest','vitest.mjs')),vite,esbuild,'esbuild/package.json':host,[`${name}/package.json`]:pkg};
+  const resolution={'vitest/package.json':file(p.join(dep,'vitest','package.json'),JSON.stringify({name:'vitest'})),vite,esbuild,'esbuild/package.json':host,[`${name}/package.json`]:pkg};
   const proc={platform,arch,pid:123,getuid:()=>1000,env:{PATH:p.dirname(git),CI:'true'},cwd:()=>root,execPath:node,execArgv:[]};
   const cache=new Map();let nativeCalls=0;
   const cp=Object.fromEntries(['spawn','spawnSync','execFile','execFileSync','exec','execSync','fork'].map(key=>[key,()=>{nativeCalls++;throw new Error('MOCK native launch forbidden');}]));

@@ -3,6 +3,35 @@ import { defineConfig } from 'vitest/config';
 
 const r = (p: string): string => fileURLToPath(new URL(p, import.meta.url));
 
+// Task-18-08: the real-process crash child runs ONLY under its own spawned config.
+// STAGE 4: embedded-kernel suites spawn the REAL external agent runtime; they run
+// as their own named gate (pnpm test:kernel) instead of contending in the parallel suite.
+// Native Windows association/WSH cases keep their assertions in a separate
+// gate. They are NOT RUN, never counted as offline passes.
+// H14: live external-provider suites run only under vitest.provider-live.config.ts
+// (S26 taxonomy: never part of the deterministic suite).
+const exclude = ['**/node_modules/**', '**/dist/**', 'tests/sprint18/child/**', 'tests/kernel/**', 'tests/windows-shell/**', 'tests/sandbox-lab/**', 'tests/security-process-boundary.test.ts', 'tests/provider/**/*-live.test.ts'];
+
+/**
+ * TEST-SPEED (docs/hark-lane/TEST_SPEED.md): the suite is split into two projects that
+ * together select EXACTLY the files of the former single include list.
+ *  - `packages` — the pure-Node libraries under packages/*: no module mocks, no stubbed
+ *    globals/env, no fake timers. They pass with isolate:false (verified in shuffled
+ *    file order), so one worker reuses its module graph across files.
+ *  - `isolated` — everything else (desktop, renderer, packs, docs, tests/**). These keep
+ *    per-file isolation: they compose real stores, spawn guarded children and mutate
+ *    process state.
+ * The full suite (`pnpm test` / `npx vitest run`) still runs both projects; nothing is skipped.
+ */
+const packagesInclude = ['packages/*/tests/**/*.test.ts'];
+const isolatedInclude = [
+  'packs/*/tests/**/*.test.ts',
+  'apps/*/tests/**/*.test.ts',
+  'docs/tests/**/*.test.ts',
+  // Integration tests that span packages (engine over the durable persistence layer).
+  'tests/**/*.test.ts',
+];
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -34,23 +63,10 @@ export default defineConfig({
     // thread's event loop under heavy disk I/O. Limiting to 4 workers keeps the
     // RPC responsive while maintaining parallelism.
     maxWorkers: 4,
-    minWorkers: 1,
-    include: [
-      'packages/*/tests/**/*.test.ts',
-      'packs/*/tests/**/*.test.ts',
-      'apps/*/tests/**/*.test.ts',
-      'docs/tests/**/*.test.ts',
-      // Integration tests that span packages (engine over the durable persistence layer).
-      'tests/**/*.test.ts',
+    projects: [
+      { test: { name: 'packages', include: packagesInclude, exclude, isolate: false } },
+      { test: { name: 'isolated', include: isolatedInclude, exclude } },
     ],
-    // Task-18-08: the real-process crash child runs ONLY under its own spawned config.
-    // STAGE 4: embedded-kernel suites spawn the REAL external agent runtime; they run
-    // as their own named gate (pnpm test:kernel) instead of contending in the parallel suite.
-    // Native Windows association/WSH cases keep their assertions in a separate
-    // gate. They are NOT RUN, never counted as offline passes.
-    // H14: live external-provider suites run only under vitest.provider-live.config.ts
-    // (S26 taxonomy: never part of the deterministic suite).
-    exclude: ['**/node_modules/**', '**/dist/**', 'tests/sprint18/child/**', 'tests/kernel/**', 'tests/windows-shell/**', 'tests/sandbox-lab/**', 'tests/security-process-boundary.test.ts', 'tests/provider/**/*-live.test.ts'],
     environment: 'node',
     reporters: ['default'],
     coverage: {

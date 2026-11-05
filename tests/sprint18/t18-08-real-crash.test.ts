@@ -58,7 +58,7 @@ const killChildAt = (
   const config = join('tests', 'sprint18', 'child', 'vitest.config.ts');
   const done = spawnSync(
     process.execPath,
-    [vitestBin, 'run', '--config', config, '--reporter=basic'],
+    [vitestBin, 'run', '--config', config, '--reporter=default'],
     {
       cwd: process.cwd(),
       encoding: 'utf8',
@@ -90,7 +90,10 @@ const killChildAt = (
       combined.includes('T18_08_CHILD_KILLED_AT') &&
       done.status !== 0 &&
       !combined.includes('Test Files  1 passed') &&
+      // Vitest <= 3 (tinypool) reported the dead worker channel; Vitest >= 4 names the
+      // signal that killed the fork worker.
       (combined.includes('ERR_IPC_CHANNEL_CLOSED') ||
+        combined.includes('Worker exited unexpectedly with signal SIGKILL') ||
         combined.includes('process exited') ||
         combined.includes('serialized') ||
         combined.includes('Serialized Error') ||

@@ -8,9 +8,9 @@ import { prepareOfflineResources } from './prepare-offline-resources.mjs';
 // Supply only pinned, read-only test bytes before the Guard pins Kernel identity.
 prepareOfflineResources();
 const require = createRequire(import.meta.url);
-const { safeEnvironment } = require('./test-offline-guard.cjs');
+const { safeEnvironment, vitestFrameworkEntries } = require('./test-offline-guard.cjs');
 const root = fileURLToPath(new URL('../', import.meta.url));
-const cli = require.resolve('vitest/vitest.mjs');
+const cli = vitestFrameworkEntries().cli;
 const args = process.argv.slice(2);
 // Default quality gate cannot select a live or an alternate unguarded config.
 if (args.some((arg) => /^(?:--config(?:=|$)|-c$|--project(?:=|$)|--workspace(?:=|$)|--root(?:=|$)|--dir(?:=|$))/.test(arg))) {
