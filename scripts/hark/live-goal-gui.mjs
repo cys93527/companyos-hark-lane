@@ -169,10 +169,11 @@ try {
   await shot('00-startup');
   desktopShot('startup');
   if (!ui?.composer) throw Object.assign(new Error('composer never appeared'), { result: 'UI_NO_COMPOSER' });
-  if (ui.composerBlocked) out.ui.failures.push({ at: 'startup', composerBlocked: ui.composerBlocked });
+  // A blocked composer before a model is chosen is the expected first-run state, not a failure.
+  out.ui.startupComposerBlocked = ui.composerBlocked || null;
 
   // Model: choose the configured provider model in the composer's model popover when none is selected.
-  if (!/deepseek/iu.test(ui.model)) {
+  if (!/deepseek/iu.test(`${ui.model} ${ui.composerBlocked ? '' : 'selected'}`) || ui.composerBlocked) {
     const opened = await evaluate(`(() => { const b = document.querySelector('.composer__model-slot') || document.querySelector('.composer__model-button'); if (!b) return false; b.click(); return true; })()`);
     await sleep(1500);
     await shot('01-model-popover');
@@ -182,7 +183,8 @@ try {
     await sleep(4000);
   }
   ui = await evaluate(UI_STATE);
-  out.ui.modelAfterChoice = ui.model;
+  out.ui.modelAfterChoice = await evaluate(`(document.querySelector('.composer__model-slot') || {}).innerText || ''`).catch(() => '');
+  if (ui.composerBlocked) out.ui.failures.push({ at: 'after-model-choice', composerBlocked: ui.composerBlocked });
   // Access policy: the default '询问权限' (normal autonomy, high-risk stops at an approval).
   const chip = await clickText('[data-testid=composer]', '(访问权限|询问权限|只读|工作区操作) ▾');
   await sleep(800);
@@ -195,7 +197,8 @@ try {
   await cdp('Input.insertText', { text: GOAL });
   await sleep(1000);
   await shot('02-goal-typed');
-  const sent = await clickText('[data-testid=composer]', '^发送$');
+  // The send button reads '发送' + its shortcut badge ('Ctrl ↵').
+  const sent = await clickText('[data-testid=composer]', '^(发送|提交中)');
   out.ui.steps.push({ step: 'send', sent });
   if (!sent) throw Object.assign(new Error('send button not clickable'), { result: 'UI_SEND_DISABLED' });
 

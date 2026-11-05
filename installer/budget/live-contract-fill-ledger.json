@@ -3,7 +3,16 @@
   "currency": "CNY",
   "perRunCapMicros": 8000000,
   "capMicros": null,
-  "runs": [],
+  "runs": [
+    {
+      "run": "hark-live-goal 42070005684",
+      "status": "SETTLED",
+      "reservedMicros": 8000000,
+      "settledMicros": 0,
+      "calls": 0
+    }
+  ],
   "entries": [],
-  "totalMicros": 0
+  "totalMicros": 0,
+  "openReservationsMicros": 0
 }
