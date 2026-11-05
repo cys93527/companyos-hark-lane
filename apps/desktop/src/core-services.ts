@@ -93,6 +93,7 @@ import {
 } from '@companyos/engine';
 import { createGoalUsageService } from './efficiency/goal-usage-projection.js';
 import { createDurableUsageReader } from './efficiency/durable-usage-reader.js';
+import { createLatestAttemptFailureReader } from './goal-attempt-failure.js';
 import { createControlPlaneService, GOAL_WORK_KIND } from './control-plane.js';
 import {deriveRetryContinuationEnvelope} from './executor/attempt-supervision.js';
 import { resolveExecutionAttemptTimeoutMs } from './production-composition.js';
@@ -1733,9 +1734,16 @@ export async function composeCoreServices(
                   failure_retryable: number | null; created_at: string; settled_at: string | null;
                 }[];
                 const previous = prior.length === 0 ? null : prior[prior.length - 1]!;
-                const events = previous === null ? [] : (database.db
-                  .prepare("SELECT type, occurred_at, payload FROM events WHERE aggregate_id = ? AND type IN ('executor.tool_invocation_requested', 'executor.attempt_activity') ORDER BY rowid LIMIT 200")
-                  .all(previous.id) as {type: string; occurred_at: string; payload: string}[]);
+                const events = previous === null ? [] : [
+                  ...(database.db
+                    .prepare("SELECT type, occurred_at, payload FROM events WHERE aggregate_id = ? AND type IN ('executor.tool_invocation_requested', 'executor.attempt_activity') ORDER BY rowid LIMIT 200")
+                    .all(previous.id) as {type: string; occurred_at: string; payload: string}[]),
+                  // LIVE-CONTRACT-FILL: the settled audit row carries the provider's typed
+                  // failure detail (read separately so the 200-row activity bound never hides it).
+                  ...(database.db
+                    .prepare("SELECT type, occurred_at, payload FROM events WHERE aggregate_id = ? AND type = 'executor.dispatch_settled' ORDER BY rowid DESC LIMIT 1")
+                    .all(previous.id) as {type: string; occurred_at: string; payload: string}[]),
+                ];
                 return deriveRetryContinuationEnvelope({
                   taskId,
                   attemptNumber,
@@ -4084,6 +4092,7 @@ export async function composeCoreServices(
             readFence: (operation, work) => database.db.writeFence.immediate(operation, work),
             ...(executionSafety === null ? {} : { initializeGoalBudget: executionSafety.initialize }),
             ...(executionSafety === null ? {} : { isGoalCancelled: executionSafety.budget.isCancelled }),
+            latestAttemptFailure: createLatestAttemptFailureReader(database.db),
             ...(options.planPreviewWithoutExecutor === true ? { executionAvailable: () => {
               const key = options.providerRoutes?.[GOAL_WORK_KIND] ?? '';
               return key !== '' && executorProvidersHolder !== null && executorProvidersHolder.resolve(key) !== null;

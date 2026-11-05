@@ -18,6 +18,7 @@
  * the canonical loaders). The pure loaders are exported too, so tests can assert the
  * canonical reads directly.
  */
+import { attemptFailureLabel, blockerText, runFailureReasonLabel, type CanonicalAttemptFailure } from './failure-labels.js';
 import { safeRequest } from './bridge.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isRunEnded, runStateModifier, terminalOutcomeOf, type RunEndInput } from './run-outcome.js';
@@ -108,6 +109,8 @@ export interface WorkspaceView {
   readonly overview: unknown;
   readonly blockers: readonly unknown[];
   readonly executionRuns: readonly { readonly runId: string; readonly state: string }[];
+  /** LIVE-CONTRACT-FILL: the typed reason behind a failed goal (latest failed attempt). */
+  readonly attemptFailure?: CanonicalAttemptFailure | null;
 }
 
 export interface AttemptSummaryView {
@@ -443,6 +446,7 @@ export function GoalWorkspaceView({
   advancing,
   onBack,
   cancellationRequested,
+  attemptFailure,
 }: {
   readonly goalObjective: string | null;
   readonly planningRunState: string;
@@ -455,6 +459,7 @@ export function GoalWorkspaceView({
   readonly advancing?: boolean;
   readonly onBack?: () => void;
   readonly cancellationRequested?: boolean;
+  readonly attemptFailure?: CanonicalAttemptFailure | null;
 }) {
   const overviewRecord = asRecord(overview);
   const runState = String(overviewRecord?.['state'] ?? planningRunState ?? '');
@@ -489,7 +494,9 @@ export function GoalWorkspaceView({
         {outcome !== 'CANCELLED' && overviewView?.failureReason !== undefined && overviewView.failureReason !== null ? (
           <>
             <dt>失败原因</dt>
-            <dd className="typed-error__message">{overviewView.failureReason}</dd>
+            <dd className="typed-error__message" title={overviewView.failureReason}>
+              {attemptFailureLabel(attemptFailure) ?? runFailureReasonLabel(overviewView.failureReason)}
+            </dd>
           </>
         ) : null}
       </dl>
@@ -497,7 +504,7 @@ export function GoalWorkspaceView({
       <h3>任务进度</h3>
       <p className="muted">
         {progress !== undefined
-          ? `任务 ${String(progress.tasksDone ?? 0)}/${String(progress.tasksTotal ?? 0)} 完成 · 阶段 ${String(progress.stagesTerminalSuccessful ?? 0)}/${String(progress.stagesTotal ?? 0)} 终态成功`
+          ? `任务 ${String(progress.tasksDone ?? 0)}/${String(progress.tasksTotal ?? 0)} 完成 · 阶段 ${String(progress.stagesTerminalSuccessful ?? 0)}/${String(progress.stagesTotal ?? 0)} 完成`
           : '任务信息尚不可用。'}
         {attempts !== undefined
           ? ` · 尝试：完成 ${String(attempts.completed ?? 0)} · 失败 ${String(attempts.failed ?? 0)} · 活跃 ${String(attempts.active ?? 0)}`
@@ -560,7 +567,7 @@ export function GoalWorkspaceView({
       )}
 
       <h3>阻塞与待决策</h3>
-      <BlockerList blockers={blockers} />
+      <BlockerList blockers={blockers} attemptFailure={attemptFailure ?? null} failureReason={overviewView?.failureReason ?? null} />
     </section>
   );
 }
@@ -653,6 +660,7 @@ export function GoalWorkspace({ bridge, runId, onBack }: { readonly bridge: Cont
       planningRunId={workspace.runId}
       overview={workspace.overview}
       blockers={workspace.blockers}
+      attemptFailure={workspace.attemptFailure ?? null}
       executionRuns={workspace.executionRuns}
       deliverableArtifacts={deliverableArtifacts}
       onAdvance={advance}
@@ -744,7 +752,7 @@ export function RunView({
         <div className="run-view__detail">
           <ControlPlaneErrorView failure={failure} />
           {overview?.failureReason !== undefined && overview.failureReason !== null ? (
-            <p className="typed-error__message">{overview.failureReason}</p>
+            <p className="typed-error__message" title={overview.failureReason}>{runFailureReasonLabel(overview.failureReason)}</p>
           ) : null}
           <h4>阻塞</h4>
           <BlockerList blockers={blockers} />
@@ -760,6 +768,7 @@ interface BlockerShape {
   readonly code?: string;
   readonly reason?: string;
   readonly message?: string;
+  readonly explanation?: string;
   readonly runId?: string;
 }
 
@@ -769,7 +778,15 @@ interface BlockerShape {
  * even when a newer clean report exists (the D1 law is in the projection; the UI
  * only renders it).
  */
-export function BlockerList({ blockers }: { readonly blockers: readonly unknown[] }) {
+export function BlockerList({
+  blockers,
+  attemptFailure = null,
+  failureReason = null,
+}: {
+  readonly blockers: readonly unknown[];
+  readonly attemptFailure?: CanonicalAttemptFailure | null;
+  readonly failureReason?: string | null;
+}) {
   if (blockers.length === 0) {
     return <p className="muted">无阻塞。</p>;
   }
@@ -779,8 +796,10 @@ export function BlockerList({ blockers }: { readonly blockers: readonly unknown[
         const shape = (typeof blocker === 'object' && blocker !== null ? blocker : {}) as BlockerShape;
         return (
           <li key={`${String(shape.code ?? 'blocker')}-${String(index)}`} className="blocker-list__item">
-            <span className="blocker-list__code">{shape.code ?? shape.reason ?? 'BLOCKED'}</span>
-            <span className="blocker-list__message">{shape.message ?? ''}</span>
+            {/* LIVE-CONTRACT-FILL: Chinese label first; the canonical code + English evidence stay in the tooltip. */}
+            <span className="blocker-list__code" title={`${String(shape.code ?? shape.reason ?? 'BLOCKED')} · ${shape.explanation ?? shape.message ?? ''}`}>
+              {blockerText({ code: String(shape.code ?? shape.reason ?? 'BLOCKED') }, attemptFailure, failureReason)}
+            </span>
           </li>
         );
       })}

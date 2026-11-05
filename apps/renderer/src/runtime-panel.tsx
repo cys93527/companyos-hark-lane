@@ -9,6 +9,7 @@
  * Tabs: 运行 (lifecycle) · 文件 (canonical artifacts) · 产出 (deliverables + validation +
  * handoffs) · 详情 (run/goal facts). Default: collapsed — the centre stays conversation-first.
  */
+import { blockerText, type CanonicalAttemptFailure } from './failure-labels.js';
 import { createElement as h, type JSX } from 'react';
 import { budgetRows, formatMoney, type GoalBudgetRead } from './budget.js';
 import { terminalOutcomeOf } from './run-outcome.js';
@@ -97,6 +98,8 @@ export interface CanonicalGoalWorkspace {
   readonly overview: CanonicalOverview | null;
   readonly blockers: readonly CanonicalBlocker[];
   readonly executionRuns: readonly { readonly runId: string; readonly state: string }[];
+  /** LIVE-CONTRACT-FILL: the latest failed attempt with the provider's typed reason. */
+  readonly attemptFailure?: CanonicalAttemptFailure | null;
 }
 
 export interface CanonicalTaskObservation {
@@ -194,6 +197,8 @@ export interface RuntimeLifecycleView {
   readonly correctiveRounds: number;
   readonly handoffCount: number;
   readonly outcomeDelivered: boolean;
+  /** LIVE-CONTRACT-FILL: the canonical run failureReason (Chinese-labelled in the blocker strip). */
+  readonly failureReason?: string | null;
 }
 
 export const projectRuntimeLifecycle = (
@@ -239,6 +244,7 @@ export const projectRuntimeLifecycle = (
       ...(overview?.terminalOutcome === undefined ? {} : { terminalOutcome: overview.terminalOutcome }),
     }),
     runState: overview?.state ?? 'UNKNOWN',
+    failureReason: overview?.failureReason ?? null,
     objective: workspace.goal?.objective ?? null,
     planningState: workspace.planningRun?.state ?? null,
     tasks,
@@ -281,6 +287,8 @@ export interface RuntimePanelViewProps {
   readonly taskDetail: CanonicalTaskObservation | null;
   /** STAGE 3: canonical blockers + the pending approval behind them. */
   readonly blockers?: readonly CanonicalBlocker[];
+  /** LIVE-CONTRACT-FILL: the typed reason behind a failed goal (goal.workspace attemptFailure). */
+  readonly attemptFailure?: CanonicalAttemptFailure | null;
   readonly pendingApproval?: { readonly riskLevel: string; readonly reason: string; readonly runId: string } | null;
   /** H11: canonical budget/spend projection + the previewed plan (read-only). */
   readonly budget?: GoalBudgetRead | null;
@@ -413,7 +421,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
             PHASE_LABELS[lifecycle.phase],
             props.stageProgress == null || props.stageProgress.total === 0
               ? null
-              : h('small', { className: 'num' }, `阶段 ${String(props.stageProgress.done)}/${String(props.stageProgress.total)} 终态成功`),
+              : h('small', { className: 'num' }, `阶段 ${String(props.stageProgress.done)}/${String(props.stageProgress.total)} 完成`),
           ),
           h('p', { className: 'rt-canonical num' }, `目标 · ${lifecycle.runState} · 规划 · ${lifecycle.planningState ?? '--'}`),
         ),
@@ -429,7 +437,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                 { className: 'blocker blocker--approval runtime-blockers__approval', role: 'status', title: pending.reason },
                 h('b', null, '需要批准'),
                 // One strip for the approval: the APPROVAL_REQUIRED blocker is the same fact.
-                h('span', { className: 'blocker__text' }, `${blockers.some((blocker) => blocker.code === 'APPROVAL_REQUIRED') ? 'APPROVAL_REQUIRED · ' : ''}${pending.reason === '' ? '（未提供原因）' : pending.reason}`),
+                h('span', { className: 'blocker__text', title: blockers.some((blocker) => blocker.code === 'APPROVAL_REQUIRED') ? 'APPROVAL_REQUIRED' : undefined }, `${blockers.some((blocker) => blocker.code === 'APPROVAL_REQUIRED') ? '等待批准 · ' : ''}${pending.reason === '' ? '（未提供原因）' : pending.reason}`),
                 h('span', { className: 'blocker__risk', title: `风险等级 ${pending.riskLevel}` }, `风险 ${riskWord(pending.riskLevel)}`),
               ),
           blockers
@@ -439,7 +447,8 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                 'p',
                 { key: `b${String(index)}`, className: blocker.code === 'APPROVAL_REQUIRED' ? 'blocker runtime-blockers__item' : 'blocker blocker--plain runtime-blockers__item' },
                 h('b', null, '阻塞'),
-                h('span', { className: 'blocker__text' }, `${blocker.code} · ${blocker.explanation}`),
+                // LIVE-CONTRACT-FILL: Chinese label + the real typed reason; code + English evidence in the tooltip.
+                h('span', { className: 'blocker__text', title: `${blocker.code} · ${blocker.explanation}` }, blockerText(blocker, props.attemptFailure ?? null, lifecycle?.failureReason ?? null)),
               ),
             ),
         ),

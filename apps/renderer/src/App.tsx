@@ -36,6 +36,7 @@ import {
   loadModelCatalogue,
   loadRegisteredModels,
   projectModelSelection,
+  soleModelOption,
   toModelOptionRows,
   ModelOnboardingView,
   type ModelOptionRow,
@@ -335,6 +336,16 @@ export function App() {
     },
     [workflow, refreshModels],
   );
+
+  // LIVE-CONTRACT-FILL UI defect c: exactly one configured model and no company selection ->
+  // select it through the canonical path (once per app session; a failure stays visible).
+  const soleModelTried = useRef(false);
+  useEffect(() => {
+    const sole = soleModelOption(modelOptions, modelStatus);
+    if (sole === null || soleModelTried.current || modelBusy) return;
+    soleModelTried.current = true;
+    void chooseModel(sole);
+  }, [modelOptions, modelStatus, modelBusy, chooseModel]);
 
   /* ----------------------------------------------- canonical workspace change --- */
   // BUG BASH closure: the ONE shared change-workspace flow (Settings + composer chip).
@@ -1472,6 +1483,7 @@ export function App() {
       stageProgress,
       // STAGE 3 — canonical blockers + the pending approval behind them.
       blockers: runtimeWorkspace?.blockers ?? [],
+      attemptFailure: runtimeWorkspace?.attemptFailure ?? null,
       pendingApproval:
         pendingApprovalDecision === null
           ? null

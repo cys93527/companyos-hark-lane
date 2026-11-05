@@ -134,6 +134,12 @@ export interface ControlPlaneDeps {
   readonly initializeGoalBudget?: (goalRunId: string) => Promise<void>;
   readonly isGoalCancelled?: (runId: string) => Promise<boolean>;
   /**
+   * LIVE-CONTRACT-FILL: the latest FAILED execution attempt across the given runs, with the
+   * provider's typed reason (the reasonCode of its durable executor.dispatch_settled row).
+   * The goal workspace shows it so a failed goal says WHY, not just "execution_failed".
+   */
+  readonly latestAttemptFailure?: (runIds: readonly string[]) => Promise<GoalAttemptFailure | null>;
+  /**
    * H10b PLAN-PREVIEW GATE: whether the deployment can EXECUTE work items (the work-kind
    * executor is registered). When it returns false the planning turn still runs (bounded by
    * the trusted budget admission) and the plan artifact is kept for the boss to read, but
@@ -1338,6 +1344,18 @@ const homeSummary = async (
   return ok({ companyId: deps.companyId, goals });
 };
 
+/** LIVE-CONTRACT-FILL: the typed reason behind a failed goal (canonical code + provider detail). */
+export interface GoalAttemptFailure {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  /** The canonical, engine-normalized attempt failure code (e.g. PROVIDER_FAILED). */
+  readonly failureCode: string | null;
+  /** The provider's typed reason (e.g. EXECUTOR_KERNEL_OUTPUT_CEILING), when it gave one. */
+  readonly detailCode: string | null;
+  readonly settledAt: string | null;
+}
+
 const goalWorkspace = async (
   deps: ControlPlaneDeps,
   payload: Readonly<Record<string, unknown>>,
@@ -1402,6 +1420,10 @@ const goalWorkspace = async (
     overview: overview.value,
     blockers: blockers.value,
     executionRuns,
+    attemptFailure:
+      deps.latestAttemptFailure === undefined
+        ? null
+        : await deps.latestAttemptFailure([runId.value, ...executionRuns.map((run) => run.runId)]),
   });
 };
 

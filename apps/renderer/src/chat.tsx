@@ -9,6 +9,7 @@
  * Activity is never progress. A FAILED Goal stays FAILED and is never relabelled
  * "completed with warning".
  */
+import { attemptFailureLabel, runFailureReasonLabel } from './failure-labels.js';
 import { createElement as h, type JSX, type ReactNode } from 'react';
 
 import { projectRuntimePhase, type RuntimePhase, type CanonicalTimelineEntry, type CanonicalGoalWorkspace } from './runtime-panel.js';
@@ -24,7 +25,7 @@ export type ChatEntry =
   | { readonly kind: 'validation'; readonly completed: number; readonly failed: boolean; readonly missing: number }
   | { readonly kind: 'artifacts'; readonly artifacts: readonly { readonly artifactId: string; readonly kind: string }[] }
   | { readonly kind: 'outcome'; readonly delivered: boolean }
-  | { readonly kind: 'failed'; readonly reason: string | null; readonly blockerCodes: readonly string[] }
+  | { readonly kind: 'failed'; readonly reason: string | null; readonly blockerCodes: readonly string[]; readonly detail?: string | null }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'cancel-requested' };
 
@@ -58,6 +59,7 @@ export const projectConversation = (
       kind: 'failed',
       reason: workspace.overview?.failureReason ?? null,
       blockerCodes: workspace.blockers.map((blocker) => blocker.code),
+      detail: attemptFailureLabel(workspace.attemptFailure ?? null),
     });
   }
 
@@ -246,7 +248,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
       case 'failed':
         row(`x${String(index)}`, null, h('span', { className: 'chat__row chat__row--failed', role: 'alert' },
           h('span', { className: 'chat__fail-glyph', 'aria-hidden': true }),
-          `目标失败 · ${entry.reason ?? '未给出原因'}${entry.blockerCodes.length === 0 ? '' : ` · ${entry.blockerCodes.join('、')}`}`));
+          `目标失败 · ${entry.detail ?? runFailureReasonLabel(entry.reason) ?? '未给出原因'}`));
         return;
       default:
         return;

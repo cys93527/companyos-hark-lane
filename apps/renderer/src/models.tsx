@@ -113,6 +113,18 @@ export const projectModelSelection = (
   };
 };
 
+/**
+ * LIVE-CONTRACT-FILL (hark-live-goal 42075419348, UI defect c): with exactly ONE model
+ * configured the composer still said "先选择公司模型…" and refused to send — a choice with
+ * one option is not a choice. That sole option is selected automatically (through the same
+ * canonical company-selection path as a click). With several options the boss still chooses
+ * explicitly, and an existing company selection is never replaced.
+ */
+export const soleModelOption = (
+  options: readonly ModelOptionRow[],
+  status: ModelSelectionStatus,
+): ModelOptionRow | null => (status.kind === 'no-selection' && options.length === 1 ? options[0]! : null);
+
 export interface SelectionExplanation {
   readonly accepted: boolean;
   readonly precedence: string | null;

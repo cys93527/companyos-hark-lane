@@ -731,6 +731,14 @@ ${renderRetryDirective(retryEnvelope)}`;
       if (outcome.kind === 'provider-failed') {
         settledPayload['exitCode'] = outcome.exitCode;
         settledPayload['stderrHead'] = redactSecrets(outcome.stderrText.slice(0, 500), secrets);
+        // LIVE-CONTRACT-FILL (42075419348): a kernel that exits 1 with an empty stderr
+        // explained itself only on stdout (its turn_end reason). The typed reason and a
+        // bounded, redacted stdout tail are the evidence an operator needs - the canonical
+        // attempt code stays engine-normalized; this is detail.
+        if (outcome.reasonCode !== undefined) settledPayload['reasonCode'] = outcome.reasonCode;
+        const tail = outcome.stdoutText ?? '';
+        settledPayload['stdoutTail'] = redactSecrets(tail.slice(-2000), secrets);
+        settledPayload['stdoutTailLength'] = tail.length;
       }
       if (outcome.kind === 'transport-failed') {
         settledPayload['reasonCode'] = outcome.reasonCode;

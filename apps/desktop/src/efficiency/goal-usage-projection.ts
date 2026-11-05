@@ -54,6 +54,13 @@ export interface UsageReader {
   providerDispatches(runIds: readonly string[]): Promise<
     readonly { readonly attemptId: string; readonly providerKey: string | null }[]
   >;
+  /**
+   * Broker-observed usage of each dispatch attempt (the kernel's model calls), keyed by
+   * attempt id. Optional: a reader without it leaves every dispatch UNKNOWN.
+   */
+  brokeredUsage?(attemptIds: readonly string[]): Promise<
+    ReadonlyMap<string, { readonly inputTokens: number; readonly outputTokens: number; readonly complete: boolean; readonly exchanges: number }>
+  >;
   /** Measured provider invocations (output tokens over the invocation wall time). */
   providerInvocations(runIds: readonly string[]): Promise<
     readonly { readonly outputTokens: number; readonly latencyMs: number }[]
@@ -101,10 +108,13 @@ const seatOf = (agentId: string, roleId: string | null): string => {
 };
 
 /** Build the ledger entries the E1 summariser needs (pure over the reader). */
+type BrokeredUsage = ReadonlyMap<string, { readonly inputTokens: number; readonly outputTokens: number; readonly complete: boolean; readonly exchanges: number }>;
+
 const ledgerOf = (
   executions: Awaited<ReturnType<UsageReader['agentExecutions']>>,
   dispatches: Awaited<ReturnType<UsageReader['providerDispatches']>>,
   goalRunId: string,
+  brokered: BrokeredUsage = new Map(),
 ): UsageLedgerEntry[] => {
   const entries: UsageLedgerEntry[] = [];
   const usageBearingAttempts = new Set<string>();
@@ -135,6 +145,17 @@ const ledgerOf = (
   }
   for (const dispatch of dispatches) {
     if (usageBearingAttempts.has(dispatch.attemptId)) continue;
+    const observed = brokered.get(dispatch.attemptId);
+    if (observed !== undefined && observed.complete && observed.exchanges > 0) {
+      const record = { provenance: 'provider-reported' as const, inputTokens: observed.inputTokens, outputTokens: observed.outputTokens, totalTokens: observed.inputTokens + observed.outputTokens };
+      entries.push({
+        goalRunId, runId: null, taskId: null, roleId: null, attemptId: dispatch.attemptId, seat: 'work',
+        providerId: dispatch.providerKey, modelId: null,
+        state: classifyUsageRecord(record) === 'UNKNOWN' ? 'UNKNOWN' : 'KNOWN',
+        record,
+      });
+      continue;
+    }
     entries.push({
       goalRunId,
       runId: null,
@@ -198,7 +219,8 @@ const readGoalUsage = async (
   const modelKey = await reader.modelKeyOf(goalRunId);
   const pricing = await reader.modelPricing(modelKey);
 
-  const summary: GoalUsageSummary = summarizeGoalUsage(goalRunId, ledgerOf(executions, dispatches, goalRunId));
+  const brokered = reader.brokeredUsage === undefined ? new Map() : await reader.brokeredUsage(dispatches.map((dispatch) => dispatch.attemptId));
+  const summary: GoalUsageSummary = summarizeGoalUsage(goalRunId, ledgerOf(executions, dispatches, goalRunId, brokered));
 
   // Measured speed: output tokens over the SINGLE provider invocation wall time. Attempt
   // duration, tool time and Goal wall time are deliberately NOT used.

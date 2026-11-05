@@ -76,7 +76,7 @@ export interface AttemptOutcomeInput {
  */
 export const classifyAttemptOutcome = (input: AttemptOutcomeInput): AttemptSupervisionClassification => {
   const kind = String(input.outcomeKind ?? input.failureCode ?? '').toLowerCase();
-  if (kind === 'provider-failed') return 'PROVIDER_FAILURE_CONFIRMED';
+  if (kind === 'provider-failed' || kind === 'provider_failed') return 'PROVIDER_FAILURE_CONFIRMED';
   if (kind === 'timeout') return 'TIMEOUT_CAP_REACHED';
   if (kind === 'transport-failed' || kind === 'executor_crash' || kind === 'execution_failed') return 'EXECUTOR_FAILURE_CONFIRMED';
   if (input.processExitConfirmed === true && kind === '') return 'PROCESS_EXIT_CONFIRMED';
@@ -136,6 +136,12 @@ export interface RetryContinuationEnvelope {
   readonly previousFailureRetryable: boolean | null;
   readonly previousAttemptDurationS: number | null;
   readonly previousSettlementOutcome: string | null;
+  /**
+   * LIVE-CONTRACT-FILL — the provider's typed reason for the previous failure (detail
+   * from its durable executor.dispatch_settled audit row, e.g. EXECUTOR_KERNEL_OUTPUT_CEILING);
+   * present only when that row carried one. The canonical failure code stays above.
+   */
+  readonly previousFailureDetail?: string;
   readonly workspaceReuse: true;
   readonly priorActivity: RetryPriorActivitySummary;
 }
@@ -184,6 +190,12 @@ export const deriveRetryContinuationEnvelope = (input: RetryDerivationInput): Re
     (a, b) => (Date.parse(a.occurredAt) - Date.parse(b.occurredAt)) || (a.occurredAt < b.occurredAt ? -1 : 1),
   );
   const toolEvents = events.filter((event) => event.type === 'executor.tool_invocation_requested');
+  let previousFailureDetail: string | undefined;
+  for (const event of events) {
+    if (event.type !== 'executor.dispatch_settled' || typeof event.payload !== 'object' || event.payload === null) continue;
+    const code = (event.payload as { reasonCode?: unknown }).reasonCode;
+    if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/u.test(code)) previousFailureDetail = code;
+  }
   const activityEvents = events.filter((event) => event.type === 'executor.attempt_activity');
   const lastObservedAt = events.length === 0 ? null : events[events.length - 1]!.occurredAt;
   const lastToolKinds: string[] = [];
@@ -204,6 +216,7 @@ export const deriveRetryContinuationEnvelope = (input: RetryDerivationInput): Re
       ? null
       : Math.max(0, Math.round((Date.parse(previous.settledAt) - Date.parse(previous.createdAt)) / 100) / 10),
     previousSettlementOutcome: previous.state,
+    ...(previousFailureDetail === undefined ? {} : { previousFailureDetail }),
     workspaceReuse: true,
     priorActivity: {
       toolCallCount: toolEvents.length,
@@ -223,6 +236,7 @@ export const renderRetryDirective = (envelope: RetryContinuationEnvelope): strin
     `RETRY CONTEXT (attempt ${String(envelope.retryOrdinal + 1)} of this task; derived, non-authoritative):`,
     `the previous attempt (${String(envelope.previousAttemptId.slice(0, 18))}…) settled ${String(envelope.previousSettlementOutcome)}` +
       `${envelope.previousFailureCode === null ? '' : ` with failure ${envelope.previousFailureCode}`}` +
+      `${envelope.previousFailureDetail === undefined ? '' : ` (${envelope.previousFailureDetail})`}` +
       `${envelope.previousAttemptDurationS === null ? '' : ` after ${String(envelope.previousAttemptDurationS)}s`}` +
       `. Prior observed activity: ${String(envelope.priorActivity.toolCallCount)} tool calls` +
       `${envelope.priorActivity.lastToolKinds.length === 0 ? '' : ` (${envelope.priorActivity.lastToolKinds.join(', ')})`}` +
@@ -232,4 +246,10 @@ export const renderRetryDirective = (envelope: RetryContinuationEnvelope): strin
     `Do not assume that partial work is correct, and do not trust the previous attempt's conclusions, PASS claims, validation claims, or partial output — a failed attempt's output is not authoritative.`,
     `Before starting from scratch: inspect the current workspace, identify reusable work, verify it against the task acceptance criteria, and continue from valid existing state where appropriate.`,
     `Canonical task, plan, and evidence remain the only authority.`,
+    ...(envelope.previousFailureDetail === RETRY_OUTPUT_CEILING_DETAIL
+      ? ['The previous attempt stopped because one response reached the per-response output limit (a single file write or reply was too large). This time write large files in several smaller parts and keep each reply short.']
+      : []),
   ].join(' ');
+
+/** The kernel's typed output-ceiling stop (dsh-executor-provider KERNEL_OUTPUT_CEILING). */
+export const RETRY_OUTPUT_CEILING_DETAIL = 'EXECUTOR_KERNEL_OUTPUT_CEILING';

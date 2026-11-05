@@ -19,9 +19,6 @@ interface DurableLike {
   readonly runs: {
     get(id: string): Promise<{ readonly id: string; readonly state: string; readonly companyId: string } | null>;
   };
-  readonly artifacts?: {
-    listByRun(runId: string): Promise<readonly { readonly id: string; readonly kind: string }[]>;
-  } | null;
 }
 
 type Row = Readonly<Record<string, unknown>>;
@@ -80,10 +77,16 @@ export const createDurableUsageReader = (database: DurableLike, companyId: strin
     const runs = new Map<string, string>();
     const goal = await database.runs.get(runId);
     runs.set(runId, goal?.state ?? 'UNKNOWN');
-    const anchors = database.artifacts === null || database.artifacts === undefined ? [] : await database.artifacts.listByRun(runId);
-    for (const anchor of anchors) {
-      if (anchor.kind !== 'companyos:plan-compilation') continue;
-      const row = oneRow('SELECT creation_command_id AS command_id FROM artifacts WHERE artifact_id = ?', [anchor.id]);
+    // LIVE-CONTRACT-FILL (hark-live-goal 42075419348): the anchors come straight from the
+    // artifacts table. The reader used to ask `database.artifacts`, a member the durable
+    // database does not have (it is `artifactStore`), so every execution run - its
+    // supervisor turns AND its kernel dispatches - silently fell out of run.usage and the
+    // UI showed the planner's 3.8K tokens for a goal that had settled 96.6K.
+    const anchors = allRows(
+      "SELECT creation_command_id AS command_id FROM artifacts WHERE run_id = ? AND kind = 'companyos:plan-compilation' ORDER BY rowid",
+      [runId],
+    );
+    for (const row of anchors) {
       const commandId = textOrNull(row['command_id']);
       if (commandId === null) continue;
       const prefix = `plan-compile:${companyId}:goal-compile:`;
@@ -135,6 +138,36 @@ export const createDurableUsageReader = (database: DurableLike, companyId: strin
       return allRows(`SELECT attempt_id, provider_key FROM provider_dispatches WHERE run_id IN (${placeholders})`, runIds).map(
         (row) => ({ attemptId: String(row['attempt_id'] ?? ''), providerKey: textOrNull(row['provider_key']) }),
       );
+    },
+
+    /*
+     * LIVE-CONTRACT-FILL: the kernel's model calls go through the CompanyOS broker, which
+     * records each exchange's provider-reported usage (executor.model_exchange_observed,
+     * aggregate = the attempt). An attempt whose every exchange carried observed usage is
+     * KNOWN; any exchange without it keeps the whole attempt UNKNOWN (never a partial sum).
+     */
+    brokeredUsage: async (attemptIds) => {
+      const out = new Map<string, { inputTokens: number; outputTokens: number; complete: boolean; exchanges: number }>();
+      if (attemptIds.length === 0) return out;
+      const placeholders = attemptIds.map(() => '?').join(', ');
+      for (const row of allRows(
+        `SELECT aggregate_id, payload FROM events WHERE type = 'executor.model_exchange_observed' AND aggregate_id IN (${placeholders}) ORDER BY rowid`,
+        attemptIds,
+      )) {
+        const attemptId = String(row['aggregate_id'] ?? '');
+        const payload = parse(String(row['payload'] ?? ''));
+        const usage = payload === null ? null : (typeof payload['usage'] === 'object' && payload['usage'] !== null ? payload['usage'] as Row : null);
+        const input = tokenOrNull(usage?.['inputTokens']);
+        const output = tokenOrNull(usage?.['outputTokens']);
+        const entry = out.get(attemptId) ?? { inputTokens: 0, outputTokens: 0, complete: true, exchanges: 0 };
+        entry.exchanges += 1;
+        if (payload?.['usageDisposition'] === 'observed' && input !== null && output !== null) {
+          entry.inputTokens += input;
+          entry.outputTokens += output;
+        } else entry.complete = false;
+        out.set(attemptId, entry);
+      }
+      return out;
     },
 
     providerInvocations: async (runIds) => {

@@ -316,6 +316,9 @@ describe('E3-C — the real dispatch path carries retry context to the NEW attem
     expect(retry!.retryOrdinal).toBe(1);
     // the canonical attempt row carries the ENGINE-normalized code; the provider reasonCode is detail
     expect(retry!.previousFailureCode).toBe('PROVIDER_FAILED');
+    // LIVE-CONTRACT-FILL: the provider reasonCode travels as DETAIL (from the settled audit row)
+    expect((retry as {previousFailureDetail?: string}).previousFailureDetail).toBe('E3_TEST_RETRYABLE');
+    expect(second.work.objective).toContain('(E3_TEST_RETRYABLE)');
     expect(retry!.priorActivity.toolCallCount).toBe(1);
     expect(retry!.priorActivity.lastToolKinds).toEqual(['pwsh']);
     expect(retry!.workspaceReuse).toBe(true);
@@ -342,7 +345,10 @@ describe('E3-C — the real dispatch path carries retry context to the NEW attem
     const reopen = openDurableDatabase({dataDir, appliedAt: 'e3-reopen', chains: [...CHAINS]});
     openDatabases.push(reopen);
     const prior = reopen.db.prepare('SELECT id, attempt_number, state, failure_code, failure_retryable, created_at, settled_at FROM execution_attempts WHERE task_id = ? AND attempt_number < 2 ORDER BY attempt_number, id').all(second.taskId) as never;
-    const events = reopen.db.prepare("SELECT type, occurred_at, payload FROM events WHERE aggregate_id = ? AND type IN ('executor.tool_invocation_requested','executor.attempt_activity') ORDER BY rowid LIMIT 200").all(first.attemptId) as never;
+    const events = [
+      ...reopen.db.prepare("SELECT type, occurred_at, payload FROM events WHERE aggregate_id = ? AND type IN ('executor.tool_invocation_requested','executor.attempt_activity') ORDER BY rowid LIMIT 200").all(first.attemptId),
+      ...reopen.db.prepare("SELECT type, occurred_at, payload FROM events WHERE aggregate_id = ? AND type = 'executor.dispatch_settled' ORDER BY rowid DESC LIMIT 1").all(first.attemptId),
+    ] as never;
     const derived = deriveRetryContinuationEnvelope({
       taskId: second.taskId,
       attemptNumber: 2,

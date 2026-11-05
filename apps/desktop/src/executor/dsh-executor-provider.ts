@@ -294,7 +294,27 @@ export const dshSandboxModeOf = (goalStructured: Readonly<Record<string, unknown
   return policy === 'READ_ONLY' ? 'read-only' : 'workspace-write';
 };
 
-export const dshTaskTextOf = (request: ExecutorExecutionRequest): string => {
+/**
+ * LIVE-CONTRACT-FILL (hark-live-goal 42075419348): the kernel ends a turn with
+ * `turn_end` reason `max-tokens` when ONE model response reaches the route's output
+ * ceiling (it drops the truncated tool call and exits 1 with an empty stderr). A real
+ * project goal hit it on every attempt by writing a whole source file in one tool call;
+ * CompanyOS knew the ceiling and never told the kernel. The prompt now states the
+ * ceiling and how to stay under it (write large files in parts).
+ */
+export const outputCeilingDirective = (outputCeilingTokens: number): string => {
+  const lines = Math.max(40, Math.floor(outputCeilingTokens / 20));
+  return `Output limit: each of your responses, including tool-call arguments, is capped at about ${String(outputCeilingTokens)} output tokens. ` +
+    `A response that reaches the cap is cut off and the attempt fails. Never write a large file in one tool call: create it in parts of at most about ${String(lines)} lines ` +
+    '(write the first part, then append or edit the following parts in later calls), and keep each reply short.';
+};
+
+export interface DshTaskTextOptions {
+  /** The selected route's per-response output ceiling (tokens), when CompanyOS knows it. */
+  readonly outputCeilingTokens?: number;
+}
+
+export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTaskTextOptions = {}): string => {
   // The objective stays the FIRST line: the frozen S24 one-task contract (and its
   // deterministic fixture protocol) keys on the leading task text.
   const lines: string[] = [
@@ -354,7 +374,39 @@ export const dshTaskTextOf = (request: ExecutorExecutionRequest): string => {
     lines.push(`Required file delivery: ${JSON.stringify(relevantFiles)}`);
     lines.push(`Final text must be JSON {"schema":"companyos/business-files/1","goalRunId":${JSON.stringify(request.work.fileDeliveryGoalRunId)},"runId":${JSON.stringify(request.runId)},"taskId":${JSON.stringify(request.taskId)},"files":[{"relativePath":"the required relative path","sizeBytes":123,"sha256":"actual lowercase sha256"}]}. Report only actual nonempty files in the authorized Workspace. Exit code zero is not file delivery proof.`);
   } else lines.push('Answer with the final result text only.');
+  if (options.outputCeilingTokens !== undefined && Number.isSafeInteger(options.outputCeilingTokens) && options.outputCeilingTokens > 0) {
+    lines.push(outputCeilingDirective(options.outputCeilingTokens));
+  }
   return lines.join('\n');
+};
+
+/**
+ * LIVE-CONTRACT-FILL — the kernel's own reason for ending a turn, read from its JSON
+ * stream (`{"type":"status","phase":"turn_end","reason":{"kind":...}}`). A failed exit
+ * whose last turn ended for a typed reason carries that reason as the outcome's
+ * reasonCode (evidence for the audit row and the retry directive) instead of an
+ * anonymous exit 1 with an empty stderr.
+ */
+export const KERNEL_OUTPUT_CEILING = 'EXECUTOR_KERNEL_OUTPUT_CEILING' as const;
+export const kernelTurnEndReasonOf = (stdoutText: string): string | null => {
+  let reason: string | null = null;
+  for (const line of stdoutText.split(/\r?\n/u)) {
+    if (!line.includes('"turn_end"')) continue;
+    try {
+      const event = JSON.parse(line) as { type?: unknown; phase?: unknown; reason?: { kind?: unknown } };
+      if (event.type === 'status' && event.phase === 'turn_end' && typeof event.reason?.kind === 'string') reason = event.reason.kind;
+    } catch {
+      // a non-JSON line is not a turn event
+    }
+  }
+  return reason;
+};
+export const kernelFailureReasonCodeOf = (stdoutText: string): string | undefined => {
+  const kind = kernelTurnEndReasonOf(stdoutText);
+  if (kind === null || kind === 'completed') return undefined;
+  if (kind === 'max-tokens') return KERNEL_OUTPUT_CEILING;
+  const slug = kind.toUpperCase().replace(/[^A-Z0-9]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 40);
+  return slug === '' ? undefined : `EXECUTOR_KERNEL_TURN_${slug}`;
 };
 /**
  * The KNOWN contract-drift signatures (recon §2/§6): each is a parse-level PROOF
@@ -394,7 +446,7 @@ const outcomeTextOf = (outcome: { readonly kind: string }): readonly string[] =>
  * paths): contract-drift reclassification, evidence-proven session identity, and
  * the fail-closed NDJSON parse.
  */
-const postProcessDshOutcome = (outcome: ExecutorProviderOutcome): ExecutorProviderOutcome => {
+export const postProcessDshOutcome = (outcome: ExecutorProviderOutcome): ExecutorProviderOutcome => {
   if (outcome.kind !== 'succeeded' && dshContractMismatchIn(outcomeTextOf(outcome))) {
     // Parse-level proof of non-invocation: reclassify to the typed mismatch,
     // preserving the captured evidence verbatim (never rewriting output).
@@ -409,7 +461,9 @@ const postProcessDshOutcome = (outcome: ExecutorProviderOutcome): ExecutorProvid
     // even when the run failed — never manufactured, only read from evidence.
     const emitted = outcome.kind === 'provider-failed' ? outcome.stdoutText : '';
     const session = parseSessionId(emitted);
-    return session === null ? outcome : { ...outcome, providerSessionId: session };
+    const kernelReason = outcome.kind === 'provider-failed' && outcome.reasonCode === undefined ? kernelFailureReasonCodeOf(emitted) : undefined;
+    const typed = kernelReason === undefined ? outcome : { ...outcome, reasonCode: kernelReason };
+    return session === null ? typed : { ...typed, providerSessionId: session };
   }
   const parsed = parseNdjsonEvents(outcome.stdoutText);
   if (!parsed.ok) {
@@ -1045,7 +1099,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             ) {
               argv.push('--session-id', invocation.continuationSessionId);
             }
-            argv.push(dshTaskTextOf(invocation));
+            argv.push(dshTaskTextOf(invocation, { outputCeilingTokens: modelRoute.maxTokens }));
             return argv;
           },
           parseResult: (stdoutText) => {
