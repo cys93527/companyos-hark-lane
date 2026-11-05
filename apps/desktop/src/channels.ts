@@ -87,6 +87,25 @@ export interface DatabaseStatus {
    * open it rather than run on a schema it does not understand; the data is untouched.
    */
   readonly failure?: DatabaseFailure | null;
+  /**
+   * DB-BACKUP: local snapshot diagnostics (docs/hark-lane/DB_BACKUP.md) — where backups go,
+   * the last snapshot, the last best-effort failure and the last staged restore outcome.
+   */
+  readonly backup?: DatabaseBackupDiagnostics | null;
+}
+
+export interface DatabaseBackupDiagnostics {
+  readonly dir: string;
+  readonly intervalHours: number;
+  readonly keep: number;
+  readonly lastSnapshot: { readonly fileName: string; readonly tag: string; readonly createdAt: string } | null;
+  readonly lastError: { readonly tag: string; readonly at: string; readonly message: string } | null;
+  readonly consecutiveFailures: number;
+  readonly lastRestore:
+    | { readonly kind: 'none' }
+    | { readonly kind: 'restored'; readonly backup: string; readonly safetyCopy: string | null; readonly schemaVersion: number; readonly at: string }
+    | { readonly kind: 'refused'; readonly backup: string | null; readonly code: string; readonly message: string; readonly at: string }
+    | null;
 }
 
 export type DatabaseFailure =

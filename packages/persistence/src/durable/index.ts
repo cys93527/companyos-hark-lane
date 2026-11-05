@@ -51,7 +51,7 @@ import type {
 import { openDatabase, type Database, type OpenDatabaseOptions } from '../db.js';
 import { DomainError, type Result } from '@companyos/core';
 
-import { MigrationFormatError, applyMigrations, loadMigrations, type MigrationReport } from '../migrations.js';
+import { MigrationFormatError, applyMigrations, loadMigrations, readAppliedMigrations, type MigrationReport } from '../migrations.js';
 import { createSqliteApprovalStore } from './sqlite-approval-store.js';
 import { createSqliteCommandLedger } from './sqlite-command-ledger.js';
 import { createSqliteEventStore, type SqliteEventStore } from './sqlite-event-store.js';
@@ -298,6 +298,22 @@ export interface OpenDurableDatabaseOptions extends Omit<OpenDatabaseOptions, 'p
   /** Which checksum-protected chains to bring up. Defaults to `['core', 'engine']`. */
   readonly chains?: readonly MigrationChainName[];
   readonly logger?: { info(message: string, fields?: Record<string, unknown>): void };
+  /**
+   * DB-BACKUP — called AFTER the connection opened and BEFORE the first migration is
+   * applied, only when the file already holds applied migrations (existing data) and at
+   * least one requested migration is pending. A throw ABORTS the open: nothing is migrated
+   * and the connection is closed (the desktop uses this for its mandatory pre-migration
+   * snapshot — it never migrates unprotected). Not called for a fresh database, nor when
+   * the file was written by a newer version (that refusal happens before any work).
+   */
+  readonly beforeMigrations?: (info: BeforeMigrationsInfo) => void;
+}
+
+export interface BeforeMigrationsInfo {
+  readonly path: string;
+  /** Pending migration names across the requested chains, in apply order. */
+  readonly pending: readonly string[];
+  readonly appliedCount: number;
 }
 
 export interface DurableDatabase {
@@ -486,13 +502,25 @@ function assembleDurableDatabase(
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
 
-  const coreReport = apply('core');
-  const engineReport = apply('engine');
   const requested = options.chains ?? DEFAULT_CHAINS;
   // `core` + `engine` are the historical baseline; extra chains are opt-in.
   const chains = ALL_CHAINS.filter(
     (chain) => chain === 'core' || chain === 'engine' || requested.includes(chain),
   );
+  if (options.beforeMigrations !== undefined && path !== ':memory:') {
+    const applied = readAppliedMigrations(db);
+    const fromNewer = [...applied.keys()].some((name) => !knownNames.has(name));
+    if (applied.size > 0 && !fromNewer) {
+      const pending = chains
+        .flatMap((chain) => [...loadMigrations(migrationsDirFor(chain))].sort((a, b) => a.version - b.version))
+        .map((migration) => migration.name)
+        .filter((name) => !applied.has(name));
+      if (pending.length > 0) options.beforeMigrations({ path, pending, appliedCount: applied.size });
+    }
+  }
+
+  const coreReport = apply('core');
+  const engineReport = apply('engine');
   const lifecycleReport = chains.includes('lifecycle') ? apply('lifecycle') : null;
   const providerReport = chains.includes('provider') ? apply('provider') : null;
   const registryReport = chains.includes('registry') ? apply('registry') : null;

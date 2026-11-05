@@ -15,6 +15,9 @@ import { applyMigrations, loadMigrations, type MigrationReport } from './migrati
 
 export {
   DEFAULT_BUSY_TIMEOUT_MS,
+  inspectDatabaseFile,
+  snapshotDatabaseFile,
+  type DatabaseFileInspection,
   openDatabase,
   readPragma,
   tableExists,
@@ -49,6 +52,28 @@ export {
   type JsonEntity,
 } from './entity-store.js';
 
+/* ------------------------------------------------------- local backups (DB-BACKUP) -- */
+export {
+  DATABASE_SNAPSHOT_TAGS,
+  DEFAULT_SNAPSHOT_KEEP,
+  createDatabaseSnapshot,
+  listDatabaseSnapshots,
+  parseSnapshotFileName,
+  restoreDatabaseFromBackup,
+  rotateDatabaseSnapshots,
+  snapshotFileName,
+  snapshotStamp,
+  validateDatabaseBackup,
+  type CreateDatabaseSnapshotOptions,
+  type CreatedDatabaseSnapshot,
+  type DatabaseSnapshot,
+  type DatabaseSnapshotTag,
+  type ParsedSnapshotName,
+  type RestoreDatabaseOptions,
+  type RestoredDatabase,
+  type ValidatedDatabaseBackup,
+} from './backup.js';
+
 /* ------------------------------------------------------- durable layer (S3) -- */
 export {
   coreMigrationsDir,
@@ -76,6 +101,7 @@ export {
   openDurableDatabase,
   shippedMigrationNames,
   toPersistenceError,
+  type BeforeMigrationsInfo,
   type DurableDatabase,
   type MigrationChainName,
   type OpenDurableDatabaseOptions,
