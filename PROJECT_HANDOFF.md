@@ -1,3 +1,6 @@
+## Hark lane — UI paper-ink redesign + interaction audit (2026-11-05)
+- 38071cf: renderer 「纸与墨」 visual redesign (paper/ink tokens, single vermilion accent, no cards/shadows) + UI-AUDIT interaction fixes 01–15/19/22/23/25/26 (composer Ctrl+Enter + IME guard, stale/cancelled approval refused in main via approvalId — APPROVAL_STALE / APPROVAL_GOAL_CANCELLED, single-flight approve, decisions.pending pages every run, Ctrl+N, session cost from canonical usage). Docs docs/hark-lane/UI_PAPER_INK.md + UI_AUDIT_INTERACTION.md. Version stays 0.1.2, no tag. No real model calls. Hark self-review only; real-PC acceptance and independent review NOT RUN.
+
 ## Hark lane — v0.1.2 run-7 root fixes (2026-11-03)
 - Real acceptance run 7 (hark-live-goal 41641255275 on v0.1.1, INCOMPLETE AUTONOMY_STALLED, 135 calls KNOWN, CNY 3.38) exposed 3 defects, fixed at the root with regression tests: 96293f1 (Windows validator scratch dir no longer mkdirs HOMEDRIVE 'C:'), f24cd73 (validation gate covers every stage), 80f7c32 (DELIVERY.COMPLETE refused with open tasks, RUN_DELIVERY_OPEN_WORK). Run 8 (hark-live-goal 41653476981 on 80f7c32, installer 41649334682) PASS EXECUTED_ARTIFACT_CAS_VALIDATION_HANDOFF, 14/14 checks, 93 calls KNOWN, CNY 2.13. Version 0.1.2; summary docs/hark-lane/V012_RELEASE.md. Hark self-review only; real-PC acceptance and independent review NOT RUN.
 
