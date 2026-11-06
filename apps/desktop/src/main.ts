@@ -10,6 +10,7 @@
  * here that reaches a network.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { resolveOpenAiCompatibleConfig } from './models/openai-compatible-provider.js';
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -620,7 +621,12 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
       // ever leaves the main process, and an unconfigured provider answers an empty list.
       providerCatalogue: async () => {
         const rows = (await database.providerModels.list({ limit: 500 })).items;
+        // LIVE-CONTRACT-FILL UI defect c: mark the deployment-configured model (read from the
+        // PRIVATE runtime environment; only the boolean leaves the main process).
+        const resolved = resolveOpenAiCompatibleConfig(runtimeEnv);
+        const configured = resolved.ok ? resolved.value : null;
         return rows.map((row) => ({
+          configured: configured !== null && row.providerId === configured.providerId && row.modelId === configured.modelId,
           providerId: row.providerId,
           modelId: row.modelId,
           displayName: row.displayName,

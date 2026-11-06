@@ -7,6 +7,7 @@
   "maxOutputTokens": 4096,
   "timeoutMs": 120000,
   "structuredOutput": "json_object",
+  "thinking": "disabled",
   "billingAccount": "deepseek:user-setup:COMPANYOS_MODEL_API_KEY",
   "pricing": {
     "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",

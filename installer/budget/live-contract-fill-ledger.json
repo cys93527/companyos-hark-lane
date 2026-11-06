@@ -17,6 +17,13 @@
       "reservedMicros": 8000000,
       "settledMicros": 307570,
       "calls": 28
+    },
+    {
+      "run": "hark-live-goal 42085454360",
+      "status": "SETTLED",
+      "reservedMicros": 8000000,
+      "settledMicros": 35854,
+      "calls": 1
     }
   ],
   "entries": [
@@ -215,8 +222,15 @@
       "status": "KNOWN",
       "micros": 41408,
       "tokens": 8416
+    },
+    {
+      "run": "hark-live-goal 42085454360",
+      "callId": "exec_01M6PFXN383A2E2163EMT7AZKK:network:1",
+      "status": "KNOWN",
+      "micros": 35854,
+      "tokens": 5639
     }
   ],
-  "totalMicros": 307570,
+  "totalMicros": 343424,
   "openReservationsMicros": 0
 }

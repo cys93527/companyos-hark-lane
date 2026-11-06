@@ -46,6 +46,8 @@ export interface ProviderSetupModel {
   readonly maxOutputTokens: number;
   readonly timeoutMs: number;
   readonly structuredOutput: 'json_object' | 'json_schema';
+  /** LIVE-CONTRACT-FILL: optional thinking control for control-plane calls (COS_MODEL_THINKING). */
+  readonly thinking?: 'disabled' | 'low' | 'high';
   readonly configuredAt: string;
 }
 
@@ -89,6 +91,7 @@ export const parseProviderSetupModel = (raw: unknown): ProviderSetupModel | null
   if (!intIn(m['maxOutputTokens'], 256, 8192) || !intIn(m['timeoutMs'], 10_000, 600_000)) return null;
   if (m['structuredOutput'] !== 'json_object' && m['structuredOutput'] !== 'json_schema') return null;
   if (typeof m['configuredAt'] !== 'string' || Number.isNaN(Date.parse(m['configuredAt']))) return null;
+  if (m['thinking'] !== undefined && m['thinking'] !== 'disabled' && m['thinking'] !== 'low' && m['thinking'] !== 'high') return null;
   return m as unknown as ProviderSetupModel;
 };
 
@@ -157,6 +160,7 @@ export const providerSetupEnvValues = (setup: Extract<ProviderSetupState, { stat
   [MODEL_PROVIDER_ENV.timeoutMs]: String(setup.model.timeoutMs),
   [MODEL_PROVIDER_ENV.maxOutputTokens]: String(setup.model.maxOutputTokens),
   [MODEL_PROVIDER_ENV.structuredOutput]: setup.model.structuredOutput,
+  ...(setup.model.thinking === undefined ? {} : { [MODEL_PROVIDER_ENV.thinking]: setup.model.thinking }),
   [MODEL_PROVIDER_ENV.apiKey]: setup.apiKey,
 });
 

@@ -39,6 +39,8 @@ export interface ProviderSetupProfile {
   readonly maxOutputTokens: number;
   readonly timeoutMs: number;
   readonly structuredOutput: ProviderSetupModel['structuredOutput'];
+  /** LIVE-CONTRACT-FILL: optional thinking control for control-plane calls. */
+  readonly thinking?: NonNullable<ProviderSetupModel['thinking']>;
   readonly billingAccount: string;
   readonly pricing: {
     readonly source: string;
@@ -89,7 +91,8 @@ const inBounds = (v: unknown, b: { readonly min: number; readonly max: number })
 
 /** Strict shape check of the deployment profile; null when anything is off (no partial profile is ever used). */
 export const parseProviderSetupProfile = (raw: unknown): ProviderSetupProfile | null => {
-  if (!isRecord(raw) || !exactKeys(raw, PROFILE_KEYS) || raw['schema'] !== PROVIDER_SETUP_PROFILE_SCHEMA) return null;
+  if (!isRecord(raw) || raw['schema'] !== PROVIDER_SETUP_PROFILE_SCHEMA) return null;
+  if (!exactKeys(raw, Object.hasOwn(raw, 'thinking') ? [...PROFILE_KEYS, 'thinking'] : PROFILE_KEYS)) return null;
   const p = raw['pricing'];
   if (!isRecord(p) || !exactKeys(p, PRICING_KEYS)) return null;
   if (!httpsUrl(p['source']) || !text(p['version']) || p['currency'] !== 'CNY' || p['units'] !== 'MICROS_PER_MILLION_TOKENS' || p['rounding'] !== 'CEIL_TOTAL_PER_REQUEST_MICROS') return null;
@@ -106,6 +109,7 @@ export const parseProviderSetupProfile = (raw: unknown): ProviderSetupProfile | 
     maxOutputTokens: raw['maxOutputTokens'],
     timeoutMs: raw['timeoutMs'],
     structuredOutput: raw['structuredOutput'],
+    ...(raw['thinking'] === undefined ? {} : { thinking: raw['thinking'] }),
     configuredAt: new Date(0).toISOString(),
   });
   if (model === null) return null;
@@ -212,6 +216,7 @@ export const writeProviderSetup = (input: ProviderSetupWriteInput): ProviderSetu
     maxOutputTokens: profile.maxOutputTokens,
     timeoutMs: profile.timeoutMs,
     structuredOutput: profile.structuredOutput,
+    ...(profile.thinking === undefined ? {} : { thinking: profile.thinking }),
     configuredAt: new Date(now).toISOString(),
   };
   const modelPath = join(providerDir, PROVIDER_SETUP_MODEL_FILE);

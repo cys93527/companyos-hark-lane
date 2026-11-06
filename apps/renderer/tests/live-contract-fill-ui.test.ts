@@ -17,7 +17,7 @@ import {
   attemptFailureLabel, blockerLabel, blockerText, BLOCKER_LABELS, failureDetailLabel, runFailureReasonLabel,
   type CanonicalAttemptFailure,
 } from '../src/failure-labels.js';
-import { soleModelOption, type ModelOptionRow } from '../src/models.js';
+import { soleModelOption, toModelOptionRows, type ModelOptionRow } from '../src/models.js';
 
 const CEILING: CanonicalAttemptFailure = {
   runId: 'run_exec', taskId: 'tsk_1', attemptId: 'exa_3', failureCode: 'PROVIDER_FAILED',
@@ -98,6 +98,17 @@ describe('UI defect (c): a single configured model is selected automatically', (
   const row = (key: string): ModelOptionRow => ({ providerId: 'deepseek', providerModelId: key, displayName: key, contextWindow: null, registered: true, modelKey: key, priceInput: null, priceOutput: null });
   it('exactly one option and no company selection -> that option', () => {
     expect(soleModelOption([row('deepseek-v4-flash')], { kind: 'no-selection' })?.modelKey).toBe('deepseek-v4-flash');
+  });
+  it('the deployment-configured model wins over the provider catalogue rows nobody configured (run 3)', () => {
+    const flash = { ...row('deepseek-flash'), registered: false, modelKey: null, configured: true };
+    const pro = { ...row('deepseek-v4-pro'), registered: false, modelKey: null };
+    expect(soleModelOption([flash, pro], { kind: 'no-selection' })?.providerModelId).toBe('deepseek-flash');
+    expect(soleModelOption([flash, { ...pro, configured: true }], { kind: 'no-selection' })).toBeNull();
+    const rows = toModelOptionRows([
+      { providerId: 'model.deepseek', providerModelId: 'deepseek-flash', displayName: 'deepseek-flash', contextWindow: 128000, configured: true },
+      { providerId: 'model.deepseek', providerModelId: 'deepseek-v4-pro', displayName: 'deepseek-v4-pro', contextWindow: 128000 },
+    ], []);
+    expect(rows.filter((r) => r.configured === true).map((r) => r.providerModelId)).toEqual(['deepseek-flash']);
   });
   it('several options keep the explicit choice; an existing selection is never replaced', () => {
     expect(soleModelOption([row('a'), row('b')], { kind: 'no-selection' })).toBeNull();

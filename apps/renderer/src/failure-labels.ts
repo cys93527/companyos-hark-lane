@@ -41,6 +41,10 @@ export const FAILURE_DETAIL_LABELS: Readonly<Record<string, string>> = {
   GOAL_USAGE_UNKNOWN: '上一次模型调用的用量未知，已停止继续调用',
   GOAL_DEADLINE_EXCEEDED: '已超过目标的截止时间',
   GOAL_ADMISSION_REFUSED: '模型调用未获准入',
+  PROVIDER_OUTPUT_TRUNCATED: '模型回答达到输出上限被截断',
+  PROVIDER_REASONING_EXHAUSTED: '模型的思考过程用完了输出上限，没有给出回答',
+  CAPABILITY_MISSING: '模型未能给出可用的回答',
+  PROVIDER_UNAVAILABLE: '模型服务暂时不可用',
 };
 
 const KERNEL_TURN_PREFIX = 'EXECUTOR_KERNEL_TURN_';

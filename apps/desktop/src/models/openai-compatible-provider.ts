@@ -61,6 +61,17 @@ export interface OpenAiCompatibleConfig {
    */
   readonly structuredOutput?: 'json_schema' | 'json_object';
   /**
+   * LIVE-CONTRACT-FILL (hark-live-goal 42085454360) — the deployment's EXPLICIT thinking
+   * control for the control-plane calls (planner / supervisor), env COS_MODEL_THINKING.
+   * A reasoning model with thinking on by default spends its reasoning out of the SAME
+   * max_tokens as the answer: the planner of a real goal reasoned through the whole
+   * 4096-token ceiling and returned no answer at all. 'disabled' sends
+   * {thinking:{type:'disabled'}} (the whole ceiling is the JSON answer); 'low' / 'high'
+   * send thinking enabled with that reasoning_effort. Absent = nothing is sent (the
+   * endpoint's own default) — never guessed from the URL.
+   */
+  readonly thinking?: 'disabled' | 'low' | 'high';
+  /**
    * SMART-ROUTER-PROD-01 — the deployment's EXPLICIT product routing configuration.
    * `routingMode`/`routingPolicy` are optional (absent = the product default
    * DETERMINISTIC_V1 / BALANCED). `routingTraits` is all-or-nothing: the operator
@@ -108,6 +119,7 @@ export const MODEL_PROVIDER_ENV = {
   latencyTier: 'COS_MODEL_LATENCY_TIER',
   reliabilityClass: 'COS_MODEL_RELIABILITY_CLASS',
   structuredOutput: 'COS_MODEL_STRUCTURED_OUTPUT',
+  thinking: 'COS_MODEL_THINKING',
 } as const;
 
 const ROUTING_MODES = ['DETERMINISTIC_V1', 'SMART_ROUTER_V1'] as const;
@@ -125,6 +137,10 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_API_KEY_ENV = MODEL_PROVIDER_ENV.apiKey;
 
 /** Resolve the adapter configuration (composition → environment → absent). Absent = NOT configured (the caller decides fail-loud semantics). */
+/** LIVE-CONTRACT-FILL — stable leading text of the two output-ceiling failures (read back by the goal workspace). */
+export const PROVIDER_OUTPUT_TRUNCATED_MESSAGE = 'The model output reached the declared max_tokens before the answer was complete';
+export const PROVIDER_REASONING_EXHAUSTED_MESSAGE = 'The model spent the declared max_tokens on reasoning and returned no answer';
+
 export const resolveOpenAiCompatibleConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Result<OpenAiCompatibleConfig | null, DomainError> => {
@@ -171,6 +187,11 @@ export const resolveOpenAiCompatibleConfig = (
   const structuredOutput = structuredRaw === '' ? undefined : oneOf(['json_schema', 'json_object'] as const)(structuredRaw);
   if (structuredRaw !== '' && structuredOutput === undefined) {
     return err(domainError('VALIDATION_FAILED', 'COS_MODEL_STRUCTURED_OUTPUT must be json_schema or json_object.', { reason: 'MODEL_CONFIG_INVALID' }));
+  }
+  const thinkingRaw = env[MODEL_PROVIDER_ENV.thinking]?.trim() ?? '';
+  const thinking = thinkingRaw === '' ? undefined : oneOf(['disabled', 'low', 'high'] as const)(thinkingRaw);
+  if (thinkingRaw !== '' && thinking === undefined) {
+    return err(domainError('VALIDATION_FAILED', 'COS_MODEL_THINKING must be disabled, low or high.', { reason: 'MODEL_CONFIG_INVALID' }));
   }
   // SMART-ROUTER-PROD-01: the explicit routing configuration. Every value is
   // validated loudly — an invalid or PARTIAL configuration is a config error,
@@ -258,6 +279,7 @@ export const resolveOpenAiCompatibleConfig = (
     ...(maxOutputTokens === undefined ? {} : {maxOutputTokens}),
     ...(routingMode === undefined ? {} : {routingMode}),
     ...(structuredOutput === undefined ? {} : {structuredOutput}),
+    ...(thinking === undefined ? {} : {thinking}),
     ...(authentication === undefined ? {} : {authentication}),
     ...(routingPolicy === undefined ? {} : {routingPolicy}),
     ...(routingTraits === undefined ? {} : {routingTraits}),
@@ -449,6 +471,12 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
       };
       if (request_.temperature !== undefined) wireBody['temperature'] = request_.temperature;
       if (request_.maxOutputTokens !== undefined) wireBody['max_tokens'] = request_.maxOutputTokens;
+      // LIVE-CONTRACT-FILL: the deployment's explicit thinking control (see config.thinking).
+      if (config.thinking === 'disabled') wireBody['thinking'] = { type: 'disabled' };
+      else if (config.thinking !== undefined) {
+        wireBody['thinking'] = { type: 'enabled' };
+        wireBody['reasoning_effort'] = config.thinking;
+      }
       if (request_.responseFormat !== undefined) {
         if (request_.responseFormat.mode === 'json_schema' && request_.responseFormat.schema !== undefined && config.structuredOutput === 'json_object') {
           wireBody['response_format'] = { type: 'json_object' };
@@ -481,8 +509,9 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
         return err(providerFailure('unknown', 'The model invocation failed unexpectedly.'));
       }
       if (status !== 200) return err(mapHttpFailure(status, retryAfterMs));
-      const choice = (json as { readonly choices?: readonly { readonly message?: { readonly content?: unknown }; readonly finish_reason?: unknown }[] } | null)?.choices?.[0];
+      const choice = (json as { readonly choices?: readonly { readonly message?: { readonly content?: unknown; readonly reasoning_content?: unknown }; readonly finish_reason?: unknown }[] } | null)?.choices?.[0];
       const content = choice?.message?.content;
+      const reasoned = typeof choice?.message?.reasoning_content === 'string' && choice.message.reasoning_content !== '';
       const finishRaw = typeof choice?.finish_reason === 'string' ? choice.finish_reason : 'stop';
       const finishReason: InvocationResult['finishReason'] =
         finishRaw === 'length' ? 'length' : finishRaw === 'content_filter' ? 'content_filter' : 'stop';
@@ -500,12 +529,17 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
         typeof outputTokens === 'number' && Number.isSafeInteger(outputTokens) && outputTokens >= 0;
       const contentFailure = (message: string): DomainError => {
         const truncated = finishReason === 'length';
-        const failure = providerFailure('invalid_request', truncated
-          ? `The model output reached the declared max_tokens before the answer was complete (${message})`
-          : message);
+        // LIVE-CONTRACT-FILL (42085454360): an EMPTY answer cut off by max_tokens after the
+        // model reasoned is the reasoning eating the whole ceiling — typed apart from a cut JSON.
+        const reasoningExhausted = truncated && reasoned && (typeof content !== 'string' || content === '');
+        const failure = providerFailure('invalid_request', reasoningExhausted
+          ? `${PROVIDER_REASONING_EXHAUSTED_MESSAGE} (${message})`
+          : truncated
+            ? `${PROVIDER_OUTPUT_TRUNCATED_MESSAGE} (${message})`
+            : message);
         return domainError(failure.code, failure.message, {
           ...failure.details,
-          ...(truncated ? { reason: 'PROVIDER_OUTPUT_TRUNCATED', maxOutputTokens: request_.maxOutputTokens ?? null } : {}),
+          ...(truncated ? { reason: reasoningExhausted ? 'PROVIDER_REASONING_EXHAUSTED' : 'PROVIDER_OUTPUT_TRUNCATED', maxOutputTokens: request_.maxOutputTokens ?? null } : {}),
           ...(usageKnown ? { usageStatus: 'KNOWN', observedUsage: { inputTokens, outputTokens } } : { usageStatus: 'UNKNOWN' }),
         });
       };

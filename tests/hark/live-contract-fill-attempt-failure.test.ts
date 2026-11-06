@@ -13,7 +13,8 @@ import { createLatestAttemptFailureReader } from '../../apps/desktop/src/goal-at
 const db = () => {
   const d = new DatabaseSync(':memory:');
   d.exec(`CREATE TABLE execution_attempts (id TEXT, run_id TEXT, task_id TEXT, state TEXT, failure_code TEXT, created_at TEXT, settled_at TEXT);
-          CREATE TABLE events (aggregate_id TEXT, type TEXT, payload TEXT);`);
+          CREATE TABLE events (aggregate_id TEXT, type TEXT, payload TEXT);
+          CREATE TABLE agent_executions (execution_id TEXT, run_id TEXT, task_id TEXT, status TEXT, error_kind TEXT, error_message TEXT, finished_at TEXT);`);
   return d;
 };
 
@@ -44,5 +45,26 @@ describe('latest failed attempt with its typed reason', () => {
     const plane = readFileSync(new URL('../../apps/desktop/src/control-plane.ts', import.meta.url), 'utf8');
     expect(core).toContain('latestAttemptFailure: createLatestAttemptFailureReader(database.db)');
     expect(plane).toMatch(/attemptFailure:\s*\n?\s*deps\.latestAttemptFailure === undefined/u);
+  });
+});
+
+describe('a goal that failed in its planner call (no execution attempt) still names the cause', () => {
+  const planner = () => {
+    const d = new DatabaseSync(':memory:');
+    d.exec(`CREATE TABLE execution_attempts (id TEXT, run_id TEXT, task_id TEXT, state TEXT, failure_code TEXT, created_at TEXT, settled_at TEXT);
+            CREATE TABLE events (aggregate_id TEXT, type TEXT, payload TEXT);
+            CREATE TABLE agent_executions (execution_id TEXT, run_id TEXT, task_id TEXT, status TEXT, error_kind TEXT, error_message TEXT, finished_at TEXT);`);
+    return d;
+  };
+  it.each([
+    ['The model spent the declared max_tokens on reasoning and returned no answer (The model response contained no message content.)', 'PROVIDER_REASONING_EXHAUSTED'],
+    ['The model output reached the declared max_tokens before the answer was complete (The model returned malformed structured output (unparseable JSON).)', 'PROVIDER_OUTPUT_TRUNCATED'],
+    ['something else', null],
+  ])('%s -> %s', async (message, detail) => {
+    const d = planner();
+    d.prepare('INSERT INTO agent_executions VALUES (?, ?, ?, ?, ?, ?, ?)').run('exec_1', 'run_goal', 'tsk_plan', 'FAILED', 'CAPABILITY_MISSING', message, 't');
+    expect(await createLatestAttemptFailureReader(d as never)(['run_goal'])).toEqual({
+      runId: 'run_goal', taskId: 'tsk_plan', attemptId: 'exec_1', failureCode: 'CAPABILITY_MISSING', detailCode: detail, settledAt: 't',
+    });
   });
 });

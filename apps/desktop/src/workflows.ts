@@ -333,6 +333,12 @@ export interface ProviderCatalogueRow {
   /** Opaque to the renderer: capability/pricing objects are passed through verbatim. */
   readonly capabilities: unknown;
   readonly pricing: unknown;
+  /**
+   * LIVE-CONTRACT-FILL UI defect c: this row is THE model the deployment / first-run setup
+   * configured (COS_MODEL_PROVIDER_ID + COS_MODEL_ID). The provider's other catalogue
+   * rows are what it offers, not what the operator chose.
+   */
+  readonly configured?: boolean;
 }
 
 /** STAGE 3 — the derived readiness projection (main-process facts, never renderer-owned). */
@@ -1177,6 +1183,7 @@ export function createWorkflowApi(deps: WorkflowApiDeps): WorkflowApi {
                 maxOutputTokens: row.maxOutputTokens,
                 capabilities: row.capabilities,
                 pricing: row.pricing,
+                configured: row.configured === true,
               })),
             };
           }

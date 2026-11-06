@@ -32,6 +32,8 @@ export interface ModelOptionRow {
   readonly modelKey: string | null;
   readonly priceInput: number | null;
   readonly priceOutput: number | null;
+  /** LIVE-CONTRACT-FILL: the deployment-configured model (see CatalogueRow.configured). */
+  readonly configured?: boolean;
 }
 
 export type ModelSelectionStatus =
@@ -45,6 +47,8 @@ export interface CatalogueRow {
   readonly providerModelId: string;
   readonly displayName: string;
   readonly contextWindow: number | null;
+  /** The model the deployment / first-run setup configured (main-process fact). */
+  readonly configured?: boolean;
 }
 
 export interface RegisteredRow {
@@ -93,6 +97,7 @@ export const toModelOptionRows = (
       modelKey: existing?.modelKey ?? null,
       priceInput: existing?.priceInput ?? null,
       priceOutput: existing?.priceOutput ?? null,
+      ...(row.configured === true ? { configured: true } : {}),
     });
   }
   return [...rows.values()].sort((left, right) => left.displayName.localeCompare(right.displayName));
@@ -114,16 +119,23 @@ export const projectModelSelection = (
 };
 
 /**
- * LIVE-CONTRACT-FILL (hark-live-goal 42075419348, UI defect c): with exactly ONE model
- * configured the composer still said "先选择公司模型…" and refused to send — a choice with
- * one option is not a choice. That sole option is selected automatically (through the same
- * canonical company-selection path as a click). With several options the boss still chooses
- * explicitly, and an existing company selection is never replaced.
+ * LIVE-CONTRACT-FILL (hark-live-goal 42075419348 / 42085454360, UI defect c): with exactly
+ * ONE model configured the composer still said "先选择公司模型…" and refused to send. The
+ * configured model is selected automatically (through the same canonical company-selection
+ * path as a click): the one row the deployment / first-run setup configured — the provider's
+ * catalogue also lists models nobody configured — or the only row there is. With several
+ * configured candidates the boss still chooses explicitly, and an existing company selection
+ * is never replaced.
  */
 export const soleModelOption = (
   options: readonly ModelOptionRow[],
   status: ModelSelectionStatus,
-): ModelOptionRow | null => (status.kind === 'no-selection' && options.length === 1 ? options[0]! : null);
+): ModelOptionRow | null => {
+  if (status.kind !== 'no-selection') return null;
+  const configured = options.filter((option) => option.configured === true);
+  if (configured.length === 1) return configured[0]!;
+  return configured.length === 0 && options.length === 1 ? options[0]! : null;
+};
 
 export interface SelectionExplanation {
   readonly accepted: boolean;
@@ -148,6 +160,7 @@ export const loadModelCatalogue = async (bridge: WorkflowBridge): Promise<readon
     providerModelId: String(row['providerModelId'] ?? ''),
     displayName: String(row['displayName'] ?? row['providerModelId'] ?? ''),
     contextWindow: asNumber(row['contextWindow']),
+    ...(row['configured'] === true ? { configured: true } : {}),
   })) as readonly CatalogueRow[];
 };
 

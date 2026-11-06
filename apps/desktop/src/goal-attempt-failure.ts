@@ -7,6 +7,7 @@
  * This read joins the two for the goal workspace; it never invents a reason.
  */
 import type { GoalAttemptFailure } from './control-plane.js';
+import { PROVIDER_OUTPUT_TRUNCATED_MESSAGE, PROVIDER_REASONING_EXHAUSTED_MESSAGE } from './models/openai-compatible-provider.js';
 
 interface SqlLike {
   prepare(sql: string): { all(...params: unknown[]): readonly unknown[] };
@@ -27,7 +28,7 @@ export const createLatestAttemptFailureReader =
       )
       .all(...runIds) as readonly { id: string; run_id: string; task_id: string; failure_code: string | null; settled_at: string | null }[];
     const attempt = rows[0];
-    if (attempt === undefined) return null;
+    if (attempt === undefined) return modelCallFailureOf(db, runIds, placeholders);
     const settled = db
       .prepare("SELECT payload FROM events WHERE aggregate_id = ? AND type = 'executor.dispatch_settled' ORDER BY rowid DESC LIMIT 1")
       .all(attempt.id) as readonly { payload: string }[];
@@ -47,3 +48,34 @@ export const createLatestAttemptFailureReader =
       settledAt: attempt.settled_at,
     };
   };
+
+/**
+ * LIVE-CONTRACT-FILL (hark-live-goal 42085454360): a goal can fail before any execution
+ * attempt exists — the planner's own model call failed. That failure lives on the agent
+ * execution row; its CompanyOS-owned message names the typed output-ceiling causes.
+ */
+const modelCallFailureOf = (db: SqlLike, runIds: readonly string[], placeholders: string): GoalAttemptFailure | null => {
+  const rows = db
+    .prepare(
+      `SELECT execution_id, run_id, task_id, error_kind, error_message, finished_at FROM agent_executions
+        WHERE run_id IN (${placeholders}) AND status = 'FAILED'
+        ORDER BY rowid DESC LIMIT 1`,
+    )
+    .all(...runIds) as readonly { execution_id: string; run_id: string; task_id: string | null; error_kind: string | null; error_message: string | null; finished_at: string | null }[];
+  const execution = rows[0];
+  if (execution === undefined) return null;
+  const message = execution.error_message ?? '';
+  const detailCode = message.startsWith(PROVIDER_REASONING_EXHAUSTED_MESSAGE)
+    ? 'PROVIDER_REASONING_EXHAUSTED'
+    : message.startsWith(PROVIDER_OUTPUT_TRUNCATED_MESSAGE)
+      ? 'PROVIDER_OUTPUT_TRUNCATED'
+      : null;
+  return {
+    runId: execution.run_id,
+    taskId: execution.task_id ?? '',
+    attemptId: execution.execution_id,
+    failureCode: execution.error_kind !== null && REASON_CODE.test(execution.error_kind) ? execution.error_kind : null,
+    detailCode,
+    settledAt: execution.finished_at,
+  };
+};
