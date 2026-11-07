@@ -67,11 +67,33 @@ const evaluate = async (expression) => {
   if (r.exceptionDetails) throw new Error(`eval: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
   return r.result.value;
 };
-const shot = async (label) => {
+// Live contract-fill run 4: screenshots were lost with the refused artifact. KEY shots also get a
+// small JPEG (CDP-downscaled, <= KEY_SHOT_MAX_BYTES) in screenshots/key/, which live-summary.mjs
+// emits into the job log (HLS: chunks) so fetch-live.sh can rebuild them without any artifact.
+const KEY_SHOT_MAX_BYTES = 150_000;
+const KEY_SHOT_STEPS = [{ quality: 60, scale: 0.6 }, { quality: 45, scale: 0.45 }, { quality: 35, scale: 0.35 }];
+const keyShots = join(shots, 'key');
+mkdirSync(keyShots, { recursive: true });
+const keyShot = async (file) => {
+  try {
+    const m = await cdp('Page.getLayoutMetrics', {}, 15_000);
+    const vp = m.cssVisualViewport ?? m.layoutViewport ?? {};
+    const width = Math.max(1, Math.round(vp.clientWidth ?? 1280));
+    const height = Math.max(1, Math.round(vp.clientHeight ?? 800));
+    for (const step of KEY_SHOT_STEPS) {
+      const r = await cdp('Page.captureScreenshot', { format: 'jpeg', quality: step.quality, clip: { x: 0, y: 0, width, height, scale: step.scale } }, 30_000);
+      const bytes = Buffer.from(r.data, 'base64');
+      if (bytes.length <= KEY_SHOT_MAX_BYTES) { writeFileSync(join(keyShots, file.replace(/\.png$/u, '.jpg')), bytes); return; }
+    }
+    log('key screenshot over size at every step', { file });
+  } catch (e) { log('key screenshot failed', { file, error: String(e?.message ?? e) }); }
+};
+const shot = async (label, { key = false } = {}) => {
   try {
     const r = await cdp('Page.captureScreenshot', { format: 'png' }, 30_000);
     const file = `${stamp()}-${label}.png`;
     writeFileSync(join(shots, file), Buffer.from(r.data, 'base64'));
+    if (key) await keyShot(file);
     return file;
   } catch (e) { log('screenshot failed', { label, error: String(e?.message ?? e) }); return null; }
 };
@@ -213,7 +235,7 @@ try {
   }
   out.goalRunId = runId;
   log('goal created', { runId });
-  await shot('03-goal-created');
+  await shot('03-goal-created', { key: true });
   if (runId === null) throw Object.assign(new Error('goal did not appear in the home summary'), { result: 'GOAL_NOT_CREATED' });
 
   // Monitor: UI + read-only DB snapshot every 30 s; screenshot every 60 s; approve approval cards.
@@ -232,7 +254,7 @@ try {
     if (u?.failures && !out.ui.failures.some((f) => f.failures === u.failures)) out.ui.failures.push({ at: row.t, failures: u.failures });
     if (u?.banner && !out.ui.failures.some((f) => f.banner === u.banner)) out.ui.failures.push({ at: row.t, banner: u.banner });
     if (u?.approvals > 0) {
-      const before = await shot('approval-card');
+      const before = await shot('approval-card', { key: true });
       const clicked = await clickText('[data-testid=approval-card]', '^批准$');
       out.ui.approvals.push({ at: row.t, text: u.approvalText, clicked, screenshot: before });
       log('approval answered', { clicked });
@@ -253,14 +275,14 @@ try {
   log('monitor end', { terminal });
 
   // Final UI tour: the goal conversation, runtime panel, artifacts, then each surface.
-  await shot('90-final');
+  await shot('90-final', { key: true });
   desktopShot('final');
   await clickText('[data-testid=recent-goals]', '.').catch(() => false);
   await sleep(4000);
   await evaluate(`(() => { const c = document.querySelector('[data-testid=conversation]'); if (c) c.scrollTop = c.scrollHeight; })()`).catch(() => undefined);
-  await shot('91-goal-bottom');
+  await shot('91-goal-bottom', { key: true });
   await evaluate(`(() => { const c = document.querySelector('[data-testid=conversation]'); if (c) c.scrollTop = 0; })()`).catch(() => undefined);
-  await shot('92-goal-top');
+  await shot('92-goal-top', { key: true });
   out.ui.final = await evaluate(UI_STATE).catch(() => null);
   out.ui.finalText = await evaluate(`(document.querySelector('[data-testid=app-shell]') || document.body).innerText.slice(0, 20000)`).catch(() => null);
   for (const [i, label] of ['首页', '知识库', '工具', '智能体'].entries()) {
@@ -270,7 +292,7 @@ try {
   out.result = e?.result ?? 'DRIVER_ERROR';
   out.error = String(e?.stack ?? e).slice(0, 2000);
   log('driver error', { error: out.error });
-  await shot('99-error').catch(() => undefined);
+  await shot('99-error', { key: true }).catch(() => undefined);
   desktopShot('error');
   code = 11;
 }
