@@ -48,9 +48,10 @@
     },
     {
       "run": "hark-live-goal 42401450992",
-      "status": "RESERVED",
+      "status": "SETTLED",
       "reservedMicros": 8000000,
-      "settledMicros": null
+      "settledMicros": 2317974,
+      "calls": 57
     }
   ],
   "entries": [
@@ -1978,8 +1979,407 @@
       "status": "KNOWN",
       "micros": 64628,
       "tokens": 28537
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exec_01M6VN40KPXZFH4FV77HDEXWK2:network:1",
+      "status": "KNOWN",
+      "micros": 13436,
+      "tokens": 2866
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exec_01M6VN49GA92KEZXAJ1HADF5GW:network:1",
+      "status": "KNOWN",
+      "micros": 14908,
+      "tokens": 3131
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exec_01M6VN4J5PGXRTZP66EEZCTGE1:network:1",
+      "status": "KNOWN",
+      "micros": 3926,
+      "tokens": 1648
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:1",
+      "status": "KNOWN",
+      "micros": 4908,
+      "tokens": 2034
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:2",
+      "status": "KNOWN",
+      "micros": 5058,
+      "tokens": 2178
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:3",
+      "status": "KNOWN",
+      "micros": 5290,
+      "tokens": 2354
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:4",
+      "status": "KNOWN",
+      "micros": 5408,
+      "tokens": 2455
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:5",
+      "status": "KNOWN",
+      "micros": 6116,
+      "tokens": 2677
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:6",
+      "status": "KNOWN",
+      "micros": 19812,
+      "tokens": 4566
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:7",
+      "status": "KNOWN",
+      "micros": 35948,
+      "tokens": 7939
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:8",
+      "status": "KNOWN",
+      "micros": 16638,
+      "tokens": 8067
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:9",
+      "status": "KNOWN",
+      "micros": 18500,
+      "tokens": 8899
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:10",
+      "status": "KNOWN",
+      "micros": 18964,
+      "tokens": 9269
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:11",
+      "status": "KNOWN",
+      "micros": 21562,
+      "tokens": 10058
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:12",
+      "status": "KNOWN",
+      "micros": 22392,
+      "tokens": 10416
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:13",
+      "status": "KNOWN",
+      "micros": 56824,
+      "tokens": 15140
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:14",
+      "status": "KNOWN",
+      "micros": 32992,
+      "tokens": 15545
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:15",
+      "status": "KNOWN",
+      "micros": 43114,
+      "tokens": 17102
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:16",
+      "status": "KNOWN",
+      "micros": 68188,
+      "tokens": 21386
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:17",
+      "status": "KNOWN",
+      "micros": 73706,
+      "tokens": 25291
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:18",
+      "status": "KNOWN",
+      "micros": 71012,
+      "tokens": 27883
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:19",
+      "status": "KNOWN",
+      "micros": 71030,
+      "tokens": 25240
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:20",
+      "status": "KNOWN",
+      "micros": 63646,
+      "tokens": 16280
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:21",
+      "status": "KNOWN",
+      "micros": 33628,
+      "tokens": 16451
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:22",
+      "status": "KNOWN",
+      "micros": 38160,
+      "tokens": 18513
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:23",
+      "status": "KNOWN",
+      "micros": 64574,
+      "tokens": 21982
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:24",
+      "status": "KNOWN",
+      "micros": 49618,
+      "tokens": 22727
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:25",
+      "status": "KNOWN",
+      "micros": 47072,
+      "tokens": 22957
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:26",
+      "status": "KNOWN",
+      "micros": 55220,
+      "tokens": 24148
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:27",
+      "status": "KNOWN",
+      "micros": 49140,
+      "tokens": 24267
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:28",
+      "status": "KNOWN",
+      "micros": 49506,
+      "tokens": 24402
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:29",
+      "status": "KNOWN",
+      "micros": 49864,
+      "tokens": 24548
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:30",
+      "status": "KNOWN",
+      "micros": 49958,
+      "tokens": 24667
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:31",
+      "status": "KNOWN",
+      "micros": 50506,
+      "tokens": 24827
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:32",
+      "status": "KNOWN",
+      "micros": 50088,
+      "tokens": 24891
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:33",
+      "status": "KNOWN",
+      "micros": 51564,
+      "tokens": 25284
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:34",
+      "status": "KNOWN",
+      "micros": 64586,
+      "tokens": 27046
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:35",
+      "status": "KNOWN",
+      "micros": 69850,
+      "tokens": 29054
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:36",
+      "status": "KNOWN",
+      "micros": 72408,
+      "tokens": 26580
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:37",
+      "status": "KNOWN",
+      "micros": 22806,
+      "tokens": 10722
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:38",
+      "status": "KNOWN",
+      "micros": 24020,
+      "tokens": 11743
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:39",
+      "status": "KNOWN",
+      "micros": 28216,
+      "tokens": 13610
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:40",
+      "status": "KNOWN",
+      "micros": 28234,
+      "tokens": 13898
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:41",
+      "status": "KNOWN",
+      "micros": 31796,
+      "tokens": 15574
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:42",
+      "status": "KNOWN",
+      "micros": 31932,
+      "tokens": 15756
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:43",
+      "status": "KNOWN",
+      "micros": 33982,
+      "tokens": 16733
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:44",
+      "status": "KNOWN",
+      "micros": 51212,
+      "tokens": 19375
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:45",
+      "status": "KNOWN",
+      "micros": 42470,
+      "tokens": 19879
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:46",
+      "status": "KNOWN",
+      "micros": 40842,
+      "tokens": 20043
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:47",
+      "status": "KNOWN",
+      "micros": 52138,
+      "tokens": 21578
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:48",
+      "status": "KNOWN",
+      "micros": 49878,
+      "tokens": 22446
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:49",
+      "status": "KNOWN",
+      "micros": 56046,
+      "tokens": 23868
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:50",
+      "status": "KNOWN",
+      "micros": 50562,
+      "tokens": 24249
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:51",
+      "status": "KNOWN",
+      "micros": 71388,
+      "tokens": 27138
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:52",
+      "status": "KNOWN",
+      "micros": 58538,
+      "tokens": 27709
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:53",
+      "status": "KNOWN",
+      "micros": 75834,
+      "tokens": 25974
+    },
+    {
+      "run": "hark-live-goal 42401450992",
+      "callId": "exa_017efc629be038ea6370ca7233:network:54",
+      "status": "KNOWN",
+      "micros": 28960,
+      "tokens": 12086
     }
   ],
-  "totalMicros": 9162088,
-  "openReservationsMicros": 8000000
+  "totalMicros": 11480062,
+  "openReservationsMicros": 0
 }
