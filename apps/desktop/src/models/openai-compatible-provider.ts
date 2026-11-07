@@ -48,7 +48,9 @@ export interface OpenAiCompatibleConfig {
   /**
    * H15c-fix10 — the deployment's declared per-request output ceiling (max_tokens) for
    * the env profile and the embedded kernel route. Optional env COS_MODEL_MAX_OUTPUT_TOKENS
-   * (integer 256..8192; absent = 8192). The financial admission bound is priced from it,
+   * (integer 256..32768; absent = 8192). The financial admission bound is priced from it,
+   * (32768 stays well inside the documented deepseek-flash maximum output of 384K tokens,
+   * https://api-docs.deepseek.com/quick_start/pricing — the bound is CompanyOS's, not the model's),
    * so an operator with a small budget can declare a smaller ceiling instead of a call
    * count that cannot finish a real task.
    */
@@ -178,8 +180,8 @@ export const resolveOpenAiCompatibleConfig = (
   let maxOutputTokens: number | undefined;
   if (maxOutRaw !== '') {
     const parsed = Number(maxOutRaw);
-    if (!Number.isInteger(parsed) || parsed < 256 || parsed > 8_192) {
-      return err(domainError('VALIDATION_FAILED', 'COS_MODEL_MAX_OUTPUT_TOKENS must be an integer between 256 and 8192.', { reason: 'MODEL_CONFIG_INVALID' }));
+    if (!Number.isInteger(parsed) || parsed < 256 || parsed > 32_768) {
+      return err(domainError('VALIDATION_FAILED', 'COS_MODEL_MAX_OUTPUT_TOKENS must be an integer between 256 and 32768.', { reason: 'MODEL_CONFIG_INVALID' }));
     }
     maxOutputTokens = parsed;
   }

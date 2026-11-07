@@ -306,7 +306,9 @@ export const dshSandboxModeOf = (goalStructured: Readonly<Record<string, unknown
  * Lines per file part that stay well under the ceiling: tool-call arguments are JSON
  * escaped code (≈ 12-16 tokens per source line incl. escaping) plus the reply around it.
  */
-export const outputCeilingPartLines = (outputCeilingTokens: number): number => Math.max(40, Math.floor(outputCeilingTokens / 32));
+// Capped at 256 lines (the 8192-token figure): a wider ceiling (16384 after run 5) is headroom
+// against truncation, not an invitation to write bigger parts (longer replies, slower calls).
+export const outputCeilingPartLines = (outputCeilingTokens: number): number => Math.min(256, Math.max(40, Math.floor(outputCeilingTokens / 32)));
 export const outputCeilingDirective = (outputCeilingTokens: number): string => {
   const lines = outputCeilingPartLines(outputCeilingTokens);
   return `Output limit: each of your responses, including tool-call arguments, is capped at about ${String(outputCeilingTokens)} output tokens. ` +

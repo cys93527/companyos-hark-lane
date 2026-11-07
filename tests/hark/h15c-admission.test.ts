@@ -30,7 +30,8 @@ describe.each([
   ['installer/budget/deepseek-flash.approval-template.json', ENV],
   ['installer/budget/deepseek-flash.h15c.approval-template.json', EXECUTE_ENV],
   ['installer/budget/deepseek-flash.h15d.approval-template.json', { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '4096' }],
-  // live contract-fill (hark-live-goal custom): 8192 by default, any lower configured value still admitted
+  // live contract-fill (hark-live-goal custom): 16384 by default (run 5), any lower configured value still admitted
+  ['installer/budget/deepseek-flash.contract-fill.approval-template.json', { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '16384' }],
   ['installer/budget/deepseek-flash.contract-fill.approval-template.json', { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '8192' }],
   ['installer/budget/deepseek-flash.contract-fill.approval-template.json', { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '4096' }],
 ] as const)('%s', (template, ENV) => {
@@ -57,7 +58,9 @@ describe('H15c-fix10 COS_MODEL_MAX_OUTPUT_TOKENS', () => {
   it('the declared ceiling reaches the embedded kernel route; absent = 8192; out of range refused', () => {
     expect(productionEmbeddedModelRoute(EXECUTE_ENV)!.maxTokens).toBe(2048);
     expect(productionEmbeddedModelRoute(ENV)!.maxTokens).toBe(8192);
-    expect(() => productionEmbeddedModelRoute({ ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '9000' })).toThrow(/COS_MODEL_MAX_OUTPUT_TOKENS/u);
+    expect(productionEmbeddedModelRoute({ ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '16384' })!.maxTokens).toBe(16384);
+    expect(() => productionEmbeddedModelRoute({ ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '32769' })).toThrow(/COS_MODEL_MAX_OUTPUT_TOKENS/u);
+    expect(() => productionEmbeddedModelRoute({ ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '255' })).toThrow(/COS_MODEL_MAX_OUTPUT_TOKENS/u);
     expect(() => productionEmbeddedModelRoute({ ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '12.5' })).toThrow(/COS_MODEL_MAX_OUTPUT_TOKENS/u);
   });
   it('a route wider than the proof bound is never admitted (8192 route vs 2048 proof)', async () => {

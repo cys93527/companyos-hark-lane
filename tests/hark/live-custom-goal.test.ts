@@ -24,9 +24,10 @@ describe('live custom goal (real GUI, per-run cap CNY 8)', () => {
     expect(perCall).toBeLessThanOrEqual(t.cap.maxCostMicros);
     expect(t.cap.maxCalls).toBeLessThanOrEqual(1000);
     expect(t.cap.maxCalls * (t.proof.tokens.inputUpperBound + t.proof.tokens.outputUpperBound)).toBeLessThanOrEqual(t.cap.maxTokens);
-    // live contract-fill run 4: 4096 cut whole-file writes -> 8192 (deepseek-flash non-thinking max), configurable down.
-    expect(customJob).toMatch(/COS_MODEL_MAX_OUTPUT_TOKENS: \$\{\{ vars\.HARK_LIVE_MAX_OUTPUT_TOKENS \|\| '8192' \}\}/u);
-    expect(t.proof.tokens.outputUpperBound).toBe(8192);
+    // live contract-fill run 4: 4096 cut whole-file writes -> 8192; run 5: documented max output 384K
+    // (api-docs.deepseek.com/quick_start/pricing) -> 16384 headroom, configurable down.
+    expect(customJob).toMatch(/COS_MODEL_MAX_OUTPUT_TOKENS: \$\{\{ vars\.HARK_LIVE_MAX_OUTPUT_TOKENS \|\| '16384' \}\}/u);
+    expect(t.proof.tokens.outputUpperBound).toBe(16384);
   });
 
   it('runs only on explicit mode=custom, with job time covering the approved duration and the watchdog', () => {

@@ -8,7 +8,7 @@
   },
   "cap": {
     "maxCalls": 600,
-    "maxTokens": 62515200,
+    "maxTokens": 67430400,
     "maxCostMicros": 8000000,
     "durationMs": 9000000
   },
@@ -35,8 +35,8 @@
     },
     "tokens": {
       "inputUpperBound": 96000,
-      "outputUpperBound": 8192,
-      "evidenceRef": "max_tokens pinned by CompanyOS admission (= COS_MODEL_MAX_OUTPUT_TOKENS 8192 (deepseek-flash non-thinking output max; raised from 4096 after live contract-fill run 4), set by hark-live-goal custom mode); input bound 96000 tokens ENFORCED as a request-body byte bound (H15d-fix3). Live contract-fill runs (user 2026-11-06 00:17 CST: multiple runs, per-run cap CNY 8, open-ended ledger installer/budget/live-contract-fill-ledger.json). maxCalls is only the runaway guard; money is bounded by maxCostMicros per admission."
+      "outputUpperBound": 16384,
+      "evidenceRef": "max_tokens pinned by CompanyOS admission (= COS_MODEL_MAX_OUTPUT_TOKENS 16384 (raised from 4096 after live contract-fill run 4 and to 16384 after run 5; documented deepseek-flash max output 384K tokens, https://api-docs.deepseek.com/quick_start/pricing), set by hark-live-goal custom mode); input bound 96000 tokens ENFORCED as a request-body byte bound (H15d-fix3). Live contract-fill runs (user 2026-11-06 00:17 CST: multiple runs, per-run cap CNY 8, open-ended ledger installer/budget/live-contract-fill-ledger.json). maxCalls is only the runaway guard; money is bounded by maxCostMicros per admission."
     },
     "validForMs": 604800000
   }
