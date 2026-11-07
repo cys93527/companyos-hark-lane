@@ -314,6 +314,11 @@ const plannerSystemPrompt = (declaredOperationKinds?: readonly string[]): string
     `Do not optimize implementation together with its independent validation - a`,
     `self-certifying item is never acceptable. Split when the split adds correctness,`,
     `recoverability, authority isolation, specialization, or lifecycle value.`,
+    /* LIVE-CONTRACT-FILL run 5: a Chinese goal got an English plan the boss had to read. */
+    `Language: write every objective and requirement in the same natural language as the stated`,
+    `objective (a Chinese objective gets a Chinese plan); ids stay stable lowercase-hyphen ASCII.`,
+    `Software work: plan to build on mature, well-known libraries installed through the`,
+    `project's package manager rather than re-implementing file formats or infrastructure.`,
   ].join('\n');
 
 /** The deterministic Task-output provenance key (execution provenance, NEVER plan truth). */

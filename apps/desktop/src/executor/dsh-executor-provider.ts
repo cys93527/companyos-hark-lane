@@ -314,6 +314,22 @@ export const outputCeilingDirective = (outputCeilingTokens: number): string => {
     '(write the first part, then append or edit the following parts in later calls), write one file (or one part of a file) per reply, and keep each reply short.';
 };
 
+/**
+ * LIVE-CONTRACT-FILL run 5: the kernel spent a whole 10-minute attempt hand-writing a zip
+ * inflater, an XML parser and a docx loader (zero dependencies) instead of using the mature
+ * libraries any engineer would install. The task text now states the engineering practice:
+ * build on well-known libraries from the official registry through the project's package
+ * manager, never hand-roll file-format parsers; keep the project clean; write user-facing
+ * text in the goal's language. (Guidance only — authority and validation are unchanged.)
+ */
+export const ENGINEERING_PRACTICE_DIRECTIVE =
+  'Engineering practice for software work: build on mature, widely used open-source libraries installed with the project\'s package manager ' +
+  '(npm/pnpm for Node.js, pip for Python, …) from the official registry, declared in the manifest with a lockfile — for example docxtemplater with pizzip ' +
+  '(or the docx package) for Word .docx templates, and LibreOffice headless conversion (soffice --headless --convert-to pdf) or an equivalent maintained ' +
+  'library for PDF export. Never hand-write parsers or writers for zip, XML, docx, PDF or similar formats. If a dependency cannot be installed, say so ' +
+  'in your final answer instead of re-implementing it. Keep scratch and probe files out of the project, and make every declared script (e.g. npm test) ' +
+  'run tests that exist. Write user-facing text (UI strings, docs, reports) in the same natural language as the objective.';
+
 export interface DshTaskTextOptions {
   /** The selected route's per-response output ceiling (tokens), when CompanyOS knows it. */
   readonly outputCeilingTokens?: number;
@@ -375,6 +391,7 @@ export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTas
       lines.push(`Selected model (CompanyOS routing evidence): ${roleContext.attemptModelLabel}`);
     }
   }
+  lines.push(ENGINEERING_PRACTICE_DIRECTIVE);
   const fileRequirements = request.work.goalStructured?.['fileDeliveries'];
   const relevantFiles = Array.isArray(fileRequirements) ? fileRequirements.filter((item: unknown) => typeof item === 'object' && item !== null && criteria.some((criterion) => criterion.criterionId === (item as Record<string, unknown>)['criterionId'])) : [];
   if (relevantFiles.length > 0) {
