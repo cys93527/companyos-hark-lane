@@ -14,6 +14,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, closeSync, cpSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { driverEndLabel, driverEndOf } from './live-driver-end.mjs';
+import { collectWorkspaceEvidence, isEvidenceSkippedPath } from './evidence-filter.mjs';
 
 /* global fetch, WebSocket -- Node >= 22 globals on the bundled Electron runtime */
 
@@ -336,6 +337,19 @@ const collected = dbRead((q) => {
     handoffs: rows('SELECT * FROM handoffs ORDER BY rowid'),
     approvals: rows("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%approval%'"),
     eventTypeCounts: rows('SELECT type, COUNT(*) AS n FROM events GROUP BY type ORDER BY n DESC'),
+    // Run 6: each failed attempt with the kernel's OWN error (message, code), stderr tail and
+    // last events from its executor.dispatch_settled row - the slug alone hid the root cause.
+    attemptFailures: (() => {
+      const failed = rows("SELECT id, task_id, attempt_number, failure_code, settled_at FROM execution_attempts WHERE state = 'FAILED' ORDER BY rowid");
+      if (!Array.isArray(failed)) return failed;
+      return failed.map((a) => {
+        const settled = rows(`SELECT payload FROM events WHERE aggregate_id = '${String(a.id).replace(/'/gu, "''")}' AND type = 'executor.dispatch_settled' ORDER BY rowid DESC LIMIT 1`);
+        const p = Array.isArray(settled) && settled[0] !== undefined ? parse(settled[0].payload) : null;
+        return { attemptId: a.id, taskId: a.task_id, attemptNumber: a.attempt_number, failureCode: a.failure_code, settledAt: a.settled_at,
+          outcome: p?.outcome ?? null, reasonCode: p?.reasonCode ?? null, kernelError: p?.kernelError ?? null,
+          stderrTail: p?.stderrTail ?? null, kernelEventsTail: p?.kernelEventsTail ?? null, durationMs: p?.durationMs ?? null };
+      });
+    })(),
     tables: rows("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"),
   };
 });
@@ -347,16 +361,16 @@ safe('logs', () => { if (existsSync(join(userData, 'logs'))) cpSync(join(userDat
 safe('budget', () => { if (existsSync(join(userData, 'budget'))) cpSync(join(userData, 'budget'), join(evidence, 'userdata-budget'), { recursive: true }); });
 safe('kernel-logs', () => {
   const root = join(userData, 'agent-kernel-state');
-  const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) { if (!/^(\.dsh-stages|node_modules)$/u.test(e.name)) walk(p); } else if (/\.(log|jsonl|ndjson|json|txt)$/u.test(e.name) && statSync(p).size < 5_000_000) { const t = join(evidence, 'kernel-state', relative(root, p)); mkdirSync(join(t, '..'), { recursive: true }); copyFileSync(p, t); } } };
+  const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) { if (!isEvidenceSkippedPath(e.name)) walk(p); } else if (/\.(log|jsonl|ndjson|json|txt)$/u.test(e.name) && statSync(p).size < 5_000_000) { const t = join(evidence, 'kernel-state', relative(root, p)); mkdirSync(join(t, '..'), { recursive: true }); copyFileSync(p, t); } } };
   if (existsSync(root)) walk(root);
 });
 safe('workspace', () => {
   if (out.workspace === undefined) return;
-  cpSync(out.workspace, join(evidence, 'workspace'), { recursive: true, filter: (src) => !/[\\/](node_modules|\.git)([\\/]|$)/u.test(relative(out.workspace, src)) && !/^(node_modules|\.git)$/u.test(relative(out.workspace, src)) });
-  const files = [];
-  const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== '.git') walk(p); } else files.push({ path: relative(out.workspace, p), bytes: statSync(p).size }); } };
-  walk(out.workspace);
-  out.workspaceFiles = files;
+  // Run 6: no dependency stores / package-manager caches / VCS data, bounded per file and in total.
+  const ws = collectWorkspaceEvidence(out.workspace, join(evidence, 'workspace'));
+  out.workspaceFiles = ws.files;
+  out.workspaceSkippedDirs = ws.skippedDirs;
+  out.workspaceEvidenceCopy = { copied: ws.copied, copiedBytes: ws.copiedBytes, omitted: ws.omitted.slice(0, 50), omittedCount: ws.omitted.length };
 });
 // Independent of every model claim: does the generated project install / build / test?
 safe('project-checks', () => {
