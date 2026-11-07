@@ -29,7 +29,8 @@ import {
   type TypedExecutorConfig,
 } from '@companyos/engine';
 import { join } from 'node:path';
-import { readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { attemptNotesOf, parseAttemptNotes, renderAttemptNotes } from './kernel-failure-detail.js';
 
 import {createCoreDomainEvent, domainError, type DomainError, err, ok, redactSecrets, type Result} from '@companyos/core';
 import {createHash} from 'node:crypto';
@@ -66,6 +67,56 @@ import {
 export const KERNEL_BYTES_PER_TOKEN = 4;
 export const kernelContextWindowFor = (routeWindow: number, inputBoundBytes: number | undefined): number =>
   inputBoundBytes === undefined ? routeWindow : Math.min(routeWindow, Math.floor(inputBoundBytes / KERNEL_BYTES_PER_TOKEN));
+
+/**
+ * LIVE-CONTRACT-FILL run 6 (hark-live-goal 42385697784) ROOT CAUSE — compaction sizing.
+ *
+ * The kernel's compaction-basic resolves its automatic threshold as
+ *   min(window x 0.8, window - reservedCompletion - headroom)
+ * and, when that is <= 0, logs "step compaction failed" ONCE and never compacts on pressure
+ * again. Run 6 rendered headroom = summary maxTokens = the route max_tokens (16384, raised
+ * after run 5) against a 24 000-token window (96 000-byte bound / 4): 24 000 - 16 384 -
+ * 16 384 < 0, so pressure compaction was silently OFF. The only remaining reduction was the
+ * broker's context_length_exceeded answer at the byte bound, which the kernel retries ONCE
+ * per request (maxOverflowRetries default 1); every attempt grew to the bound (~28k tokens
+ * per call, the cost driver) and died on the next consecutive overflow as turn_end "error".
+ *
+ * The compactor now gets its OWN small headroom / summary budget, more overflow retries,
+ * and the sizing is checked before spawn: a window that leaves no real pressure budget is a
+ * typed configuration failure, never a silently disabled compactor.
+ */
+export const COMPACTION_HEADROOM_MAX_TOKENS = 4096;
+export const COMPACTION_SUMMARY_MAX_TOKENS = 4096;
+/** compaction-basic DEFAULT_RETAIN_RATIO (messageBudget x 0.16 retained verbatim). */
+export const COMPACTION_RETAIN_RATIO = 0.16;
+/** The automatic threshold must leave at least this much working context (tokens). */
+export const COMPACTION_MIN_THRESHOLD_TOKENS = 12_000;
+export interface KernelCompactionSizing {
+  readonly ok: boolean;
+  readonly headroomTokens: number;
+  readonly summaryMaxTokens: number;
+  readonly thresholdTokens: number;
+  readonly retainTokens: number;
+  readonly reason?: string;
+}
+export const kernelCompactionSizingFor = (contextWindow: number, routeMaxTokens: number): KernelCompactionSizing => {
+  const headroomTokens = Math.max(1, Math.min(COMPACTION_HEADROOM_MAX_TOKENS, routeMaxTokens));
+  const summaryMaxTokens = Math.max(1, Math.min(COMPACTION_SUMMARY_MAX_TOKENS, routeMaxTokens));
+  const messageBudget = contextWindow - routeMaxTokens;
+  const thresholdTokens = Math.floor(Math.min(contextWindow * 0.8, messageBudget - headroomTokens));
+  const retainTokens = Math.floor(Math.max(0, messageBudget) * COMPACTION_RETAIN_RATIO);
+  const base = { headroomTokens, summaryMaxTokens, thresholdTokens, retainTokens };
+  if (thresholdTokens < COMPACTION_MIN_THRESHOLD_TOKENS || retainTokens >= thresholdTokens) {
+    return {
+      ...base,
+      ok: false,
+      reason: `kernel working window ${String(contextWindow)} tokens leaves a compaction threshold of ${String(thresholdTokens)} tokens ` +
+        `(< ${String(COMPACTION_MIN_THRESHOLD_TOKENS)}) after the ${String(routeMaxTokens)}-token output reserve and ${String(headroomTokens)} headroom; ` +
+        'raise the trusted input bound (inputUpperBound) or lower the route max_tokens',
+    };
+  }
+  return { ...base, ok: true };
+};
 
 export const DSH_PROVIDER_KEY = 'dsh-headless';
 
@@ -447,7 +498,16 @@ export const kernelFailureReasonCodeOf = (stdoutText: string): string | undefine
 export const OUTPUT_CEILING_MAX_CONTINUATIONS = 3;
 /** A continuation needs at least this much of the attempt deadline left to be worth launching. */
 export const OUTPUT_CEILING_CONTINUATION_MIN_REMAINING_MS = 30_000;
-const INVENTORY_SKIP_DIRS: ReadonlySet<string> = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.dsh', '.companyos', 'dist', 'build', '.next']);
+/**
+ * Directories never listed as "work" in an inventory: VCS, dependency stores and package-manager
+ * caches, build output. Run 6 (42385697784): the agent's workspace-local `.npm-cache` (~900
+ * content files) sorted first and filled the whole 60-entry resume inventory, so a retry saw
+ * cache blobs instead of the project and started over.
+ */
+export const INVENTORY_SKIP_DIRS: ReadonlySet<string> = new Set([
+  '.git', 'node_modules', '.venv', 'venv', '__pycache__', '.dsh', '.companyos', 'dist', 'build', '.next',
+  '.npm-cache', '.npm', 'npm-cache', '_cacache', '.pnpm-store', '.yarn', '.cache', '.turbo', '.gradle', 'coverage',
+]);
 export interface WorkspaceFileEntry { readonly path: string; readonly bytes: number }
 /** Bounded, deterministic inventory of the workspace's files (relative '/' paths, sorted). */
 export const workspaceFileInventoryOf = (root: string, limit = 60): { readonly files: readonly WorkspaceFileEntry[]; readonly truncated: boolean } => {
@@ -527,10 +587,22 @@ export const resumedAttemptDirective = (input: {
   readonly attemptNumber: number;
   readonly files: readonly WorkspaceFileEntry[];
   readonly filesTruncated: boolean;
+  /** Compact notes of the previous attempt (renderAttemptNotes), when it left them. */
+  readonly priorNotes?: string;
+  /** True when a dependency store (node_modules) already exists in the workspace. */
+  readonly dependenciesInstalled?: boolean;
 }): string =>
   `RESUMED STEP (attempt ${String(input.attemptNumber)}): an earlier attempt of this same step ended before it finished (for example its time budget ran out). ` +
-  `Its files are kept in the workspace: ${input.files.map((file) => `${file.path} (${String(file.bytes)} B)`).join(', ')}${input.filesTruncated ? ', … (more not listed)' : ''}. ` +
-  'Do not start over: inspect what exists, keep what is correct, fix what is incomplete, and continue with the remaining work.';
+  (input.files.length === 0
+    ? 'It left no project files yet. '
+    : `Its files are kept in the workspace: ${input.files.map((file) => `${file.path} (${String(file.bytes)} B)`).join(', ')}${input.filesTruncated ? ', … (more not listed)' : ''}. `) +
+  (input.priorNotes === undefined || input.priorNotes === '' ? '' : `${input.priorNotes} `) +
+  (input.dependenciesInstalled === true ? 'Dependencies are already installed (node_modules exists): do not reinstall them unless package.json must change. ' : '') +
+  'Do not start over: inspect only what you need, keep what is correct, fix what is incomplete, and continue with the remaining work. Keep tool outputs short (no full logs or directory dumps).';
+
+/** Where a step's attempt notes live inside its workspace (excluded from inventories). */
+export const attemptNotesPathOf = (workspaceRoot: string, taskId: string): string =>
+  join(workspaceRoot, '.companyos', 'attempt-notes', `${taskId.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80)}.json`);
 
 export const runWithOutputCeilingRecovery = async (input: {
   readonly start: (timeoutMs: number, continuationDirective: string | undefined) => Promise<ExecutorProviderOutcome>;
@@ -1100,6 +1172,11 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           detail: broker.error.message,
         };
       }
+      const compaction = kernelCompactionSizingFor(kernelContextWindowFor(modelRoute.contextWindow, request.modelCallInputBoundBytes), modelRoute.maxTokens);
+      if (!compaction.ok) {
+        broker.value.close();
+        return { kind: 'transport-failed', reasonCode: 'EXECUTOR_KERNEL_CONTEXT_WINDOW_TOO_SMALL', detail: String(compaction.reason) };
+      }
       // STAGE 5B: stage a fresh verified execution copy for THIS attempt — the
       // child executes ONLY from the staged tree (100% closure hash pass), and
       // source-tree tamper after staging can never reach it.
@@ -1301,13 +1378,32 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           },
         });
         const resumed = request.attemptNumber > 1 ? workspaceFileInventoryOf(workspaceRoot) : undefined;
+        /*
+         * LIVE-CONTRACT-FILL run 6 — a retry RESUMES: it starts a fresh, small kernel context
+         * (never a replay of the failed conversation) seeded with the workspace inventory and
+         * the previous attempt's compact notes (its last actions, last note, why it ended).
+         */
+        const notesPath = attemptNotesPathOf(workspaceRoot, request.taskId);
+        let priorNotes: string | undefined;
+        if (resumed !== undefined) {
+          try {
+            const notes = parseAttemptNotes(readFileSync(notesPath, 'utf8'));
+            if (notes !== null && notes.taskId === request.taskId && notes.attemptNumber < request.attemptNumber) priorNotes = renderAttemptNotes(notes);
+          } catch {
+            priorNotes = undefined;
+          }
+        }
+        const dependenciesInstalled = resumed !== undefined && existsSync(join(workspaceRoot, 'node_modules'));
         const { outcome: rawOutcome } = await runWithOutputCeilingRecovery({
           workspaceRoot,
           outputCeilingTokens: modelRoute.maxTokens,
           timeoutMs: attemptDeadlineMs,
           shouldStop: () => deadlineDraining,
-          ...(resumed === undefined || resumed.files.length === 0 ? {} : {
-            initialDirective: resumedAttemptDirective({ attemptNumber: request.attemptNumber, files: resumed.files, filesTruncated: resumed.truncated }),
+          ...(resumed === undefined || (resumed.files.length === 0 && priorNotes === undefined) ? {} : {
+            initialDirective: resumedAttemptDirective({
+              attemptNumber: request.attemptNumber, files: resumed.files, filesTruncated: resumed.truncated,
+              ...(priorNotes === undefined ? {} : { priorNotes }), dependenciesInstalled,
+            }),
           }),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
           start: async (attemptTimeoutMs, directive) => {
@@ -1321,6 +1417,21 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         });
         cancelDrainLead();
         const outcome = deadlineDrainOutcome(rawOutcome, deadlineDraining);
+        if (outcome.kind !== 'succeeded') {
+          const stdoutText = (outcome as { readonly stdoutText?: string }).stdoutText ?? '';
+          try {
+            mkdirSync(join(notesPath, '..'), { recursive: true });
+            writeFileSync(notesPath, JSON.stringify(attemptNotesOf({
+              taskId: request.taskId,
+              attemptNumber: request.attemptNumber,
+              outcome: outcome.kind,
+              endReason: (outcome as { readonly reasonCode?: string }).reasonCode ?? kernelFailureReasonCodeOf(stdoutText) ?? null,
+              stdoutText,
+            })));
+          } catch {
+            // notes are an optimisation for the next attempt; their absence never fails this one
+          }
+        }
         // STAGE 5B post-spawn gate: a staged-tree tamper in flight means the child
         // may have executed unverified bytes — the attempt fails loud, never silent.
         const postSpawn = stage.value.verifyStaged();

@@ -4,6 +4,7 @@ import { createGoalExecutionBudget } from '@companyos/engine';
 import type { SelectedModelRoute } from '@companyos/engine';
 import type { DurableDatabase } from '@companyos/persistence';
 import { envCredentialRef } from './models/credential-ref.js';
+import { STEP_SPEND_CAP_REACHED, stepAtSpendCap, stepCapReached, stepSpendCapMicros, stepSpendMicros } from './step-spend-cap.js';
 import { pinnedBudgetCost, readTrustedBudgetProof, trustedBudgetBound, trustedBudgetPolicyId, type ObservedBudgetBinding, type TrustedBudgetProofSource } from './trusted-budget-proof.js';
 
 export interface GoalSafetyConfiguration {
@@ -18,6 +19,11 @@ export interface GoalSafetyConfiguration {
   readonly boundOf?: (input: { readonly modelKey: string; readonly maxOutputTokens: number | null }) => CostAdmissionBound | null;
   /** Exact billing reconciliation; missing evidence keeps the reservation UNKNOWN. */
   readonly costOf?: (modelKey: string, usage: InvocationResult['usage']) => number | null;
+  /**
+   * LIVE-CONTRACT-FILL run 6 — one step's share of maxCostMicros (0 < ratio <= 1). Absent =
+   * no per-step cap (the goal cap alone bounds spend).
+   */
+  readonly stepSpendCapRatio?: number;
 }
 
 /** Controllers/timers are transport handles ONLY. Every admission reads durable truth. */
@@ -73,8 +79,27 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
     }
     return bound;
   };
+  const stepCapMicros = config.stepSpendCapRatio === undefined ? 0 : stepSpendCapMicros(config.maxCostMicros, config.stepSpendCapRatio);
+  const attemptsOfTask = async (taskId: string): Promise<Set<string>> => new Set(
+    (await database.db.writeFence.serialize(async () => database.db.prepare('SELECT id FROM execution_attempts WHERE task_id = ?').all(taskId) as { id: string }[])).map((row) => row.id),
+  );
   const coordinator = {
     budget,
+    /** The unfinished step of this goal that has reached its spend share (task id), else null. */
+    async stepAtSpendCap(runId: string): Promise<string | null> {
+      if (stepCapMicros <= 0) return null;
+      const state = await budget.read(runId);
+      const owners = [...new Set(state.reservations.map((reservation) => reservation.ownerId))];
+      if (owners.length === 0) return null;
+      const rows = await database.db.writeFence.serialize(async () => database.db.prepare(
+        `SELECT a.id AS id, a.task_id AS task_id, t.state AS state FROM execution_attempts a JOIN tasks t ON t.id = a.task_id WHERE a.id IN (${owners.map(() => '?').join(', ')})`,
+      ).all(...owners) as { id: string; task_id: string; state: string }[]);
+      return stepAtSpendCap({
+        reservations: state.reservations,
+        attempts: new Map(rows.map((row) => [row.id, { taskId: row.task_id, taskState: row.state }])),
+        capMicros: stepCapMicros,
+      });
+    },
     async initialize(goalRunId: string): Promise<void> {
       const run = await database.runs.get(goalRunId);
       if (run === null) throw domainError('NOT_FOUND', 'Goal Run does not exist.');
@@ -100,7 +125,7 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
       try { await budget.check(runId); } catch (error) { handle.release(); throw error; }
       return handle;
     },
-    async prepareExecutor(input: { readonly runId: string; readonly attemptId: string; readonly route?: SelectedModelRoute; readonly fallback?: { readonly providerId: string; readonly modelId: string; readonly maxTokens?: number; readonly baseURL?: string; readonly apiKeyEnv?: string } }) {
+    async prepareExecutor(input: { readonly runId: string; readonly attemptId: string; readonly taskId?: string; readonly route?: SelectedModelRoute; readonly fallback?: { readonly providerId: string; readonly modelId: string; readonly maxTokens?: number; readonly baseURL?: string; readonly apiKeyEnv?: string } }) {
       const modelKey = input.route?.modelProfileId ?? (input.fallback === undefined ? '' : `${input.fallback.providerId}:${input.fallback.modelId}`);
       const modelId = input.route?.modelId ?? input.fallback?.modelId;
       const maxOutputTokens = input.route?.maxTokens ?? input.fallback?.maxTokens ?? null;
@@ -127,6 +152,15 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
           // an UNKNOWN settlement counted at the bound is then a true upper bound, never an
           // undercount. A larger body is refused before any upstream HTTP.
           if (bytes.byteLength > proof.inputTokens) throw domainError('POLICY_DENIED', 'Kernel request is larger than the proven input bound.', { reason: 'GOAL_KERNEL_REQUEST_INPUT_UNBOUNDED', retryable: false, requestBytes: bytes.byteLength, inputUpperBound: proof.inputTokens });
+          // LIVE-CONTRACT-FILL run 6: one step never spends past its share of the goal cap.
+          if (input.taskId !== undefined && stepCapMicros > 0) {
+            const attempts = await attemptsOfTask(input.taskId);
+            attempts.add(input.attemptId);
+            const spent = stepSpendMicros((await budget.read(input.runId)).reservations, attempts);
+            if (stepCapReached(spent, proof.costMicros, stepCapMicros)) {
+              throw domainError('POLICY_DENIED', 'This step reached its share of the goal budget.', { reason: STEP_SPEND_CAP_REACHED, retryable: false, taskId: input.taskId, spentMicros: spent, capMicros: stepCapMicros });
+            }
+          }
           return coordinator.admit({ runId: input.runId, executionId: input.attemptId, modelKey, networkAttempt: ++networkAttempt, maxOutputTokens: requestedMax, binding });
         },
       };

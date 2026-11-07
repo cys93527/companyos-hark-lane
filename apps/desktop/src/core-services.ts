@@ -96,6 +96,7 @@ import { createDurableUsageReader } from './efficiency/durable-usage-reader.js';
 import { createLatestAttemptFailureReader } from './goal-attempt-failure.js';
 import { createControlPlaneService, GOAL_WORK_KIND } from './control-plane.js';
 import {deriveRetryContinuationEnvelope} from './executor/attempt-supervision.js';
+import {STEP_SPEND_CAP_REACHED} from './step-spend-cap.js';
 import { resolveExecutionAttemptTimeoutMs, resolveKernelAttemptTimeoutMs } from './production-composition.js';
 import { abortableSleep } from './runtime/model-call-sleep.js';
 import {
@@ -1695,7 +1696,7 @@ export async function composeCoreServices(
             if (taskRow === null) return 'failed';
             const { createProviderDispatchExecution } = await import('./executor/provider-dispatch.js');
             const dispatch = createProviderDispatchExecution({
-              ...(executionSafety === null ? {} : { prepareExternalAdmission: (request, route) => executionSafety.prepareExecutor({ runId: request.runId, attemptId: request.attemptId, ...(route === undefined ? {} : { route }), ...(options.embeddedDshModelRoute === undefined ? {} : { fallback: options.embeddedDshModelRoute }) }) }),
+              ...(executionSafety === null ? {} : { prepareExternalAdmission: (request, route) => executionSafety.prepareExecutor({ runId: request.runId, attemptId: request.attemptId, taskId: request.taskId, ...(route === undefined ? {} : { route }), ...(options.embeddedDshModelRoute === undefined ? {} : { fallback: options.embeddedDshModelRoute }) }) }),
               attemptTimeoutMs: executionAttemptTimeoutMs,
               attemptTimeoutMsFor: (key) => (key === 'dsh-headless' ? kernelAttemptTimeoutMs : undefined),
               registry,
@@ -4103,7 +4104,10 @@ export async function composeCoreServices(
         // H15d-fix5 (hark-live-goal 40359081704): the money/token cap counts too — no bound
         // this Goal has reserved still fits — not only the call-slot count.
         const envelope = await executionSafety.budget.read(runId);
-        return goalEnvelopeExhausted(envelope) ? 'GOAL_BUDGET_EXHAUSTED' : null;
+        if (goalEnvelopeExhausted(envelope)) return 'GOAL_BUDGET_EXHAUSTED';
+        // LIVE-CONTRACT-FILL run 6: an unfinished step at its spend share blocks the Goal with
+        // a reason instead of retrying it until the whole run is spent.
+        return (await executionSafety.stepAtSpendCap(runId)) === null ? null : STEP_SPEND_CAP_REACHED;
       } catch (error) {
         const reason = error instanceof DomainError ? String(error.details['reason'] ?? '') : '';
         return STANDING_ADMISSION_REFUSALS.includes(reason) ? reason : null;

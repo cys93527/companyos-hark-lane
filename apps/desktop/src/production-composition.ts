@@ -32,6 +32,7 @@ import { ModelPool, type ModelProfile } from './executor/model-pool.js';
 import { ROUTING_POLICIES } from './executor/smart-model-router.js';
 import { envCredentialRef } from './models/credential-ref.js';
 import { resolveOpenAiCompatibleConfig } from './models/openai-compatible-provider.js';
+import { stepSpendCapRatioOf } from './step-spend-cap.js';
 
 /** The default executor adapter id the composition routes the generic work kind to. */
 export const DEFAULT_EXECUTOR_PROVIDER_KEY = 'dsh-headless';
@@ -379,7 +380,10 @@ export const productionCompositionOptions = (
     // ADR-A: every production entry enables durable admission. No verified tariff /
     // upstream token bound is currently configured: external execution FAILS CLOSED.
     // These limits are not a claim that an upstream accepts a monetary hard cap.
+    // LIVE-CONTRACT-FILL run 6: one step may spend at most this share of the goal cap
+    // (default 35%; COS_STEP_SPEND_CAP_RATIO in (0, 1]).
     executionSafety: { policyId: 'v1-bounded-execution-1', maxCalls: cap.maxCalls, maxTokens: cap.maxTokens, maxCostMicros: cap.maxCostMicros, durationMs: cap.durationMs,
+      stepSpendCapRatio: stepSpendCapRatioOf(env['COS_STEP_SPEND_CAP_RATIO']),
       ...(options.trustedBudgetProofs === undefined ? {} : { trustedProofs: options.trustedBudgetProofs }) },
     providerKinds: [GOAL_WORK_KIND, SOFTWARE_WORK_KIND, ...(nativeJob === undefined ? [] : Object.keys(nativeJob.operations))],
     // H10b: plan without an executor; compile/dispatch stays refused (typed precondition).

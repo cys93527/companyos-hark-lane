@@ -348,7 +348,7 @@ export interface AutonomyDriverDeps {
 }
 
 /** Durable admission refusals that no autonomous step can clear (operator action required). */
-export const STANDING_ADMISSION_REFUSALS: readonly string[] = ['GOAL_USAGE_UNKNOWN', 'GOAL_DEADLINE_EXCEEDED', 'GOAL_BUDGET_EXHAUSTED'];
+export const STANDING_ADMISSION_REFUSALS: readonly string[] = ['GOAL_USAGE_UNKNOWN', 'GOAL_DEADLINE_EXCEEDED', 'GOAL_BUDGET_EXHAUSTED', 'GOAL_STEP_SPEND_CAP_REACHED'];
 
 export const createGoalOutcomeAutonomyDriver = (deps: AutonomyDriverDeps) => {
   const defaultBudgets: AutonomyBudget = {...DEFAULT_AUTONOMY_BUDGET, ...(deps.budgets ?? {})};
