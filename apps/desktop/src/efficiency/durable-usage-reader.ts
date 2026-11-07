@@ -61,7 +61,11 @@ export const pricingFromRecord = (
   };
 };
 
-export const createDurableUsageReader = (database: DurableLike, companyId: string): UsageReader => {
+export const createDurableUsageReader = (
+  database: DurableLike,
+  companyId: string,
+  options: { readonly budgetCurrency?: string | null } = {},
+): UsageReader => {
   const allRows = (sql: string, params: readonly unknown[]): readonly Row[] =>
     database.db.prepare(sql).all(...params).map(asRow);
 
@@ -196,6 +200,31 @@ export const createDurableUsageReader = (database: DurableLike, companyId: strin
       if (bindings === null) return null;
       const first = Object.values(bindings)[0];
       return typeof first === 'string' ? first : null;
+    },
+
+    settledCost: async (goalRunId) => {
+      let row: Row;
+      try {
+        row = oneRow('SELECT execution_budget_json FROM runs WHERE id = ? AND execution_goal_run_id = id', [goalRunId]);
+      } catch {
+        return null; // a database without the execution-budget columns has no ledger
+      }
+      const budget = parse(String(row['execution_budget_json'] ?? ''));
+      const reservations = budget?.['reservations'];
+      if (!Array.isArray(reservations)) return null;
+      let costMicros = 0;
+      let knownCalls = 0;
+      let openCalls = 0;
+      for (const raw of reservations) {
+        const reservation = asRow(raw);
+        const usage = asRow(reservation['usage']);
+        const cost = numberOrNull(usage['costMicros']);
+        if (reservation['status'] === 'KNOWN' && cost !== null && cost >= 0) {
+          costMicros += cost;
+          knownCalls += 1;
+        } else openCalls += 1;
+      }
+      return { costMicros, knownCalls, openCalls, currency: options.budgetCurrency ?? null };
     },
 
     modelPricing: async (modelKey) => {

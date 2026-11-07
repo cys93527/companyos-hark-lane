@@ -191,7 +191,14 @@ export interface RuntimeLifecycleView {
   readonly phase: RuntimePhase;
   readonly runState: string;
   readonly objective: string | null;
+  /**
+   * The PLANNING phase's own status: DONE once its plan was compiled into an execution run
+   * (live contract-fill run 4 showed "规划 · FAILED" for a planning phase that had succeeded,
+   * because the goal run's state also carries the execution failure).
+   */
   readonly planningState: string | null;
+  /** The EXECUTION phase's status (latest execution run state); null before the plan compiled. */
+  readonly executionState?: string | null;
   readonly tasks: readonly RuntimeLifecycleTaskRow[];
   readonly validation: { readonly completed: number; readonly failed: number; readonly missing: number };
   readonly correctiveRounds: number;
@@ -200,6 +207,10 @@ export interface RuntimeLifecycleView {
   /** LIVE-CONTRACT-FILL: the canonical run failureReason (Chinese-labelled in the blocker strip). */
   readonly failureReason?: string | null;
 }
+
+/** A compiled execution run proves the planning phase completed; otherwise the planning run's own state. */
+export const planningPhaseStateOf = (workspace: Pick<CanonicalGoalWorkspace, 'planningRun' | 'executionRuns'>): string | null =>
+  workspace.executionRuns.length > 0 ? 'DONE' : workspace.planningRun?.state ?? null;
 
 export const projectRuntimeLifecycle = (
   workspace: CanonicalGoalWorkspace,
@@ -246,7 +257,8 @@ export const projectRuntimeLifecycle = (
     runState: overview?.state ?? 'UNKNOWN',
     failureReason: overview?.failureReason ?? null,
     objective: workspace.goal?.objective ?? null,
-    planningState: workspace.planningRun?.state ?? null,
+    planningState: planningPhaseStateOf(workspace),
+    executionState: workspace.executionRuns.length === 0 ? null : workspace.executionRuns[workspace.executionRuns.length - 1]!.state,
     tasks,
     validation: {
       completed: overview?.validation.completed.length ?? 0,
@@ -421,9 +433,13 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
             PHASE_LABELS[lifecycle.phase],
             props.stageProgress == null || props.stageProgress.total === 0
               ? null
-              : h('small', { className: 'num' }, `阶段 ${String(props.stageProgress.done)}/${String(props.stageProgress.total)} 完成`),
+              : h('small', { className: 'num' }, `${lifecycle.executionState == null ? '' : '执行 · '}阶段 ${String(props.stageProgress.done)}/${String(props.stageProgress.total)} 完成`),
           ),
-          h('p', { className: 'rt-canonical num' }, `目标 · ${lifecycle.runState} · 规划 · ${lifecycle.planningState ?? '--'}`),
+          h(
+            'p',
+            { className: 'rt-canonical num' },
+            `目标 · ${lifecycle.runState} · 规划 · ${lifecycle.planningState ?? '--'}${lifecycle.executionState == null ? '' : ` · 执行 · ${lifecycle.executionState}`}`,
+          ),
         ),
     blockers.length === 0 && pending === null
       ? null

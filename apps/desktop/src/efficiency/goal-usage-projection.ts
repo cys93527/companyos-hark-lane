@@ -68,6 +68,18 @@ export interface UsageReader {
   /** Declared pricing of the selected model(s), per million tokens. */
   modelPricing(modelKey: string | null): Promise<{ inputPerMillion: number | null; outputPerMillion: number | null; currency?: string | null } | null>;
   modelKeyOf(runId: string): Promise<string | null>;
+  /**
+   * LIVE-CONTRACT-FILL run 4: the Goal's execution-budget ledger. Every admitted model call
+   * is priced by the trusted budget proof and settled with its exact cost (KNOWN) — the
+   * authoritative cost, independent of a ModelRecord price. Optional: absent = no ledger.
+   */
+  settledCost?(goalRunId: string): Promise<{
+    readonly costMicros: number;
+    readonly knownCalls: number;
+    /** Calls whose charge is unproven (UNKNOWN) or still reserved (in flight). */
+    readonly openCalls: number;
+    readonly currency: string | null;
+  } | null>;
 }
 
 export interface GoalUsageProjection {
@@ -237,6 +249,11 @@ const readGoalUsage = async (
       : (summary.knownInputTokens / 1_000_000) * pricing.inputPerMillion +
         (summary.knownOutputTokens / 1_000_000) * pricing.outputPerMillion;
 
+  // The budget ledger's settled exact cost wins over an estimate: it is what was charged,
+  // priced by the trusted proof. Shown only with a currency and at least one settled call.
+  const ledger = reader.settledCost === undefined ? null : await reader.settledCost(goalRunId);
+  const ledgerCost = ledger !== null && ledger.knownCalls > 0 && ledger.currency !== null ? ledger : null;
+
   return {
     goalRunId,
     scope: 'GOAL',
@@ -259,7 +276,17 @@ const readGoalUsage = async (
       reason: 'provider/kernel 未提供权威 cached-token 证据；不由重复命令或会话复用推断。',
     },
     cost:
-      knownCost === null
+      ledgerCost !== null
+        ? {
+            state: 'KNOWN',
+            knownScopeCost: Math.round(ledgerCost.costMicros) / 1_000_000,
+            currency: ledgerCost.currency,
+            coverageComplete: ledgerCost.openCalls === 0,
+            note: ledgerCost.openCalls === 0
+              ? `按预算账本逐次结算的实际费用（${String(ledgerCost.knownCalls)} 次调用，可信定价）。`
+              : `按预算账本逐次结算的实际费用（${String(ledgerCost.knownCalls)} 次已结算；${String(ledgerCost.openCalls)} 次未结算或费用未证实，未计入）。`,
+          }
+        : knownCost === null
         ? { state: 'UNKNOWN', knownScopeCost: null, currency: null, coverageComplete: summary.complete, note: '未配置完整的可信定价（输入/输出价格与币种）。' }
         : {
             state: 'ESTIMATED',

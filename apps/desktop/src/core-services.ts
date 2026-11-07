@@ -4082,7 +4082,10 @@ export async function composeCoreServices(
      */
     // STAGE 3 — the read-only E1 usage projection over the ONE durable database.
     const goalUsageService = createGoalUsageService(
-      createDurableUsageReader(database, 'company_default'),
+      createDurableUsageReader(database, 'company_default', {
+        // LIVE-CONTRACT-FILL run 4: the ledger's settled exact cost carries the trusted proof's currency.
+        budgetCurrency: (['USD', 'CNY', 'EUR', 'CREDIT'] as const).find((c) => c === options.executionSafety?.trustedProofs?.currency) ?? null,
+      }),
     );
 
     const controlPlane =
