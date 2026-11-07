@@ -71,6 +71,12 @@ export interface ProviderWorkEnvelope {
   readonly acceptanceCriteria?: readonly { readonly criterionId: string; readonly requirement: string }[];
   /** The run-owned canonical goal's structured constraints (human-supplied, byte-exact). */
   readonly goalStructured?: Readonly<Record<string, unknown>>;
+  /** Run 8: this task's position in the goal's plan (context only). */
+  readonly planContext?: {
+    readonly position: number;
+    readonly total: number;
+    readonly steps: readonly { readonly objective: string; readonly current: boolean }[];
+  };
 }
 
 export interface ProviderDispatchDeps {
@@ -695,6 +701,9 @@ ${renderRetryDirective(retryEnvelope)}`;
           : {}),
         ...(envelope !== undefined && envelope.value.goalStructured !== undefined
           ? { goalStructured: envelope.value.goalStructured }
+          : {}),
+        ...(envelope !== undefined && envelope.value.planContext !== undefined
+          ? { planContext: envelope.value.planContext }
           : {}),
         ...(retryEnvelope === null ? {} : { retry: retryEnvelope }),
         ...(roleContext === null ? {} : { roleContext }),

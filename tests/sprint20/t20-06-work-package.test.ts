@@ -348,6 +348,15 @@ describe('T20-06 §63 — core projection', () => {
     ]);
     expect(pkg.value.acceptance.validatorRefs).toEqual(['e2e7.unit_validator', 'e2e7.audit_validator']); // 9
     expect(pkg.value.work.taskInputs).toEqual({}); // 10: canonical immutable inputs
+    // run 8: plan position — compiled plan-item objectives in plan order, this step marked
+    expect(pkg.value.plan?.position).toBe(2);
+    expect(pkg.value.plan?.total).toBe(4);
+    expect(pkg.value.plan?.steps.map((step) => [step.objective, step.current])).toEqual([
+      ['Analyze the three suppliers.', false],
+      ['Perform the financial review.', true],
+      ['Obtain the procurement approval.', false],
+      ['Produce the recommendation.', false],
+    ]);
     expect(pkg.value.goal.objective).toBe('Evaluate three suppliers, perform financial review, obtain approval, and produce a procurement recommendation.');
     expect(pkg.value.goal.sourceRef).toBe(`plan:${String(f.planId)}`); // run-owned goal, plan = provenance only
     expect(pkg.value.contract).toBe('companyos/work-package/1');

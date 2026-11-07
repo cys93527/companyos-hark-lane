@@ -383,6 +383,32 @@ export const ENGINEERING_PRACTICE_DIRECTIVE =
   'in your final answer instead of re-implementing it. Keep scratch and probe files out of the project, and make every declared script (e.g. npm test) ' +
   'run tests that exist. Write user-facing text (UI strings, docs, reports) in the same natural language as the objective.';
 
+/**
+ * LIVE-CONTRACT-FILL run 8 (hark-live-goal 42419993676): step 1 of a 6-step plan ("parse the
+ * Word template and detect fields") ran 192 model calls and wrote the WHOLE app — web server,
+ * UI, paste entry, preview, PDF export — because the kernel saw the full goal and no word that
+ * the goal is split into steps that run separately; the step's spend share ran out mid-work.
+ * The task text now names the plan position, lists the other steps as NOT this task's work, and
+ * says to finish as soon as this step's own criteria are met. (Guidance only — authority,
+ * admission and validation are unchanged.)
+ */
+export const STEP_SCOPE_DIRECTIVE =
+  'Scope: do ONLY the work of this step (the objective in the first line and its acceptance criteria). The other steps of the plan are ' +
+  'separate tasks run after (or before) this one by other executions — do not implement them now, not even partly (no UI, export, ' +
+  'packaging or extra features that belong to another step). This step has a limited share of the goal\'s budget and is stopped when it ' +
+  'runs out, so work economically: write the code this step needs with a small test for it, run the tests once they exist, and give your ' +
+  'final answer as soon as this step\'s acceptance criteria are met — do not keep polishing or probing.';
+
+export const planContextLinesOf = (planContext: ExecutorExecutionRequest['work']['planContext']): string[] => {
+  if (planContext === undefined || planContext.total < 2 || planContext.steps.length === 0) return [];
+  const lines = [`Plan position: this task is step ${String(planContext.position)} of ${String(planContext.total)} of the goal's plan.`];
+  planContext.steps.forEach((step, index) => {
+    lines.push(`- step ${String(index + 1)}${step.current ? ' (THIS task)' : ' (another task — not yours)'}: ${step.objective}`);
+  });
+  lines.push(STEP_SCOPE_DIRECTIVE);
+  return lines;
+};
+
 export interface DshTaskTextOptions {
   /** The selected route's per-response output ceiling (tokens), when CompanyOS knows it. */
   readonly outputCeilingTokens?: number;
@@ -402,6 +428,7 @@ export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTas
     lines.push('Acceptance criteria (the platform validates the verdict, not you):');
     for (const criterion of criteria) lines.push(`- [${criterion.criterionId}] ${criterion.requirement}`);
   }
+  lines.push(...planContextLinesOf(request.work.planContext));
   const goalStructured = request.work.goalStructured;
   if (goalStructured !== undefined && Object.keys(goalStructured).length > 0) {
     lines.push(`Goal structured constraints: ${JSON.stringify(goalStructured)}`);

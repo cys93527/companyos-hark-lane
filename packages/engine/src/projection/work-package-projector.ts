@@ -51,6 +51,10 @@ export const WORK_PACKAGE_LIMITS = {
   maxAcceptedHandoffs: 4,
   /** Canonical task inputs size bound (the materializer already enforces this at creation). */
   maxTaskInputsBytes: 16 * 1024,
+  /** Plan steps projected as position context (run 8). */
+  maxPlanSteps: 24,
+  /** Characters kept per projected plan-step objective. */
+  maxPlanStepChars: 400,
 } as const;
 
 /** One canonical predecessor result, selected by the repository's deterministic rules. */
@@ -126,6 +130,19 @@ export interface WorkPackage {
     readonly validatorRefs: readonly string[];
   };
   readonly dependencies: readonly WorkPackageDependency[];
+  /**
+   * LIVE-CONTRACT-FILL run 8 — the PLAN POSITION of this task: the pinned version's
+   * compiled plan-item objectives in plan order (bounded, byte-exact prefixes), with this
+   * task's own step marked. Context only (an executor learns that the goal is split into
+   * steps that run separately), never authority and never a second DAG. Absent when the
+   * pinned version is not a compiled plan (no planItem nodes).
+   */
+  readonly plan?: {
+    /** 1-based position of this task's step among the plan steps. */
+    readonly position: number;
+    readonly total: number;
+    readonly steps: readonly { readonly stageId: string; readonly objective: string; readonly current: boolean }[];
+  } | null;
   /**
    * Sprint21 final — CAUSAL RESULT PROJECTION: when this task IS a deterministic
    * reassessment, its bounded canonical causal reference to the corrected result it
@@ -522,6 +539,25 @@ export function createWorkPackageProjector(deps: WorkPackageProjectorDeps) {
       ? (nodeConfig['validatorIds'] as readonly unknown[]).map(String)
       : [];
 
+    /* ---- 8b. plan position (run 8): compiled plan-item objectives in pinned order ---- */
+    const planNodes = nodes.filter((entry) => {
+      const item = entry.config?.['planItem'] as { readonly objective?: unknown } | undefined;
+      return item !== undefined && typeof item.objective === 'string' && item.objective.trim() !== '';
+    });
+    const planPosition = planNodes.findIndex((entry) => String(entry.id) === String(task.stageId));
+    const plan: NonNullable<WorkPackage['plan']> | null = planPosition < 0 ? null : {
+      position: planPosition + 1,
+      total: planNodes.length,
+      steps: planNodes.slice(0, WORK_PACKAGE_LIMITS.maxPlanSteps).map((entry) => {
+        const text = String((entry.config?.['planItem'] as { readonly objective: string }).objective);
+        return {
+          stageId: String(entry.id),
+          objective: text.length > WORK_PACKAGE_LIMITS.maxPlanStepChars ? `${text.slice(0, WORK_PACKAGE_LIMITS.maxPlanStepChars)}…` : text,
+          current: String(entry.id) === String(task.stageId),
+        };
+      }),
+    };
+
     /* ---- 9. pure derived result; no store write, no clock, no provider ---- */
     return ok({
       contract: WORK_PACKAGE_CONTRACT,
@@ -548,6 +584,7 @@ export function createWorkPackageProjector(deps: WorkPackageProjectorDeps) {
       },
       acceptance: { criteria: [...criteria], validatorRefs: [...validatorRefs] },
       dependencies,
+      ...(plan === null ? {} : { plan }),
       causal,
       handoff,
       provenance: {

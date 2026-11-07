@@ -91,6 +91,17 @@ export interface ExecutorWorkInput {
     readonly requirement: string;
   }[];
   /**
+   * LIVE-CONTRACT-FILL run 8 — where this work sits in the goal's plan (derived from the
+   * Work Package `plan` projection): its 1-based step, the step count and the other
+   * steps' objectives. Context only — it tells an agentic executor that the other steps
+   * run separately so it does not build them inside this one. Additive optional.
+   */
+  readonly planContext?: {
+    readonly position: number;
+    readonly total: number;
+    readonly steps: readonly { readonly objective: string; readonly current: boolean }[];
+  };
+  /**
    * The run-owned canonical goal's bounded structured constraints (Final Readiness
    * Gate): human-supplied at goal ingress — scope, parameters, resource lists,
    * output requirements. The canonical owner is the run-goal artifact; this is the

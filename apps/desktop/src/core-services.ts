@@ -277,6 +277,11 @@ const projectWorkEnvelope = (
   readonly artifactRefs: readonly string[];
   readonly taskInputs: Readonly<Record<string, unknown>>;
   readonly acceptanceCriteria: readonly { readonly criterionId: string; readonly requirement: string }[];
+  readonly planContext?: {
+    readonly position: number;
+    readonly total: number;
+    readonly steps: readonly { readonly objective: string; readonly current: boolean }[];
+  };
 } => {
   // Objective precedence: the byte-exact compiled plan-item objective; when a pinned
   // node somehow carries none, the run-owned canonical goal stands in — both are
@@ -317,6 +322,14 @@ const projectWorkEnvelope = (
     // The run-owned goal's structured constraints ride the envelope UNTOUCHED —
     // byte-exact from the run-goal artifact, never rendered, never model-authored.
     ...(pkg.goal.structured === null ? {} : { goalStructured: pkg.goal.structured }),
+    // LIVE-CONTRACT-FILL run 8: a multi-step plan tells the executor which step is its own.
+    ...(pkg.plan === undefined || pkg.plan === null || pkg.plan.total < 2 ? {} : {
+      planContext: {
+        position: pkg.plan.position,
+        total: pkg.plan.total,
+        steps: pkg.plan.steps.map((step) => ({ objective: step.objective, current: step.current })),
+      },
+    }),
   };
 };
 
