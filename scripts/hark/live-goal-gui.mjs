@@ -11,8 +11,9 @@
 // Goal text: env GOAL_TEXT. Watchdog: env LIVE_WATCHDOG_MS. The API key stays in env and is
 // never printed; evidence is scanned for it by the workflow.
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, cpSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, cpSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { driverEndLabel, driverEndOf } from './live-driver-end.mjs';
 
 /* global fetch, WebSocket -- Node >= 22 globals on the bundled Electron runtime */
 
@@ -145,6 +146,20 @@ const spendOf = (budget) => {
   return { calls: res.length, known: res.filter((r) => r.status === 'KNOWN').length, unknown: res.filter((r) => r.status !== 'KNOWN').length,
     micros: res.reduce((m, r) => m + (r.status === 'KNOWN' ? (r.usage?.costMicros ?? 0) : (r.bound?.costMicros ?? 0)), 0) };
 };
+/** The newest 512 KB of the app's stdout log (the driver's JSON log lines). */
+const appLogTail = () => {
+  try {
+    const file = join(evidence, 'app-stdout.txt');
+    const size = statSync(file).size;
+    const fd = openSync(file, 'r');
+    try {
+      const length = Math.min(size, 512 * 1024);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      return buffer.toString('utf8');
+    } finally { closeSync(fd); }
+  } catch { return ''; }
+};
 const progressSnapshot = (runId) => dbRead((q) => {
   const run = runId === null ? null : q(`SELECT state, execution_budget_json AS b FROM runs WHERE id = '${runId}'`)[0] ?? null;
   const tasks = q('SELECT state, COUNT(*) AS n FROM tasks GROUP BY state');
@@ -267,6 +282,9 @@ try {
     if (key !== lastKey) { lastKey = key; lastChange = Date.now(); }
     const ended = row.terminalOutcome ?? (row.state === 'COMPLETED' || row.state === 'FAILED' ? row.state : null);
     if (ended !== null) { terminal = `TERMINAL_${ended}`; break; }
+    // run 5: the driver's own terminal (blocked / failed / completed) ends the monitor at once.
+    const driverEnd = driverEndOf(appLogTail(), runId);
+    if (driverEnd !== null) { out.driverEnd = driverEnd; terminal = driverEndLabel(driverEnd); await shot('driver-end', { key: true }); break; }
     if (Date.now() - lastChange >= IDLE_STOP_MS) { terminal = 'IDLE_NO_PROGRESS'; break; }
     if (Date.now() - t0 >= WATCHDOG_MS) { terminal = 'WATCHDOG'; break; }
   }
