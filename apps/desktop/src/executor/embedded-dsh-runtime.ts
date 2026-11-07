@@ -33,6 +33,14 @@ import type { ExecutorExecutionRequest } from '@companyos/engine';
 import { domainError, type DomainError, type InvocationResult, err, ok, type Result } from '@companyos/core';
 
 /** The immutable runtime manifest written by the materialization step. */
+/**
+ * LIVE-CONTRACT-FILL run 6 — compaction-basic's headroom and summary max_tokens are capped
+ * independently of the route max_tokens (dsh-executor-provider COMPACTION_HEADROOM_MAX_TOKENS /
+ * COMPACTION_SUMMARY_MAX_TOKENS, same value): tying them to a 16384 output ceiling disabled
+ * pressure compaction in a 24 000-token window.
+ */
+export const COMPACTION_TOKENS_CAP = 4096;
+
 export interface EmbeddedDshRuntimeManifest {
   readonly kernelId: string;
   readonly upstreamRepo: string;
@@ -558,6 +566,8 @@ export const resolveEmbeddedDshRuntime = (input: {
       .replaceAll('{{ROUTE_BASE_URL}}', route.baseURL)
       .replaceAll('{{ROUTE_API_KEY_ENV}}', route.apiKeyEnv)
       .replaceAll('{{ROUTE_CONTEXT_WINDOW}}', String(route.contextWindow))
+      .replaceAll('{{COMPACTION_HEADROOM_TOKENS}}', String(Math.max(1, Math.min(COMPACTION_TOKENS_CAP, route.maxTokens))))
+      .replaceAll('{{COMPACTION_SUMMARY_MAX_TOKENS}}', String(Math.max(1, Math.min(COMPACTION_TOKENS_CAP, route.maxTokens))))
       .replaceAll('{{ROUTE_MAX_TOKENS}}', String(route.maxTokens));
 
   const runtime: EmbeddedDshRuntime = {

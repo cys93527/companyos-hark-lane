@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { domainError } from '@companyos/core';
 import { startModelBroker, type ModelBrokerHandle } from '../../apps/desktop/src/executor/embedded-dsh-runtime.js';
-import { kernelContextWindowFor, KERNEL_BYTES_PER_TOKEN } from '../../apps/desktop/src/executor/dsh-executor-provider.js';
+import { kernelCompactionSizingFor, kernelContextWindowFor, KERNEL_BYTES_PER_TOKEN } from '../../apps/desktop/src/executor/dsh-executor-provider.js';
 // @ts-expect-error untyped test-data helper (.mjs)
 import { renderFixtureText } from '../../scripts/prepare-offline-resources.mjs';
 
@@ -43,22 +43,38 @@ describe('H15d-fix3 kernel working window follows the admission bound', () => {
     expect(kernelContextWindowFor(128_000, undefined)).toBe(128_000);
   });
 
-  it('the compaction threshold for the acceptance route sits well under the byte bound', () => {
-    const bound = template.proof.tokens.inputUpperBound;
-    const out = template.proof.tokens.outputUpperBound;
-    const window = kernelContextWindowFor(128_000, bound);
-    // compaction-basic resolveCompactSpec with headroomTokens = maxTokens = route max_tokens.
-    const threshold = Math.floor(Math.min(window * 0.8, window - out - out));
-    const retain = Math.floor((window - out) * 0.16);
-    expect(threshold).toBeGreaterThan(retain);
-    expect(threshold * KERNEL_BYTES_PER_TOKEN).toBeLessThanOrEqual(bound * 0.7);
+  it('the compaction threshold for EVERY live route sits well under its byte bound (run 6: contract-fill had none)', () => {
+    const contractFill = JSON.parse(readFileSync('installer/budget/deepseek-flash.contract-fill.approval-template.json', 'utf8')) as typeof template;
+    for (const t of [template, contractFill]) {
+      const bound = t.proof.tokens.inputUpperBound;
+      const out = t.proof.tokens.outputUpperBound;
+      const window = kernelContextWindowFor(128_000, bound);
+      const sizing = kernelCompactionSizingFor(window, out);
+      expect(sizing.ok).toBe(true);
+      // compaction-basic resolveCompactSpec: min(window x 0.8, window - reserve - headroom).
+      expect(sizing.thresholdTokens).toBe(Math.floor(Math.min(window * 0.8, window - out - sizing.headroomTokens)));
+      expect(sizing.thresholdTokens).toBeGreaterThan(sizing.retainTokens);
+      expect(sizing.thresholdTokens * KERNEL_BYTES_PER_TOKEN).toBeLessThanOrEqual(bound * 0.7);
+    }
+  });
+
+  it('run 6 regression: a 24k window with a 16384 output reserve is refused, never a silently disabled compactor', () => {
+    // 96 000-byte bound -> 24 000 tokens; 24 000 - 16 384 - 16 384 < 0 disabled pressure compaction.
+    const run6 = kernelCompactionSizingFor(kernelContextWindowFor(128_000, 96_000), 16_384);
+    expect(run6.ok).toBe(false);
+    expect(run6.reason).toMatch(/inputUpperBound/u);
+    // headroom and the summary call are capped, never the route max_tokens
+    const sized = kernelCompactionSizingFor(48_000, 16_384);
+    expect(sized).toMatchObject({ ok: true, headroomTokens: 4096, summaryMaxTokens: 4096, thresholdTokens: 27_520 });
   });
 
   it('the profile mounts token-meter, tool-result-pruner and compaction-basic sized by the route', () => {
     const patch = (renderFixtureText(readFileSync('scripts/materialize-embedded-dsh.mjs', 'utf8'), 'profile-patch-template.yml') as Buffer).toString('utf8');
     expect(patch).toMatch(/- id: token-meter\n\s+name: '@deepseek-ai\/dsh-token-meter'/u);
     expect(patch).toMatch(/- id: tool-result-pruner\n\s+name: '@deepseek-ai\/dsh-compaction-tool-result-pruner'/u);
-    expect(patch).toMatch(/- id: compaction-basic\n\s+name: '@deepseek-ai\/dsh-compaction-basic'\n\s+config:\n\s+headroomTokens: \{\{ROUTE_MAX_TOKENS\}\}\n\s+maxTokens: \{\{ROUTE_MAX_TOKENS\}\}/u);
+    expect(patch).toMatch(/- id: compaction-basic\n\s+name: '@deepseek-ai\/dsh-compaction-basic'\n\s+config:\n\s+headroomTokens: \{\{COMPACTION_HEADROOM_TOKENS\}\}\n\s+maxTokens: \{\{COMPACTION_SUMMARY_MAX_TOKENS\}\}\n\s+compactionRetries: 2\n\s+maxOverflowRetries: 3/u);
+    // run 6: the compactor's headroom / summary budget is never the route max_tokens
+    expect(patch).not.toMatch(/headroomTokens: \{\{ROUTE_MAX_TOKENS\}\}/u);
   });
 });
 
