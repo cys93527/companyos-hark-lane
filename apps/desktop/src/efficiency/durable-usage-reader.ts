@@ -49,6 +49,9 @@ const textOrNull = (value: unknown): string | null =>
  * {inputPerMillion, outputPerMillion, currency}. The reader used to read `input`/`output`,
  * so every declared price came back null.
  */
+/** Broker exchange endings that never reached the upstream (embedded-dsh-runtime settle reasons). */
+const PRE_NETWORK_REFUSALS: ReadonlySet<string> = new Set(['admission-context-exceeded', 'admission-refused', 'payload-too-large']);
+
 export const pricingFromRecord = (
   pricing: Row | null,
 ): { inputPerMillion: number | null; outputPerMillion: number | null; currency: string | null } | null => {
@@ -164,6 +167,10 @@ export const createDurableUsageReader = (
         const input = tokenOrNull(usage?.['inputTokens']);
         const output = tokenOrNull(usage?.['outputTokens']);
         const entry = out.get(attemptId) ?? { inputTokens: 0, outputTokens: 0, complete: true, exchanges: 0 };
+        // LIVE-CONTRACT-FILL run 6: a body CompanyOS refused BEFORE any upstream HTTP (admission
+        // refusal, context-limit answer, oversize body) consumed nothing and reserved nothing in
+        // the budget ledger - it is a proven zero, not an unknown that voids the attempt's usage.
+        if (PRE_NETWORK_REFUSALS.has(String(payload?.['endedBy'] ?? '')) && payload?.['usageDisposition'] === 'not-reached') continue;
         entry.exchanges += 1;
         if (payload?.['usageDisposition'] === 'observed' && input !== null && output !== null) {
           entry.inputTokens += input;

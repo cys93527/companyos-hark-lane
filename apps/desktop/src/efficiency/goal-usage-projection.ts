@@ -253,6 +253,11 @@ const readGoalUsage = async (
   // priced by the trusted proof. Shown only with a currency and at least one settled call.
   const ledger = reader.settledCost === undefined ? null : await reader.settledCost(goalRunId);
   const ledgerCost = ledger !== null && ledger.knownCalls > 0 && ledger.currency !== null ? ledger : null;
+  // LIVE-CONTRACT-FILL run 6: the UI said "3 个 work dispatch 用量未知，覆盖率 57%" while the
+  // settled ledger had every call KNOWN. The budget ledger admits and settles EVERY model call
+  // that reaches the network, so when it has no open/UNKNOWN call the coverage is complete -
+  // the panel reads the same settled source as the cost line, never a second, weaker count.
+  const ledgerComplete = ledger !== null && ledger.knownCalls > 0 && ledger.openCalls === 0;
 
   return {
     goalRunId,
@@ -262,10 +267,10 @@ const readGoalUsage = async (
       knownOutputTokens: summary.knownOutputTokens,
       estimatedInputTokens: summary.estimatedInputTokens,
       estimatedOutputTokens: summary.estimatedOutputTokens,
-      unknownDispatchCount: summary.unknownDispatchCount,
+      unknownDispatchCount: ledgerComplete ? 0 : summary.unknownDispatchCount,
       totalDispatchCount: summary.totalDispatchCount,
-      coverageRatio: summary.coverageRatio,
-      complete: summary.complete,
+      coverageRatio: ledgerComplete && summary.totalDispatchCount > 0 ? 1 : summary.coverageRatio,
+      complete: ledgerComplete || summary.complete,
     },
     speed:
       samples.length === 0
