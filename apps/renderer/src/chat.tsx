@@ -125,6 +125,7 @@ const stepGlyphClass: Readonly<Record<PlanStepView['state'], string>> = {
   DONE: 'step--done',
   EXECUTING: 'step--exec',
   AWAITING: 'step--wait',
+  BLOCKED: 'step--wait',
   PENDING: 'step--pend',
   FAILED: 'step--fail',
   CANCELLED: 'step--cancel',

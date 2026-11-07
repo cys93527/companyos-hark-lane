@@ -12,7 +12,7 @@
 import type { RuntimePhase } from './runtime-panel.js';
 import type { TerminalOutcome } from './run-outcome.js';
 
-export type PlanStepState = 'DONE' | 'EXECUTING' | 'AWAITING' | 'PENDING' | 'FAILED' | 'CANCELLED' | 'NOT_RUN';
+export type PlanStepState = 'DONE' | 'EXECUTING' | 'AWAITING' | 'BLOCKED' | 'PENDING' | 'FAILED' | 'CANCELLED' | 'NOT_RUN';
 
 export interface PlanStepInput {
   readonly planItemId: string;
@@ -46,6 +46,7 @@ export const PLAN_STEP_WORDS: Readonly<Record<PlanStepState, string>> = {
   DONE: '已完成',
   EXECUTING: '执行中',
   AWAITING: '等待批准',
+  BLOCKED: '已阻塞',
   PENDING: '待开始',
   FAILED: '失败',
   CANCELLED: '已取消',
@@ -62,8 +63,22 @@ export const projectPlanSteps = (input: {
   readonly execution: ExecutionOverviewInput | null;
   readonly phase: RuntimePhase;
   readonly outcome: TerminalOutcome | null;
-}): readonly PlanStepView[] =>
-  input.items.map((item) => {
+}): readonly PlanStepView[] => {
+  /*
+   * LIVE-CONTRACT-FILL run 5: the Goal stopped (blocked) while step 1's task was back in
+   * READY between attempts, and the step read 待开始. On a blocked live Goal the step the
+   * work stopped at — the first compiled step not yet done — reads 已阻塞.
+   */
+  let blockedAt: string | null = null;
+  if (input.phase === 'blocked' && input.outcome === null && input.execution !== null) {
+    for (const item of input.items) {
+      const stage = item.stageId == null ? undefined : input.execution.stages.find((entry) => entry.stageId === item.stageId);
+      if (stage === undefined || stage.terminalSuccessful) continue;
+      blockedAt = item.planItemId;
+      break;
+    }
+  }
+  return input.items.map((item) => {
     const stage = item.stageId == null || input.execution === null
       ? undefined
       : input.execution.stages.find((entry) => entry.stageId === item.stageId);
@@ -72,6 +87,7 @@ export const projectPlanSteps = (input: {
       : input.execution.executing.find((entry) => entry.stageId === item.stageId);
     let state: PlanStepState;
     if (stage?.terminalSuccessful === true) state = 'DONE';
+    else if (item.planItemId === blockedAt) state = 'BLOCKED';
     else if (running !== undefined) state = input.phase === 'awaiting-user' ? 'AWAITING' : input.outcome === null ? 'EXECUTING' : 'NOT_RUN';
     else if (stage !== undefined && count(stage.taskCounts, 'FAILED') > 0) state = 'FAILED';
     else if (stage !== undefined && count(stage.taskCounts, 'CANCELLED') > 0) state = 'CANCELLED';
@@ -87,3 +103,4 @@ export const projectPlanSteps = (input: {
       label: `${PLAN_STEP_WORDS[state]}${attempt}`,
     };
   });
+};

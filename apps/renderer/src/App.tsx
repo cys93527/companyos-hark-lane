@@ -89,7 +89,7 @@ import {
 import { runArtifactAction } from './artifacts-view.js';
 import { loadGoalUsage, projectTelemetry } from './usage.js';
 import { loadGoalBudget } from './budget.js';
-import { projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
+import { goalUsedTokens, projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
 import { isRunEnded, terminalOutcomeOf } from './run-outcome.js';
@@ -1077,7 +1077,8 @@ export function App() {
               },
         // KNOWN Goal usage only: an observed true zero stays 0 (never "--"), a missing
         // projection stays null (UNKNOWN → "--").
-        usedTokens: knownInput === null || knownOutput === null ? null : knownInput + knownOutput,
+        // LIVE-CONTRACT-FILL run 5: cumulative over ALL the Goal's model calls (budget ledger).
+        usedTokens: goalUsedTokens(budgetRead?.budget, knownInput, knownOutput),
         // Current-context occupancy is NOT provable from cumulative Goal usage (S3-27): it
         // stays null so the popover renders "--" instead of an invented percentage.
         contextUsedTokens: null,
@@ -1089,7 +1090,7 @@ export function App() {
         // AUDIT session cost: a cost is only computed over complete usage coverage.
         usageComplete: usage !== null && usage.usage.complete,
       };
-    }, [modelOptions, modelStatus, usageProjection]);
+    }, [modelOptions, modelStatus, usageProjection, budgetRead]);
 
   // STAGE 3: the honest usage note under the popover (coverage truth, never a false total).
   const telemetry = useMemo(() => projectTelemetry(usageProjection, null), [usageProjection]);

@@ -20,6 +20,10 @@ export const BLOCKER_LABELS: Readonly<Record<string, string>> = {
   EXECUTION_FAILURE: '任务执行失败',
   CAUSAL_CORRECTIVE_WAIT: '等待纠正任务完成',
   UNRECONCILED_CARRIER: '执行结果待核对',
+  // LIVE-CONTRACT-FILL run 5: the Goal's standing admission refusals (goal.workspace).
+  GOAL_USAGE_UNKNOWN: '已阻塞 · 一次模型调用的用量未知，核对后才能继续',
+  GOAL_BUDGET_EXHAUSTED: '已阻塞 · 本目标的预算已用完',
+  GOAL_DEADLINE_EXCEEDED: '已阻塞 · 已超过目标的截止时间',
 };
 
 export const RUN_FAILURE_REASON_LABELS: Readonly<Record<string, string>> = {

@@ -153,6 +153,23 @@ export interface ModelRuntimeView {
   readonly telemetryUnavailable: boolean;
 }
 
+/**
+ * LIVE-CONTRACT-FILL run 5: 「已用 tokens」 showed 4,438 (the planner/supervisor rows of
+ * run.usage) while the Goal's model calls had settled 478 108 tokens in its budget ledger.
+ * The Goal's cumulative usage is the ledger's SETTLED tokens (every admitted model call of
+ * the Goal, kernel exchanges included) whenever a budget envelope exists; without one the
+ * run.usage KNOWN sum stays the source. Unknown calls are never counted as tokens.
+ */
+export const goalUsedTokens = (
+  budget: { readonly state: string; readonly settled: { readonly tokens: number } } | null | undefined,
+  knownInput: number | null,
+  knownOutput: number | null,
+): number | null => {
+  const usage = knownInput === null || knownOutput === null ? null : knownInput + knownOutput;
+  if (budget === null || budget === undefined || budget.state === 'NO_BUDGET' || budget.state === 'ZERO_COST_POLICY') return usage;
+  return Math.max(budget.settled.tokens, usage ?? 0);
+};
+
 export const projectModelRuntime = (snapshot: ModelRuntimeSnapshot): ModelRuntimeView => {
   const model = snapshot.model;
   const remaining = contextRemaining(model?.contextWindow ?? null, snapshot.contextUsedTokens ?? null);

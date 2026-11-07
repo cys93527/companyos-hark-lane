@@ -171,7 +171,8 @@ export const PHASE_LABELS: Readonly<Record<RuntimePhase, string>> = {
   completed: '已完成',
   cancelled: '已取消',
   'timed-out': '已超时',
-  blocked: '受阻',
+  // LIVE-CONTRACT-FILL run 5: a stopped Goal reads 已阻塞 (never 执行中).
+  blocked: '已阻塞',
   failed: '失败',
   idle: '空闲',
 };

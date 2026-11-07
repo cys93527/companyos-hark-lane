@@ -4090,6 +4090,25 @@ export async function composeCoreServices(
       }),
     );
 
+    // H15c / run 5: the durable budget envelope's standing refusal (null when no envelope is
+    // bound). ONE read shared by the autonomy driver (it stops on it) and goal.workspace (the
+    // boss sees it as 已阻塞 instead of 执行中).
+    const standingGoalAdmissionRefusal = async (runId: string): Promise<string | null> => {
+      if (executionSafety === null) return null;
+      try {
+        await executionSafety.budget.check(runId);
+        // H15c-fix10 (hark-live-goal 40300575683): every admitted call of the envelope is
+        // spent — no autonomous step can be admitted again, so this is a standing refusal
+        // (operator budget renewal), not 19 refused supervisor turns ending in a stall.
+        // H15d-fix5 (hark-live-goal 40359081704): the money/token cap counts too — no bound
+        // this Goal has reserved still fits — not only the call-slot count.
+        const envelope = await executionSafety.budget.read(runId);
+        return goalEnvelopeExhausted(envelope) ? 'GOAL_BUDGET_EXHAUSTED' : null;
+      } catch (error) {
+        const reason = error instanceof DomainError ? String(error.details['reason'] ?? '') : '';
+        return STANDING_ADMISSION_REFUSALS.includes(reason) ? reason : null;
+      }
+    };
     const controlPlane =
       database.artifactStore !== null && runGoalWriter !== null && sprint13.engine !== null
         ? createControlPlaneService({
@@ -4098,6 +4117,7 @@ export async function composeCoreServices(
             ...(executionSafety === null ? {} : { initializeGoalBudget: executionSafety.initialize }),
             ...(executionSafety === null ? {} : { isGoalCancelled: executionSafety.budget.isCancelled }),
             latestAttemptFailure: createLatestAttemptFailureReader(database.db),
+            ...(executionSafety === null ? {} : { standingGoalBlock: standingGoalAdmissionRefusal }),
             ...(options.planPreviewWithoutExecutor === true ? { executionAvailable: () => {
               const key = options.providerRoutes?.[GOAL_WORK_KIND] ?? '';
               return key !== '' && executorProvidersHolder !== null && executorProvidersHolder.resolve(key) !== null;
@@ -4235,21 +4255,7 @@ export async function composeCoreServices(
     const autonomyDriverDeps: AutonomyDriverDeps = {
       // H15c: the durable budget envelope's standing refusal (null when no envelope is bound).
       ...(executionSafety === null ? {} : {
-        standingAdmissionRefusal: async ({runId}: {readonly companyId: string; readonly runId: string}) => {
-          try {
-            await executionSafety.budget.check(runId);
-            // H15c-fix10 (hark-live-goal 40300575683): every admitted call of the envelope is
-            // spent — no autonomous step can be admitted again, so this is a standing refusal
-            // (operator budget renewal), not 19 refused supervisor turns ending in a stall.
-            // H15d-fix5 (hark-live-goal 40359081704): the money/token cap counts too — no bound
-            // this Goal has reserved still fits — not only the call-slot count.
-            const envelope = await executionSafety.budget.read(runId);
-            return goalEnvelopeExhausted(envelope) ? 'GOAL_BUDGET_EXHAUSTED' : null;
-          } catch (error) {
-            const reason = error instanceof DomainError ? String(error.details['reason'] ?? '') : '';
-            return STANDING_ADMISSION_REFUSALS.includes(reason) ? reason : null;
-          }
-        },
+        standingAdmissionRefusal: async ({runId}: {readonly companyId: string; readonly runId: string}) => standingGoalAdmissionRefusal(runId),
       }),
       advanceGoal: async ({companyId, runId}) => {
         if (controlPlane === null) {

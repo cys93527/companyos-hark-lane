@@ -140,6 +140,13 @@ export interface ControlPlaneDeps {
    */
   readonly latestAttemptFailure?: (runIds: readonly string[]) => Promise<GoalAttemptFailure | null>;
   /**
+   * LIVE-CONTRACT-FILL run 5 — the Goal's STANDING admission refusal (GOAL_USAGE_UNKNOWN,
+   * GOAL_BUDGET_EXHAUSTED, GOAL_DEADLINE_EXCEEDED): the autonomy driver stopped on it while
+   * the run rows stayed EXECUTING, so the boss saw 执行中. goal.workspace now carries it as a
+   * goal-scoped blocker of a non-terminal Goal (the same read the driver stops on).
+   */
+  readonly standingGoalBlock?: (runId: string) => Promise<string | null>;
+  /**
    * H10b PLAN-PREVIEW GATE: whether the deployment can EXECUTE work items (the work-kind
    * executor is registered). When it returns false the planning turn still runs (bounded by
    * the trusted budget admission) and the plan artifact is kept for the boss to read, but
@@ -1404,6 +1411,19 @@ const goalWorkspace = async (
   }
   const goalValue = goal !== null && goal.ok ? goal.value : null;
   const goalStructured = goalValue?.structured ?? null;
+  const standingBlock = deps.standingGoalBlock === undefined || terminalOutcomeOfRun(owned.value) !== null
+    ? null
+    : await deps.standingGoalBlock(runId.value);
+  const goalBlockers = standingBlock === null
+    ? blockers.value
+    : [...(Array.isArray(blockers.value) ? (blockers.value as readonly unknown[]) : []), {
+        code: standingBlock,
+        scope: 'RUN',
+        subjectId: runId.value,
+        sourceType: 'goal-execution-budget',
+        evidenceRefs: [],
+        explanation: `The Goal stopped on a standing admission refusal (${standingBlock}); no autonomous step can continue until it is resolved.`,
+      }];
   const accessPolicyRaw = typeof goalStructured?.accessPolicy === 'string' ? String(goalStructured['accessPolicy']) : null;
   const accessPolicy =
     accessPolicyRaw !== null && (ACCESS_POLICIES as readonly string[]).includes(accessPolicyRaw)
@@ -1418,7 +1438,7 @@ const goalWorkspace = async (
     // terminal settlement of the runs it owns.
     cancellationRequested: deps.isGoalCancelled === undefined ? false : await deps.isGoalCancelled(runId.value),
     overview: overview.value,
-    blockers: blockers.value,
+    blockers: goalBlockers,
     executionRuns,
     attemptFailure:
       deps.latestAttemptFailure === undefined
