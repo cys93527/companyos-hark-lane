@@ -10,9 +10,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import {
-  CHUNK_PREFIX, decodeShotsFromLog, KEY_SHOT_LIMIT, KEY_SHOT_MAX_BYTES, keyShotsOf, SHOT_PREFIX, summarize, writeDecodedShots,
-} from '../../scripts/hark/live-summary.mjs';
+// @ts-expect-error -- plain .mjs operator script, no type declarations
+import { CHUNK_PREFIX, decodeShotsFromLog, KEY_SHOT_LIMIT, KEY_SHOT_MAX_BYTES, keyShotsOf, SHOT_PREFIX, summarize, writeDecodedShots } from '../../scripts/hark/live-summary.mjs';
 
 const evidence = () => {
   const dir = mkdtempSync(join(tmpdir(), 'hark-shots-'));
