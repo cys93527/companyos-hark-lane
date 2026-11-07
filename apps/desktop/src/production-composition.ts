@@ -206,6 +206,34 @@ export const resolveExecutionAttemptTimeoutMs = (
   return parsed;
 };
 
+/*
+ * LIVE-CONTRACT-FILL run 5 — the SOFTWARE-WORK attempt budget. A coding-kernel (DSH)
+ * attempt that builds a real project step needs far more than 10 minutes (run 5: 53 model
+ * calls and 11 files in 600 s, then killed). Kernel attempts get their own budget:
+ *   COS_KERNEL_ATTEMPT_TIMEOUT_MS (validated, same bounds), else an explicit
+ *   COS_EXECUTION_ATTEMPT_TIMEOUT_MS deployment override, else 1 800 000 ms (30 min).
+ * A Role timeBudgetMs still wins over both (resolveAttemptTimeoutMs).
+ */
+export const DEFAULT_KERNEL_ATTEMPT_TIMEOUT_MS = 1_800_000;
+export const KERNEL_ATTEMPT_TIMEOUT_ENV = 'COS_KERNEL_ATTEMPT_TIMEOUT_MS';
+export const resolveKernelAttemptTimeoutMs = (
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number => {
+  const raw = env[KERNEL_ATTEMPT_TIMEOUT_ENV]?.trim() ?? '';
+  if (raw === '') {
+    return (env[EXECUTION_ATTEMPT_TIMEOUT_ENV]?.trim() ?? '') === ''
+      ? DEFAULT_KERNEL_ATTEMPT_TIMEOUT_MS
+      : resolveExecutionAttemptTimeoutMs(env);
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < EXECUTION_ATTEMPT_TIMEOUT_MIN_MS || parsed > EXECUTION_ATTEMPT_TIMEOUT_MAX_MS) {
+    throw new Error(
+      `${KERNEL_ATTEMPT_TIMEOUT_ENV} must be an integer between ${String(EXECUTION_ATTEMPT_TIMEOUT_MIN_MS)} and ${String(EXECUTION_ATTEMPT_TIMEOUT_MAX_MS)} ms (got "${raw}").`,
+    );
+  }
+  return parsed;
+};
+
 /** The deterministic precedence: an explicit Role budget beats the deployment level. */
 export const resolveAttemptTimeoutMs = (
   roleTimeBudgetMs: number | undefined,

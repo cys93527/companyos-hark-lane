@@ -96,7 +96,7 @@ import { createDurableUsageReader } from './efficiency/durable-usage-reader.js';
 import { createLatestAttemptFailureReader } from './goal-attempt-failure.js';
 import { createControlPlaneService, GOAL_WORK_KIND } from './control-plane.js';
 import {deriveRetryContinuationEnvelope} from './executor/attempt-supervision.js';
-import { resolveExecutionAttemptTimeoutMs } from './production-composition.js';
+import { resolveExecutionAttemptTimeoutMs, resolveKernelAttemptTimeoutMs } from './production-composition.js';
 import { abortableSleep } from './runtime/model-call-sleep.js';
 import {
   TOOL_CAPABILITY_VALIDATOR,
@@ -896,6 +896,7 @@ export async function composeCoreServices(
      */
     const runtimeEnv = options.runtimeEnv ?? process.env;
     const executionAttemptTimeoutMs = resolveExecutionAttemptTimeoutMs(runtimeEnv);
+    const kernelAttemptTimeoutMs = resolveKernelAttemptTimeoutMs(runtimeEnv);
     const artifactFoundation = options.artifactFoundation;
     const clock = new SystemClock();
     const ids = new UlidFactory(clock);
@@ -1696,6 +1697,7 @@ export async function composeCoreServices(
             const dispatch = createProviderDispatchExecution({
               ...(executionSafety === null ? {} : { prepareExternalAdmission: (request, route) => executionSafety.prepareExecutor({ runId: request.runId, attemptId: request.attemptId, ...(route === undefined ? {} : { route }), ...(options.embeddedDshModelRoute === undefined ? {} : { fallback: options.embeddedDshModelRoute }) }) }),
               attemptTimeoutMs: executionAttemptTimeoutMs,
+              attemptTimeoutMsFor: (key) => (key === 'dsh-headless' ? kernelAttemptTimeoutMs : undefined),
               registry,
               dispatches: database.providerDispatches,
               clock,

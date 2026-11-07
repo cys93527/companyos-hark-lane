@@ -54,6 +54,12 @@ export interface ProcessExecutorConfig {
    * deadline, exactly like the repository process runner's timer seam.
    */
   readonly timer?: (ms: number, onTimeout: () => void) => () => void;
+  /**
+   * Called when the attempt deadline fires, BEFORE the child is stopped; the stop waits
+   * for it (the composition bounds it). Lets a model broker refuse new calls and let an
+   * in-flight call settle so its usage is known (live contract-fill run 5).
+   */
+  readonly beforeTimeoutStop?: () => Promise<void>;
   readonly providerKey: string;
   readonly capabilities: readonly ExecutorCapabilityName[];
   readonly executable: string;
@@ -325,7 +331,13 @@ export const createProcessExecutorProvider = (config: ProcessExecutorConfig): Ex
       const cancelTimer =
         config.timer !== undefined && request.timeoutMs !== undefined
           ? config.timer(request.timeoutMs, () => {
-              stop('timeout');
+              if (config.beforeTimeoutStop === undefined) {
+                stop('timeout');
+                return;
+              }
+              void config.beforeTimeoutStop().catch(() => undefined).then(() => {
+                if (!retired) stop('timeout');
+              });
             })
           : undefined;
 

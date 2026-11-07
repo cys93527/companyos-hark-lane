@@ -92,6 +92,11 @@ export interface ProviderDispatchDeps {
    * provider's internal fallback is never the normal production path.
    */
   readonly attemptTimeoutMs?: number;
+  /**
+   * LIVE-CONTRACT-FILL run 5 — a provider-specific production level (the coding kernel's
+   * software-work budget). Absent or undefined for a provider = `attemptTimeoutMs`.
+   */
+  readonly attemptTimeoutMsFor?: (providerKey: string) => number | undefined;
   /** Resolve the trusted workspace root for a run/task, or null (fail closed). */
   readonly workspaceOf: (runId: string, taskId: string) => string | null;
   readonly requiredCapabilitiesOf: (taskKind: string) => readonly ExecutorCapabilityName[];
@@ -609,9 +614,10 @@ ${renderRetryDirective(retryEnvelope)}`;
      * explicitly. The provider's internal 120s fallback is defensive-only and the
      * shipped production composition never depends on it.
      */
+    const deploymentTimeoutMs = deps.attemptTimeoutMsFor?.(providerKey) ?? deps.attemptTimeoutMs;
     const timeoutMs = routed === null
-      ? deps.attemptTimeoutMs
-      : (routed.roleBudget.timeBudgetMs ?? deps.attemptTimeoutMs);
+      ? deploymentTimeoutMs
+      : (routed.roleBudget.timeBudgetMs ?? deploymentTimeoutMs);
     /*
      * LIVE-SMOKE-FIX-08 P1-2 — DURABLE PRE-DISPATCH ATTRIBUTION. Appended BEFORE
      * the external launch: attempt/task/role identity, provider + dispatch identity,

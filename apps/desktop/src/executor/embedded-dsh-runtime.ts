@@ -21,7 +21,7 @@
  *    in the tree at all.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { createServer, request as httpRequest, type ClientRequest, type ServerResponse } from 'node:http';
+import { createServer, request as httpRequest, type ClientRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { routeWireCompatYamlLine } from '../models/route-wire-compat.js';
 import type { Socket } from 'node:net';
@@ -805,6 +805,17 @@ export interface ModelBrokerHandle {
   /** The per-attempt capability nonce (rendered into the private profile URL only). */
   readonly routeSecret: string;
   readonly close: () => void;
+  /**
+   * LIVE-CONTRACT-FILL run 5 (hark-live-goal 42367067423): the attempt deadline killed the
+   * kernel while a model call was in flight, the usage was never observed, and the goal
+   * locked on GOAL_USAGE_UNKNOWN. Near the deadline the attempt now DRAINS: no new model
+   * call is admitted (refused before any reservation or network), in-flight calls settle.
+   */
+  readonly stopAdmitting: () => void;
+  /** Model exchanges not yet settled (budget settlement included). */
+  readonly inFlight: () => number;
+  /** Resolves true once every exchange has settled, false when `timeoutMs` passes first. */
+  readonly whenIdle: (timeoutMs: number) => Promise<boolean>;
 }
 
 export interface ModelBrokerExchangeObservation {
@@ -996,6 +1007,15 @@ export const startModelBroker = (input: {
     const routeSecret = randomBytes(24).toString('base64url');
     let inFlight = 0;
     let exchangeSequence = 0;
+    let admitting = true;
+    // close() is the hard teardown: every upstream request still open (an orphaned drain
+    // included) is destroyed with it — nothing outlives the attempt's broker.
+    const upstreamRequests = new Set<ClientRequest>();
+    const idleWaiters = new Set<() => void>();
+    const notifyIfIdle = (): void => {
+      if (inFlight !== 0) return;
+      for (const wake of [...idleWaiters]) wake();
+    };
     const sockets = new Set<Socket>();
 
     const refuse = (res: ServerResponse, status: number, reason: string): void => {
@@ -1020,6 +1040,11 @@ export const startModelBroker = (input: {
         refuse(res, 404, 'not found');
         return;
       }
+      // DEADLINE DRAIN: the attempt is ending — refused before any reservation or network.
+      if (!admitting) {
+        refuse(res, 403, 'attempt deadline reached: no new model calls');
+        return;
+      }
       // CONCURRENCY cap: a hostile kernel cannot fan out unbounded streams.
       if (inFlight >= BROKER_MAX_CONCURRENCY) {
         refuse(res, 503, 'overloaded');
@@ -1037,6 +1062,11 @@ export const startModelBroker = (input: {
       let responseShape: ModelResponseShape | null = null;
       let settled = false;
       let proxied: ClientRequest | null = null;
+      let upstreamStream: IncomingMessage | null = null;
+      // The kernel side went away (killed or gave up) while the upstream call was still
+      // running: the broker keeps reading the upstream response to its end so the usage is
+      // OBSERVED (KNOWN) instead of an unexplained UNKNOWN reservation (run 5).
+      let orphaned = false;
       let admission: Awaited<ReturnType<NonNullable<typeof input.admission>>> | undefined;
       let abortListener: (() => void) | undefined;
       const respond = (status: number, reason: string): void => {
@@ -1048,7 +1078,6 @@ export const startModelBroker = (input: {
         if (settled) return;
         settled = true;
         clearTimeout(deadline);
-        inFlight -= 1;
         try {
           input.observe?.({
             sequence, endedBy, upstreamStatus, requestBytes: size, responseBytes, usageDisposition, responseShape,
@@ -1058,7 +1087,14 @@ export const startModelBroker = (input: {
         } catch { /* observation is evidence only; it never changes the exchange */ }
         if (admission !== undefined) {
           if (abortListener !== undefined) admission.signal.removeEventListener('abort', abortListener);
-          void admission.settle(usage).catch(() => { proxied?.destroy(); respond(502, 'budget settlement unavailable'); }).finally(() => admission?.release());
+          void admission.settle(usage).catch(() => { proxied?.destroy(); respond(502, 'budget settlement unavailable'); }).finally(() => {
+            admission?.release();
+            inFlight -= 1;
+            notifyIfIdle();
+          });
+        } else {
+          inFlight -= 1;
+          notifyIfIdle();
         }
       };
       const deadline = setTimeout(() => {
@@ -1066,9 +1102,21 @@ export const startModelBroker = (input: {
         respond(504, 'upstream timeout');
         settle(null, 'timeout');
       }, input.upstreamTimeoutMs ?? BROKER_UPSTREAM_TIMEOUT_MS);
-      req.on('aborted', () => { proxied?.destroy(); settle(null, 'request-aborted'); });
+      // Once the request reached the upstream (proxied set), a vanished kernel ORPHANS the
+      // exchange instead of cutting it: the provider already accepted (and bills) the call.
+      const kernelGone = (endedBy: string): void => {
+        if (settled) return;
+        if (proxied !== null && (admission === undefined || !admission.signal.aborted)) {
+          orphaned = true;
+          if (upstreamStream !== null) { upstreamStream.unpipe(res); upstreamStream.resume(); }
+          return;
+        }
+        proxied?.destroy();
+        settle(null, endedBy);
+      };
+      req.on('aborted', () => kernelGone('request-aborted'));
       req.on('error', () => { proxied?.destroy(); respond(502, 'request failed'); settle(null, 'request-error'); });
-      res.on('close', () => { proxied?.destroy(); settle(null, 'client-close'); });
+      res.on('close', () => kernelGone('client-close'));
       // BODY SIZE cap: read (and forward) at most BROKER_MAX_BODY_BYTES.
       const chunks: Buffer[] = [];
       let size = 0;
@@ -1160,10 +1208,12 @@ export const startModelBroker = (input: {
               headers,
             },
             (upstreamResponse) => {
-              if (settled || res.destroyed || res.writableEnded) {
+              if (settled) {
                 upstreamResponse.destroy();
                 return;
               }
+              upstreamStream = upstreamResponse;
+              const downstreamOpen = !orphaned && !res.destroyed && !res.writableEnded;
               // RESPONSE scrub: never echo Authorization or cookies downstream.
               const outHeaders: Record<string, string | number> = {};
               for (const [name, value] of Object.entries(upstreamResponse.headers)) {
@@ -1172,7 +1222,7 @@ export const startModelBroker = (input: {
                 outHeaders[name] = value as string | number;
               }
               upstreamStatus = upstreamResponse.statusCode ?? null;
-              res.writeHead(upstreamResponse.statusCode ?? 502, outHeaders);
+              if (downstreamOpen) res.writeHead(upstreamResponse.statusCode ?? 502, outHeaders);
               // MID-STREAM upstream failure: end this exchange (a truncated stream the
               // kernel sees as a clear failure) — pipe() forwards no errors by itself.
               upstreamResponse.on('error', () => {
@@ -1197,11 +1247,15 @@ export const startModelBroker = (input: {
                 usageDisposition = observedBytes > 1_048_576 ? 'oversize' : status >= 400 ? 'http-error' : decoded === null ? 'undecodable' : (observed?.disposition ?? 'absent');
                 responseShape = observed?.shape ?? null;
                 const usage = observed !== null && observed.disposition === 'observed' ? observed.usage : null;
-                settle(usage, 'upstream-end');
+                settle(usage, orphaned ? 'upstream-end-orphaned' : 'upstream-end');
               });
-              upstreamResponse.pipe(res);
+              if (downstreamOpen) upstreamResponse.pipe(res);
+              else { orphaned = true; upstreamResponse.resume(); }
             },
           );
+          const tracked = proxied;
+          upstreamRequests.add(tracked);
+          tracked.once('close', () => upstreamRequests.delete(tracked));
           proxied.on('error', () => {
             settle(null, 'upstream-error');
             respond(502, 'upstream unavailable');
@@ -1259,9 +1313,18 @@ export const startModelBroker = (input: {
           url: `http://127.0.0.1:${String(address.port)}/c/${routeSecret}/v1`,
           routeSecret,
           close: () => {
+            for (const upstreamCall of upstreamRequests) upstreamCall.destroy();
             for (const socket of sockets) socket.destroy();
             server.close();
           },
+          stopAdmitting: () => { admitting = false; },
+          inFlight: () => inFlight,
+          whenIdle: (timeoutMs: number) => new Promise<boolean>((resolveIdle) => {
+            if (inFlight === 0) { resolveIdle(true); return; }
+            const wake = (): void => { clearTimeout(timer); idleWaiters.delete(wake); resolveIdle(true); };
+            const timer = setTimeout(() => { idleWaiters.delete(wake); resolveIdle(inFlight === 0); }, timeoutMs);
+            idleWaiters.add(wake);
+          }),
         }),
       );
     });

@@ -484,8 +484,41 @@ export const outputCeilingContinuationDirective = (input: {
  * up to `maxContinuations` relaunches on the same workspace, each with the continuation
  * directive, all within the attempt's ONE deadline. Any other outcome returns at once.
  */
+/** Before the deadline, stop admitting new model calls this long ahead (bounded share of the budget). */
+export const attemptDrainLeadMs = (attemptTimeoutMs: number): number => Math.min(30_000, Math.floor(attemptTimeoutMs / 20));
+/** At the deadline, how long the kill waits for an in-flight model call to settle (model timeout 90 s + margin). */
+export const ATTEMPT_DEADLINE_INFLIGHT_GRACE_MS = 120_000;
+/**
+ * A kernel that ended (or was stopped) after the deadline drain began ran out of its time
+ * budget: the attempt is a resumable TIMEOUT, not a provider failure. A success stays a
+ * success; cancellation and transport failures keep their own meaning.
+ */
+export const deadlineDrainOutcome = (outcome: ExecutorProviderOutcome, draining: boolean): ExecutorProviderOutcome => {
+  if (!draining || outcome.kind !== 'provider-failed') return outcome;
+  const failed = outcome as { readonly stdoutText?: string; readonly providerSessionId?: string };
+  return {
+    kind: 'timeout',
+    terminationProven: true,
+    ...(failed.providerSessionId === undefined ? {} : { providerSessionId: failed.providerSessionId }),
+    ...(failed.stdoutText === undefined ? {} : { stdoutText: failed.stdoutText }),
+  };
+};
+/** Attempt N>1 of a step: tell the kernel what an earlier attempt already left in the workspace. */
+export const resumedAttemptDirective = (input: {
+  readonly attemptNumber: number;
+  readonly files: readonly WorkspaceFileEntry[];
+  readonly filesTruncated: boolean;
+}): string =>
+  `RESUMED STEP (attempt ${String(input.attemptNumber)}): an earlier attempt of this same step ended before it finished (for example its time budget ran out). ` +
+  `Its files are kept in the workspace: ${input.files.map((file) => `${file.path} (${String(file.bytes)} B)`).join(', ')}${input.filesTruncated ? ', … (more not listed)' : ''}. ` +
+  'Do not start over: inspect what exists, keep what is correct, fix what is incomplete, and continue with the remaining work.';
+
 export const runWithOutputCeilingRecovery = async (input: {
   readonly start: (timeoutMs: number, continuationDirective: string | undefined) => Promise<ExecutorProviderOutcome>;
+  /** Rendered on the FIRST launch (e.g. a resumed attempt's workspace inventory). */
+  readonly initialDirective?: string;
+  /** True once the attempt is draining for its deadline: no further relaunches. */
+  readonly shouldStop?: () => boolean;
   readonly workspaceRoot: string;
   readonly outputCeilingTokens?: number;
   readonly timeoutMs: number;
@@ -496,12 +529,13 @@ export const runWithOutputCeilingRecovery = async (input: {
   const now = input.now ?? Date.now;
   const max = input.maxContinuations ?? OUTPUT_CEILING_MAX_CONTINUATIONS;
   const startedMs = now();
-  let outcome = await input.start(input.timeoutMs, undefined);
+  let outcome = await input.start(input.timeoutMs, input.initialDirective);
   let continuations = 0;
   while (continuations < max) {
     const settled = postProcessDshOutcome(outcome);
     if (settled.kind !== 'provider-failed' || settled.reasonCode !== KERNEL_OUTPUT_CEILING) break;
     if (input.signal?.aborted === true) break;
+    if (input.shouldStop?.() === true) break;
     const remainingMs = input.timeoutMs - (now() - startedMs);
     if (remainingMs < OUTPUT_CEILING_CONTINUATION_MIN_REMAINING_MS) break;
     continuations += 1;
@@ -1173,8 +1207,29 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           }
         }
         let continuationDirective: string | undefined;
+        /*
+         * LIVE-CONTRACT-FILL run 5 — DEADLINE DRAIN. Shortly before the attempt deadline the
+         * broker stops admitting new model calls; at the deadline the kill waits (bounded) for
+         * the in-flight call to settle. A kernel cut short this way ended a RESUMABLE timeout
+         * (workspace kept; the next attempt continues from it), never an unknown-usage lock.
+         */
+        const attemptDeadlineMs = request.timeoutMs ?? timeoutMs;
+        let deadlineDraining = false;
+        const beginDeadlineDrain = (): void => {
+          deadlineDraining = true;
+          broker.value.stopAdmitting();
+        };
+        const armTimer = config.timer ?? ((ms: number, callback: () => void) => {
+          const handle = setTimeout(callback, ms);
+          return () => clearTimeout(handle);
+        });
+        const cancelDrainLead = armTimer(Math.max(0, attemptDeadlineMs - attemptDrainLeadMs(attemptDeadlineMs)), beginDeadlineDrain);
         const provider = createProcessExecutorProvider({
           providerKey: DSH_PROVIDER_KEY,
+          beforeTimeoutStop: async () => {
+            beginDeadlineDrain();
+            await broker.value.whenIdle(ATTEMPT_DEADLINE_INFLIGHT_GRACE_MS);
+          },
           capabilities: DSH_CAPABILITIES,
           executable: launchExecutable,
           baseArgv: [...launchArgv],
@@ -1226,10 +1281,15 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             return { structured: { ndjson: stdoutText } };
           },
         });
-        const { outcome } = await runWithOutputCeilingRecovery({
+        const resumed = request.attemptNumber > 1 ? workspaceFileInventoryOf(workspaceRoot) : undefined;
+        const { outcome: rawOutcome } = await runWithOutputCeilingRecovery({
           workspaceRoot,
           outputCeilingTokens: modelRoute.maxTokens,
-          timeoutMs: request.timeoutMs ?? timeoutMs,
+          timeoutMs: attemptDeadlineMs,
+          shouldStop: () => deadlineDraining,
+          ...(resumed === undefined || resumed.files.length === 0 ? {} : {
+            initialDirective: resumedAttemptDirective({ attemptNumber: request.attemptNumber, files: resumed.files, filesTruncated: resumed.truncated }),
+          }),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
           start: async (attemptTimeoutMs, directive) => {
             continuationDirective = directive;
@@ -1240,6 +1300,8 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             }
           },
         });
+        cancelDrainLead();
+        const outcome = deadlineDrainOutcome(rawOutcome, deadlineDraining);
         // STAGE 5B post-spawn gate: a staged-tree tamper in flight means the child
         // may have executed unverified bytes — the attempt fails loud, never silent.
         const postSpawn = stage.value.verifyStaged();
@@ -1261,6 +1323,10 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         }
         return processed;
       } finally {
+        // An exchange the kernel abandoned keeps reading upstream so its usage settles
+        // KNOWN; give it a bounded moment before the broker (and its sockets) close.
+        broker.value.stopAdmitting();
+        await broker.value.whenIdle(ATTEMPT_DEADLINE_INFLIGHT_GRACE_MS);
         home.value.dispose();
         stage.value.dispose();
         broker.value.close();
