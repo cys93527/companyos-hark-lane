@@ -27,9 +27,10 @@
     },
     {
       "run": "hark-live-goal 42346111946",
-      "status": "RESERVED",
+      "status": "SETTLED",
       "reservedMicros": 8000000,
-      "settledMicros": null
+      "settledMicros": 373118,
+      "calls": 20
     }
   ],
   "entries": [
@@ -235,8 +236,148 @@
       "status": "KNOWN",
       "micros": 35854,
       "tokens": 5639
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exec_01M6TB5T94BBF42RHC9T792R12:network:1",
+      "status": "KNOWN",
+      "micros": 14068,
+      "tokens": 2903
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exec_01M6TB64HWJTGMEH98H7VHB2B1:network:1",
+      "status": "KNOWN",
+      "micros": 3790,
+      "tokens": 1634
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_d6dba469972b461884694b86a0:network:1",
+      "status": "KNOWN",
+      "micros": 4560,
+      "tokens": 1854
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_d6dba469972b461884694b86a0:network:2",
+      "status": "KNOWN",
+      "micros": 6002,
+      "tokens": 2197
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_d6dba469972b461884694b86a0:network:3",
+      "status": "KNOWN",
+      "micros": 37214,
+      "tokens": 6319
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exec_01M6TB7PWRJNPEG404HCNYGASF:network:1",
+      "status": "KNOWN",
+      "micros": 4182,
+      "tokens": 1827
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_094d7cb1c0c228a31142cc70d4:network:1",
+      "status": "KNOWN",
+      "micros": 5282,
+      "tokens": 2125
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_094d7cb1c0c228a31142cc70d4:network:2",
+      "status": "KNOWN",
+      "micros": 5266,
+      "tokens": 2312
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_094d7cb1c0c228a31142cc70d4:network:3",
+      "status": "KNOWN",
+      "micros": 20114,
+      "tokens": 4270
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_094d7cb1c0c228a31142cc70d4:network:4",
+      "status": "KNOWN",
+      "micros": 26696,
+      "tokens": 6553
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_094d7cb1c0c228a31142cc70d4:network:5",
+      "status": "KNOWN",
+      "micros": 40158,
+      "tokens": 10002
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_094d7cb1c0c228a31142cc70d4:network:6",
+      "status": "KNOWN",
+      "micros": 42816,
+      "tokens": 12891
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_094d7cb1c0c228a31142cc70d4:network:7",
+      "status": "KNOWN",
+      "micros": 58622,
+      "tokens": 17023
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exec_01M6TBAVV78VR4378DB500TEEA:network:1",
+      "status": "KNOWN",
+      "micros": 4716,
+      "tokens": 2043
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_8457940b6d025540742253d1c9:network:1",
+      "status": "KNOWN",
+      "micros": 4454,
+      "tokens": 2026
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_8457940b6d025540742253d1c9:network:2",
+      "status": "KNOWN",
+      "micros": 4690,
+      "tokens": 2156
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_8457940b6d025540742253d1c9:network:3",
+      "status": "KNOWN",
+      "micros": 4938,
+      "tokens": 2298
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_8457940b6d025540742253d1c9:network:4",
+      "status": "KNOWN",
+      "micros": 13742,
+      "tokens": 6583
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_8457940b6d025540742253d1c9:network:5",
+      "status": "KNOWN",
+      "micros": 20334,
+      "tokens": 9255
+    },
+    {
+      "run": "hark-live-goal 42346111946",
+      "callId": "exa_8457940b6d025540742253d1c9:network:6",
+      "status": "KNOWN",
+      "micros": 51474,
+      "tokens": 13449
     }
   ],
-  "totalMicros": 343424,
-  "openReservationsMicros": 8000000
+  "totalMicros": 716542,
+  "openReservationsMicros": 0
 }
