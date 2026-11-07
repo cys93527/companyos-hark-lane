@@ -81,7 +81,8 @@ jobs:
       - name: Upload evidence (always, first failure kept)
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: hark-ubuntu-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: hark-evidence/
-          retention-days: 30
+          retention-days: 7

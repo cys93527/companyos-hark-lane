@@ -36,10 +36,12 @@ jobs:
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: hark-isolation-evidence
           path: hark-evidence/
           if-no-files-found: warn
+          retention-days: 7
 
   # H16b: the PRODUCTION helper (scripts/hark/isolation/setup.ps1) end to end - install, persistent status,
   # isolated agent child, standard-user status, WFP/ACL tamper -> ISOLATION_DEGRADED, repair, uninstall read-back.
@@ -60,7 +62,9 @@ jobs:
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: hark-isolation-lifecycle-evidence
           path: hark-evidence/
           if-no-files-found: warn
+          retention-days: 7

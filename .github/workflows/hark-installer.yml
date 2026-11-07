@@ -228,15 +228,17 @@ jobs:
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: hark-installer-evidence
           path: hark-evidence
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
 
       - name: Upload installer
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: hark-installer
           path: hark-installer
@@ -246,6 +248,7 @@ jobs:
       - name: Upload probe-newer installer
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: hark-installer-next
           path: hark-installer-next

@@ -10,14 +10,20 @@ on:
   workflow_dispatch:
     inputs:
       installer_run_id:
-        description: hark-installer run whose installer artifact to use
-        required: true
+        description: "hark-installer run whose installer artifact to use (custom mode: leave empty to build the installer inside the job)"
+        required: false
+        default: ''
       mode:
         description: "planning (H10 plan-only preview) | execute (H15c: packaged agent kernel executes the plan; Artifact/CAS/Validation/Handoff) | acceptance (H15d: realistic multi-step acceptance goal, separate CNY 5 budget)"
         required: false
         default: planning
         type: choice
         options: [planning, execute, acceptance, custom]
+      build_installer:
+        description: "custom mode only: build the installer inside the job from the checked-out sha (same steps as hark-installer.yml) instead of downloading an artifact; implied when installer_run_id is empty"
+        required: false
+        default: false
+        type: boolean
       goal_text:
         description: "custom mode only: the user's goal, typed verbatim into the installed app's composer (real GUI driven over CDP)"
         required: false
@@ -104,10 +110,12 @@ jobs:
           $u = Join-Path $env:APPDIR 'unins000.exe'
           if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: hark-live-goal-evidence
           path: hark-evidence
+          retention-days: 7
 
   # LIVE-CUSTOM (user request 2026-11-06 00:16 CST, budget 00:17: per-run cap CNY 8, every
   # run reserved in installer/budget/live-contract-fill-ledger.json BEFORE dispatch). The
@@ -118,7 +126,8 @@ jobs:
   live-goal-custom:
     if: inputs.mode == 'custom'
     runs-on: windows-2022
-    timeout-minutes: 200
+    # 200 min for the run itself + up to 80 min for the inline installer build.
+    timeout-minutes: 280
     env:
       COS_MODEL_PROVIDER_ID: model.deepseek
       COS_MODEL_BASE_URL: https://api.deepseek.com
@@ -129,13 +138,181 @@ jobs:
       # mirrors the shipped provider profile (scripts/hark/setup/provider-profile.json thinking)
       COS_MODEL_THINKING: disabled
       COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: '0'
-      COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
+      # The model key is NOT job-wide: only the steps that need it get it (never the build steps).
       GOAL_TEXT: ${{ inputs.goal_text }}
+      HARK_INLINE_INSTALLER: ${{ (inputs.build_installer || inputs.installer_run_id == '') && 'true' || 'false' }}
       LIVE_WATCHDOG_MS: '9300000'
       LIVE_IDLE_STOP_MS: '900000'
     steps:
       - uses: actions/checkout@v4
+      # INLINE INSTALLER (2026-11-07): GitHub Free artifact storage (500 MB) can refuse the
+      # hark-installer artifact, so custom mode can build the installer HERE from the checked-out
+      # sha. The steps below are byte-identical copies of hark-installer.yml (only the guard line
+      # is added; tests/hark/live-inline-installer.test.ts enforces it). Same output path
+      # ($GITHUB_WORKSPACE\hark-installer). The test smokes stay in hark-installer.yml on the same sha.
+      - uses: pnpm/action-setup@v4
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        with:
+          version: 11.25.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        with:
+          node-version: 24.19.0
+
+      - name: Host identity
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          [ordered]@{ commit = (git rev-parse HEAD); os = [Environment]::OSVersion.VersionString; arch = $env:PROCESSOR_ARCHITECTURE; node = (node --version); pnpm = (pnpm --version) } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/host.json
+          Get-Content hark-evidence/host.json
+
+      - name: Install (frozen lockfile, no lifecycle scripts)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: pnpm install --frozen-lockfile --ignore-scripts 2>&1 | Tee-Object hark-evidence/install.log; exit $LASTEXITCODE
+
+      - name: Build
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: pnpm run build 2>&1 | Tee-Object hark-evidence/build.log; exit $LASTEXITCODE
+
+      - name: Agent kernel source cache (pinned deepseek-harness pnpm store)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/pnpm/store
+          key: dsh-pnpm-store-639ed015397290b3745d163aafe02ffee4aa3f84-win-x64
+
+      - name: Agent kernel (H15) - official deepseek-harness @ pinned SHA, frozen install, unmodified host build, closure
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: |
+          # User approval 2026-10-26: deepseek-ai/deepseek-harness 639ed015 (dsh-v0.2.0-rc.2, MIT), exact pin only.
+          node scripts/materialize-embedded-dsh.mjs --target "$env:RUNNER_TEMP\dsh-managed" 2>&1 | Tee-Object hark-evidence/kernel-materialize.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:RUNNER_TEMP\dsh-managed\manifest.json" hark-evidence/kernel-materialized-manifest.json
+
+      - name: Agent kernel - pinned Node runtime (official nodejs.org v24.19.0 win-x64, SHASUMS256-verified)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'kernel-node'; New-Item -ItemType Directory -Force $d | Out-Null
+          Invoke-WebRequest -UseBasicParsing https://nodejs.org/dist/v24.19.0/SHASUMS256.txt -OutFile "$d\SHASUMS256.txt"
+          Invoke-WebRequest -UseBasicParsing https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip -OutFile "$d\node.zip"
+          $want = ((Get-Content "$d\SHASUMS256.txt") | Where-Object { $_ -match '  node-v24\.19\.0-win-x64\.zip$' }).Split(' ')[0]
+          $got = (Get-FileHash "$d\node.zip" -Algorithm SHA256).Hash.ToLower()
+          "zip want=$want got=$got" | Tee-Object hark-evidence/kernel-node-sha.txt
+          if ($want -ne $got) { Write-Error 'node zip sha256 mismatch'; exit 1 }
+          Expand-Archive "$d\node.zip" -DestinationPath $d -Force
+          Copy-Item hark-evidence/kernel-node-sha.txt "$d\node-v24.19.0-win-x64\" -Force
+
+      - name: Agent kernel - pack resources/agent-kernel (relocatable manifest, SBOM, licences, denylist)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: |
+          node scripts/hark/pack-agent-kernel.mjs --managed "$env:RUNNER_TEMP\dsh-managed" --out "$env:RUNNER_TEMP\agent-kernel" --node "$env:RUNNER_TEMP\kernel-node\node-v24.19.0-win-x64\node.exe" --node-shasums "$env:RUNNER_TEMP\kernel-node\SHASUMS256.txt" --node-dist-name win-x64/node.exe 2>&1 | Tee-Object hark-evidence/kernel-pack.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $k = "$env:RUNNER_TEMP\agent-kernel\dsh-v0.2.0-rc.2"
+          Copy-Item "$k\manifest.json", "$k\sbom.cdx.json", "$k\packages.txt", "$k\licenses\INDEX.json" hark-evidence/ -Force
+          node scripts/hark/pwsh-pty-probe.mjs $k hark-evidence/pwsh-pty-probe.json
+          node scripts/hark/kernel-health-smoke.mjs $k "$env:RUNNER_TEMP\kernel-state" hark-evidence/kernel-health.json --pong
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: native.job binding - koffi 3.3.3 (integrity pinned sha512, no lifecycle scripts; shipped under resources/native, H15b)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        env:
+          KOFFI_SHA512: sha512-XWNI4eyxJJzR2MakPZzR3QeZ06JOklLbxglin0dHhx/qIQCby8lqHs9Acq4Q7CpCKnOrBSj+6b9J5y69wfr2ZA==
+          KOFFI_WIN_SHA512: sha512-tLTF17wl4CCwOlo1Tt0NbduwUduDvM6c8JSyearcLu6hpNHQo44RF3rKN2i7UkxwCqXyiudZK0lS421CC/TPZA==
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'hark-koffi'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $a = (npm view koffi@3.3.3 dist.integrity).Trim()
+          $b = (npm view '@koromix/koffi-win32-x64@3.3.3' dist.integrity).Trim()
+          "koffi=$a`nkoffi-win32-x64=$b" | Tee-Object hark-evidence/koffi-integrity.txt
+          if ($a -ne $env:KOFFI_SHA512 -or $b -ne $env:KOFFI_WIN_SHA512) { Write-Error 'koffi integrity mismatch'; exit 1 }
+          Set-Content -Encoding utf8 (Join-Path $dir 'package.json') '{"private":true,"name":"hark-koffi","version":"0.0.0","dependencies":{"koffi":"3.3.3"}}'
+          Push-Location $dir
+          npm install --ignore-scripts --no-audit --no-fund 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-install.log')
+          $code = $LASTEXITCODE
+          npm ls --all 2>&1 | Tee-Object (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-tree.txt')
+          Copy-Item package-lock.json (Join-Path $env:GITHUB_WORKSPACE 'hark-evidence/koffi-package-lock.json')
+          Pop-Location
+          $lock = Get-Content (Join-Path $dir 'package-lock.json') -Raw | ConvertFrom-Json -AsHashTable
+          if ($lock['packages']['node_modules/koffi']['integrity'] -ne $env:KOFFI_SHA512) { Write-Error 'installed koffi integrity mismatch'; exit 1 }
+          $w = $lock['packages']['node_modules/@koromix/koffi-win32-x64']
+          if ($null -eq $w -or $w['integrity'] -ne $env:KOFFI_WIN_SHA512) { Write-Error 'installed koffi-win32-x64 integrity mismatch'; exit 1 }
+          "HARK_KOFFI_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          exit $code
+
+      - name: native.job - pack resources/native (binding manifest, operations.json, operation scripts)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: |
+          node scripts/hark/pack-native-job.mjs --koffi "$env:HARK_KOFFI_DIR" --kernel "$env:RUNNER_TEMP\agent-kernel\dsh-v0.2.0-rc.2" --out "$env:RUNNER_TEMP\native-job" 2>&1 | Tee-Object hark-evidence/native-job-pack.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:RUNNER_TEMP\native-job\operations.json" hark-evidence/native-operations.json
+          Copy-Item "$env:RUNNER_TEMP\native-job\koffi-3.3.3\binding-manifest.json" hark-evidence/native-binding-manifest.json
+
+      - name: Electron runtime (locked version, checksum-verified by electron/install.js)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        working-directory: apps/desktop
+        run: |
+          $el = (Resolve-Path node_modules/electron).Path
+          node "$el/install.js" 2>&1 | Tee-Object ../../hark-evidence/electron-install.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dist = Join-Path $el 'dist'
+          [ordered]@{ package = (Get-Content (Join-Path $el 'package.json') | ConvertFrom-Json).version; dist = $dist; version = (Get-Content (Join-Path $dist 'version') -Raw).Trim(); electronExeSha256 = (Get-FileHash (Join-Path $dist 'electron.exe') -Algorithm SHA256).Hash } | ConvertTo-Json | Tee-Object ../../hark-evidence/electron.json
+          "ELECTRON_DIST=$dist" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Isolation (H16b-3) - build companyos-isolated-launch.exe with the in-box .NET Framework csc; pack resources/isolation
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\isolation"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /target:exe /optimize+ "/out:$dir\companyos-isolated-launch.exe" /r:System.Security.dll scripts\hark\isolation\isolated-launch.cs 2>&1 | Tee-Object hark-evidence/isolation-csc.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item scripts\hark\isolation\setup.ps1, scripts\hark\isolation\wfp-persistent.cs -Destination $dir
+          Get-ChildItem $dir | ForEach-Object { [ordered]@{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() } } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/isolation-resources.json
+
+      - name: Stage app
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: node scripts/hark/stage-desktop.mjs "$env:ELECTRON_DIST" "$env:RUNNER_TEMP/companyos-stage/app" "$env:RUNNER_TEMP/agent-kernel" "$env:RUNNER_TEMP/native-job" "$env:RUNNER_TEMP/isolation" 2>&1 | Tee-Object hark-evidence/stage.log; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item "$env:RUNNER_TEMP/companyos-stage/stage-manifest.json" hark-evidence/
+
+      - name: Package installer (Inno Setup preinstalled on the runner)
+        if: env.HARK_INLINE_INSTALLER == 'true'
+        shell: pwsh
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { Write-Host 'ISCC not found on runner; NOT installing it (would be a new download needing approval).'; exit 3 }
+          $ver = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          # H12c: Simplified Chinese wizard: the runner's own ChineseSimplified.isl when shipped, else the in-repo installer/ChineseSimplified.isl (no download).
+          $langDir = Join-Path (Split-Path $iscc) 'Languages'
+          Get-ChildItem $langDir -Recurse -Filter *.isl -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($langDir.Length + 1) } | Out-File -Encoding utf8 hark-evidence/iscc-languages.txt
+          $zh = Get-ChildItem $langDir -Recurse -Filter 'ChineseSimplified.isl' -ErrorAction SilentlyContinue | Select-Object -First 1
+          # H15: MAX_PATH gate — longest staged path (relative to {app}) feeds the installer's install-dir check.
+          $maxRel = node scripts/hark/measure-stage-paths.mjs "$env:RUNNER_TEMP\companyos-stage\app" hark-evidence/stage-paths.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $isccArgs = @("/DStageDir=$env:RUNNER_TEMP\companyos-stage\app", "/DAppVersion=$ver", "/DOutDir=$env:GITHUB_WORKSPACE\hark-installer", "/DMaxRelPath=$maxRel")
+          if ($zh) { $isccArgs += "/DZhCnMessages=$($zh.FullName)" }
+          & $iscc @isccArgs installer\companyos.iss 2>&1 | Tee-Object hark-evidence/iscc.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # A message name the runner's Inno does not know would be a silent translation gap.
+          $msgWarn = @(Select-String -Path hark-evidence/iscc.log -Pattern 'Warning' -SimpleMatch | Where-Object { $_.Line -match '(?i)message|language|\.isl' })
+          if ($msgWarn.Count -gt 0) { $msgWarn | ForEach-Object { Write-Host "ISCC language warning: $($_.Line)" }; exit 4 }
+          Get-ChildItem hark-installer\*.exe | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)  $($_.Length)" } | Tee-Object hark-evidence/installer-sha256.txt
+          [ordered]@{ iscc = $iscc; isccVersion = (Get-Item $iscc).VersionInfo.ProductVersion; isccFileVersion = (Get-Item $iscc).VersionInfo.FileVersion; wizardLanguage = $(if ($zh) { 'zh-CN (runner ' + $zh.FullName + ')' } else { 'zh-CN (in-repo installer/ChineseSimplified.isl over Default.isl; runner Inno ships none)' }) } | ConvertTo-Json | Out-File -Encoding utf8 hark-evidence/iscc.json
+
       - name: verify the installer run belongs to this commit (AUDIT-S12)
+        if: env.HARK_INLINE_INSTALLER != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,6 +323,7 @@ jobs:
           node scripts/hark/verify-workflow-runs.mjs --mode installer --sha "$env:GITHUB_SHA" --installer-run "$env:RUN_ID" --runs installer-run.json
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/download-artifact@v4
+        if: env.HARK_INLINE_INSTALLER != 'true'
         with:
           name: hark-installer
           path: hark-installer
@@ -153,8 +331,13 @@ jobs:
           github-token: ${{ github.token }}
       - name: Install (per-user, silent)
         shell: pwsh
+        env:
+          COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
+          INSTALLER_RUN_ID: ${{ inputs.installer_run_id }}
         run: |
           New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          $src = if ($env:HARK_INLINE_INSTALLER -eq 'true') { "inline build of $env:GITHUB_SHA in run $env:GITHUB_RUN_ID" } else { "hark-installer run $env:INSTALLER_RUN_ID (verified for $env:GITHUB_SHA)" }
+          $src | Tee-Object hark-evidence/installer-source.txt
           if ([string]::IsNullOrWhiteSpace($env:COMPANYOS_MODEL_API_KEY)) { Write-Host 'secret missing: no model call made'; exit 3 }
           if ([string]::IsNullOrWhiteSpace($env:GOAL_TEXT)) { Write-Host 'goal_text missing'; exit 3 }
           $env:GOAL_TEXT | Out-File -Encoding utf8 hark-evidence/goal.txt
@@ -172,6 +355,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: The user's goal through the installed GUI (CDP driver, screenshots, read-only DB progress)
         shell: pwsh
+        env:
+          COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
         run: |
           $env:ELECTRON_RUN_AS_NODE = '1'
           $ws = Join-Path $env:USERPROFILE 'ContractFillProject'
@@ -183,6 +368,12 @@ jobs:
           $leak = Get-ChildItem hark-evidence -Recurse -File | Where-Object { $_.Length -lt 200MB } | Select-String -SimpleMatch $env:COMPANYOS_MODEL_API_KEY -List -ErrorAction SilentlyContinue
           if ($leak) { Write-Host "KEY LEAKED in $($leak.Path -join ',')"; Remove-Item hark-evidence\* -Recurse -Force; exit 9 }
           exit $code
+      - name: Summary to the job log + step summary (recoverable when the evidence upload is refused)
+        if: always()
+        shell: pwsh
+        env:
+          COMPANYOS_MODEL_API_KEY: ${{ secrets.COMPANYOS_MODEL_API_KEY }}
+        run: node scripts/hark/live-summary.mjs hark-evidence
       - name: Uninstall
         if: always()
         shell: pwsh
@@ -191,7 +382,9 @@ jobs:
           $u = Join-Path $env:APPDIR 'unins000.exe'
           if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: hark-live-goal-evidence
           path: hark-evidence
+          retention-days: 7

@@ -127,7 +127,9 @@ jobs:
           $u = Join-Path $env:APPDIR 'unins000.exe'
           if (Test-Path $u) { Start-Process $u -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait }
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: hark-restart-evidence
           path: hark-evidence
+          retention-days: 7

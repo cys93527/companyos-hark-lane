@@ -54,7 +54,9 @@ jobs:
           foreach ($f in $base, $next) { "$((Get-FileHash $f -Algorithm SHA256).Hash)  $(Split-Path $f -Leaf)" | Tee-Object -Append hark-evidence/installers-sha256.txt }
           ./scripts/hark/upgrade-retention.ps1 -Base $base -Next $next -Evidence "$env:GITHUB_WORKSPACE\hark-evidence"
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: hark-upgrade-evidence
           path: hark-evidence
+          retention-days: 7
