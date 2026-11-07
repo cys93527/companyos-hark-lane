@@ -11,12 +11,13 @@
   "billingAccount": "deepseek:user-setup:COMPANYOS_MODEL_API_KEY",
   "pricing": {
     "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
-    "version": "2026-10-25 peak-hour cache-miss rates (worst case)",
+    "version": "2026-11-08 peak-hour rates (worst case): cache-miss input 2 CNY, reported cache-hit input 0.04 CNY, output 8 CNY per million",
     "currency": "CNY",
     "units": "MICROS_PER_MILLION_TOKENS",
     "rounding": "CEIL_TOTAL_PER_REQUEST_MICROS",
     "inputRate": 2000000,
-    "outputRate": 8000000
+    "outputRate": 8000000,
+      "cacheHitInputRate": 40000
   },
   "inputUpperBound": 96000,
   "maxCalls": 160,

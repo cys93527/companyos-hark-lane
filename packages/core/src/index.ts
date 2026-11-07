@@ -72,7 +72,7 @@ export type {
 export type { CommandLedgerPort, CommandLedgerRecord } from './ports/command-ledger.js';
 
 /* ------------------------------------------- model providers (Sprint 6) ------- */
-export { DEFAULT_MODEL_CAPABILITIES, PROVIDER_ERROR_KINDS } from './ports/model-provider.js';
+export { DEFAULT_MODEL_CAPABILITIES, PROVIDER_ERROR_KINDS, reportedCachedInputTokens } from './ports/model-provider.js';
 export type {
   FinishReason,
   HealthReport,

@@ -30,7 +30,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { ExecutorExecutionRequest } from '@companyos/engine';
-import { domainError, type DomainError, type InvocationResult, err, ok, type Result } from '@companyos/core';
+import { domainError, type DomainError, type InvocationResult, err, ok, reportedCachedInputTokens, type Result } from '@companyos/core';
 
 /** The immutable runtime manifest written by the materialization step. */
 /**
@@ -919,11 +919,11 @@ export const observeResponseUsage = (
   text: string,
   contentType: string,
   contentEncoding = 'identity',
-): { readonly disposition: 'observed' | 'absent' | 'conflicting' | 'invalid'; readonly usage: { inputTokens: number; outputTokens: number; totalCost: null } | null; readonly shape: ModelResponseShape } => {
+): { readonly disposition: 'observed' | 'absent' | 'conflicting' | 'invalid'; readonly usage: { inputTokens: number; outputTokens: number; totalCost: null; cachedInputTokens?: number } | null; readonly shape: ModelResponseShape } => {
   const lines = text.split(/\r?\n/u);
   const sse = contentType.toLowerCase().includes('text/event-stream') || lines.some((line) => line.startsWith('data:'));
   let dataEvents = 0; let commentLines = 0; let doneMarker = false; let usageEvents = 0; let nullUsageEvents = 0; let unparsedEvents = 0;
-  let usage: { inputTokens: number; outputTokens: number; totalCost: null } | null = null;
+  let usage: { inputTokens: number; outputTokens: number; totalCost: null; cachedInputTokens?: number } | null = null;
   let conflicting = false; let invalid = false;
   const consider = (payload: string): void => {
     let parsed: unknown;
@@ -936,7 +936,10 @@ export const observeResponseUsage = (
     const c = (u as { completion_tokens?: unknown }).completion_tokens;
     if (typeof p !== 'number' || !Number.isSafeInteger(p) || p < 0 || typeof c !== 'number' || !Number.isSafeInteger(c) || c < 0) { invalid = true; return; }
     if (usage !== null && (usage.inputTokens !== p || usage.outputTokens !== c)) conflicting = true;
-    usage = { inputTokens: p, outputTokens: c, totalCost: null };
+    // Live contract-fill run 7: the provider-reported cache-hit share is priced at the proof's
+    // cache-hit rate; unreported/invalid stays priced as cache-miss input.
+    const cached = reportedCachedInputTokens(u, p);
+    usage = cached === null ? { inputTokens: p, outputTokens: c, totalCost: null } : { inputTokens: p, outputTokens: c, totalCost: null, cachedInputTokens: cached };
   };
   if (sse) {
     for (const line of lines) {

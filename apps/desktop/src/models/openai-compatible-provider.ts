@@ -26,6 +26,7 @@ import {
   normalizeProviderError,
   ok,
   providerErrorToDomainError,
+  reportedCachedInputTokens,
   type HealthReport,
   type InvocationRequest,
   type InvocationResult,
@@ -529,6 +530,9 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
        */
       const usageKnown = typeof inputTokens === 'number' && Number.isSafeInteger(inputTokens) && inputTokens >= 0 &&
         typeof outputTokens === 'number' && Number.isSafeInteger(outputTokens) && outputTokens >= 0;
+      // Live contract-fill run 7: the provider-reported prompt-cache share (priced at the proof's cache-hit rate).
+      const cachedInputTokens = usageKnown ? reportedCachedInputTokens(usageRaw, inputTokens) : null;
+      const cachedPart = cachedInputTokens === null ? {} : { cachedInputTokens };
       const contentFailure = (message: string): DomainError => {
         const truncated = finishReason === 'length';
         // LIVE-CONTRACT-FILL (42085454360): an EMPTY answer cut off by max_tokens after the
@@ -542,7 +546,7 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
         return domainError(failure.code, failure.message, {
           ...failure.details,
           ...(truncated ? { reason: reasoningExhausted ? 'PROVIDER_REASONING_EXHAUSTED' : 'PROVIDER_OUTPUT_TRUNCATED', maxOutputTokens: request_.maxOutputTokens ?? null } : {}),
-          ...(usageKnown ? { usageStatus: 'KNOWN', observedUsage: { inputTokens, outputTokens } } : { usageStatus: 'UNKNOWN' }),
+          ...(usageKnown ? { usageStatus: 'KNOWN', observedUsage: { inputTokens, outputTokens, ...cachedPart } } : { usageStatus: 'UNKNOWN' }),
         });
       };
       if (typeof content !== 'string' || content === '') {
@@ -577,6 +581,7 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
           inputTokens,
           outputTokens,
           totalCost: null,
+          ...cachedPart,
         },
         finishReason,
         providerMeta: { protocol: 'openai-compatible' },

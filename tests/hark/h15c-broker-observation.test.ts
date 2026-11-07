@@ -61,7 +61,8 @@ describe('H15c broker exchange observation', () => {
   it('DeepSeek stream shape (usage null until the last chunk) settles the observed usage', async () => {
     const r = await run(DEEPSEEK_STREAM);
     expect(r.code).toBe(200);
-    expect(r.settled).toEqual([{ inputTokens: 17, outputTokens: 9, totalCost: null }]);
+    // run 7: the reported prompt_cache_hit_tokens (0 here) is carried for cache-hit pricing.
+    expect(r.settled).toEqual([{ inputTokens: 17, outputTokens: 9, totalCost: null, cachedInputTokens: 0 }]);
     expect(r.observation).toMatchObject({ sequence: 1, endedBy: 'upstream-end', upstreamStatus: 200, usageDisposition: 'observed', usage: { inputTokens: 17, outputTokens: 9 } });
     expect(r.observation.requestBytes).toBeGreaterThan(0);
     expect(r.observation.responseBytes).toBe(Buffer.byteLength(DEEPSEEK_STREAM));

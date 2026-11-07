@@ -50,6 +50,8 @@ export interface ProviderSetupProfile {
     readonly rounding: 'CEIL_TOTAL_PER_REQUEST_MICROS';
     readonly inputRate: number;
     readonly outputRate: number;
+    /** Optional attested prompt-cache-hit input rate (see TrustedBudgetProof.pricing.cacheHitInputRate). */
+    readonly cacheHitInputRate?: number;
   };
   /** Enforced by admission (request body bytes) — see H15d-fix3. */
   readonly inputUpperBound: number;
@@ -94,7 +96,8 @@ export const parseProviderSetupProfile = (raw: unknown): ProviderSetupProfile | 
   if (!isRecord(raw) || raw['schema'] !== PROVIDER_SETUP_PROFILE_SCHEMA) return null;
   if (!exactKeys(raw, Object.hasOwn(raw, 'thinking') ? [...PROFILE_KEYS, 'thinking'] : PROFILE_KEYS)) return null;
   const p = raw['pricing'];
-  if (!isRecord(p) || !exactKeys(p, PRICING_KEYS)) return null;
+  if (!isRecord(p) || !exactKeys(p, Object.hasOwn(p, 'cacheHitInputRate') ? [...PRICING_KEYS, 'cacheHitInputRate'] : PRICING_KEYS)) return null;
+  if (Object.hasOwn(p, 'cacheHitInputRate') && (typeof p['cacheHitInputRate'] !== 'number' || !Number.isSafeInteger(p['cacheHitInputRate']) || p['cacheHitInputRate'] < 0 || typeof p['inputRate'] !== 'number' || p['cacheHitInputRate'] > p['inputRate'])) return null;
   if (!httpsUrl(p['source']) || !text(p['version']) || p['currency'] !== 'CNY' || p['units'] !== 'MICROS_PER_MILLION_TOKENS' || p['rounding'] !== 'CEIL_TOTAL_PER_REQUEST_MICROS') return null;
   if (!posInt(p['inputRate'], 1_000_000_000) || !posInt(p['outputRate'], 1_000_000_000)) return null;
   if (!text(raw['upstreamModelIdentity']) || !text(raw['billingAccount'])) return null;

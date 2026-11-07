@@ -36,6 +36,15 @@ export interface TrustedBudgetProof {
     readonly rounding: 'CEIL_TOTAL_PER_REQUEST_MICROS';
     readonly inputRate: number;
     readonly outputRate: number;
+    /**
+     * Live contract-fill run 7 (42401450992): the attested rate for input tokens the provider
+     * REPORTS as prompt-cache hits (DeepSeek deepseek-flash peak: 0.04 CNY vs 2 CNY cache-miss
+     * per million). Every call used to be charged as all cache-miss input, so an agent loop
+     * whose resent prefix is cached was over-charged up to ~50x on input and the per-step cap
+     * stopped a productive step. Optional (absent = no cache pricing); never above inputRate.
+     * Admission bounds stay all-cache-miss (worst case).
+     */
+    readonly cacheHitInputRate?: number;
   };
   readonly tokens: { readonly inputUpperBound: number; readonly outputUpperBound: number; readonly evidenceRef: string };
   readonly validFromMs: number;
@@ -65,6 +74,7 @@ const text = (v: unknown): v is string => typeof v === 'string' && v.length > 0 
 const integer = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 const exactKeys = (v: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(v).sort().join('|') === [...keys].sort().join('|');
+const PRICING_KEYS = ['source', 'version', 'currency', 'units', 'rounding', 'inputRate', 'outputRate'] as const;
 const identityKeys = ['providerId', 'modelId', 'upstreamModelIdentity', 'endpoint', 'routingIdentity', 'credentialRef', 'billingAccount', 'billingOrganization', 'attestationRef'] as const;
 
 const endpoint = (value: string): string | null => {
@@ -91,12 +101,16 @@ export const trustedBudgetPolicyId = (source: TrustedBudgetProofSource): string 
   return `proof-policy:${createHash('sha256').update(JSON.stringify([source.policyId, source.scope, source.currency, b.providerId, b.account, b.organization])).digest('hex')}`;
 };
 
+const cacheHitRateValid = (rate: unknown, inputRate: unknown, present: boolean): boolean =>
+  !present || (integer(rate) && integer(inputRate) && rate <= inputRate);
+
 const validProof = (v: unknown): v is TrustedBudgetProof => {
   if (!object(v) || !exactKeys(v, ['schema', 'scope', 'identity', 'pricing', 'tokens', 'validFromMs', 'validUntilMs'])
     || v['schema'] !== 'companyos:trusted-budget-proof:1' || !['TEST_ONLY', 'PRODUCTION_VERIFIED'].includes(String(v['scope']))
     || !isIdentity(v['identity']) || !integer(v['validFromMs']) || !integer(v['validUntilMs']) || v['validUntilMs'] <= v['validFromMs']) return false;
   const p = v['pricing'], t = v['tokens'];
-  return object(p) && exactKeys(p, ['source', 'version', 'currency', 'units', 'rounding', 'inputRate', 'outputRate'])
+  return object(p) && exactKeys(p, Object.hasOwn(p, 'cacheHitInputRate') ? [...PRICING_KEYS, 'cacheHitInputRate'] : PRICING_KEYS)
+    && cacheHitRateValid(p['cacheHitInputRate'], p['inputRate'], Object.hasOwn(p, 'cacheHitInputRate'))
     && text(p['source']) && text(p['version']) && ['USD', 'CNY', 'EUR', 'CREDIT'].includes(String(p['currency']))
     && p['units'] === 'MICROS_PER_MILLION_TOKENS' && p['rounding'] === 'CEIL_TOTAL_PER_REQUEST_MICROS'
     && integer(p['inputRate']) && integer(p['outputRate'])
@@ -120,9 +134,14 @@ export async function readTrustedBudgetProof(source: TrustedBudgetProofSource, r
   } catch { return null; }
 }
 
-const price = (proof: TrustedBudgetProof, input: number, output: number): number | null => {
+const price = (proof: TrustedBudgetProof, input: number, output: number, cachedInput = 0): number | null => {
   if (!integer(input) || !integer(output) || input > proof.tokens.inputUpperBound || output > proof.tokens.outputUpperBound) return null;
-  const numerator = BigInt(input) * BigInt(proof.pricing.inputRate) + BigInt(output) * BigInt(proof.pricing.outputRate);
+  // Cache-hit input is priced at the attested cache-hit rate only when the proof attests one and
+  // the provider reported a valid share; otherwise every input token is cache-miss (worst case).
+  const cacheRate = proof.pricing.cacheHitInputRate;
+  const cached = cacheRate !== undefined && integer(cachedInput) && cachedInput <= input ? cachedInput : 0;
+  const numerator = BigInt(input - cached) * BigInt(proof.pricing.inputRate) + BigInt(cached) * BigInt(cacheRate ?? 0)
+    + BigInt(output) * BigInt(proof.pricing.outputRate);
   const result = (numerator + 999999n) / 1000000n;
   return result <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(result) : null;
 };
@@ -159,5 +178,5 @@ export async function pinnedBudgetCost(source: TrustedBudgetProofSource, reserva
     || reservation.bound.inputTokens !== proof.tokens.inputUpperBound || reservation.bound.outputTokens !== proof.tokens.outputUpperBound
     || reservation.bound.costMicros !== price(proof, proof.tokens.inputUpperBound, proof.tokens.outputUpperBound)) return null;
   // totalCost has no currency/identity guarantee in the old port; never substitute it.
-  return price(proof, usage.inputTokens, usage.outputTokens);
+  return price(proof, usage.inputTokens, usage.outputTokens, usage.cachedInputTokens ?? 0);
 }

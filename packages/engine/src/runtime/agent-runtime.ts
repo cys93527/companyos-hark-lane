@@ -66,12 +66,16 @@ import type { ProviderRegistry } from '../providers/registry.js';
 
 /** Artifact references produced by an execution (mirrors the persistence record). */
 /** H15d: real usage a provider observed on an answered-but-unusable call (never invented). */
-export const observedUsageOf = (error: unknown): { inputTokens: number; outputTokens: number; totalCost: null } | null => {
+export const observedUsageOf = (error: unknown): { inputTokens: number; outputTokens: number; totalCost: null; cachedInputTokens?: number } | null => {
   const details = (error as { details?: Record<string, unknown> } | null)?.details;
-  const u = details?.['usageStatus'] === 'KNOWN' ? details['observedUsage'] as { inputTokens?: unknown; outputTokens?: unknown } | undefined : undefined;
+  const u = details?.['usageStatus'] === 'KNOWN' ? details['observedUsage'] as { inputTokens?: unknown; outputTokens?: unknown; cachedInputTokens?: unknown } | undefined : undefined;
   if (u === undefined || u === null) return null;
   const ok = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
-  return ok(u.inputTokens) && ok(u.outputTokens) ? { inputTokens: u.inputTokens, outputTokens: u.outputTokens, totalCost: null } : null;
+  if (!ok(u.inputTokens) || !ok(u.outputTokens)) return null;
+  // Live contract-fill run 7: carry the reported cache-hit share only when it is a valid part of the input.
+  return ok(u.cachedInputTokens) && u.cachedInputTokens <= u.inputTokens
+    ? { inputTokens: u.inputTokens, outputTokens: u.outputTokens, totalCost: null, cachedInputTokens: u.cachedInputTokens }
+    : { inputTokens: u.inputTokens, outputTokens: u.outputTokens, totalCost: null };
 };
 
 export interface ExecutionArtifactRecord extends EntityId {
