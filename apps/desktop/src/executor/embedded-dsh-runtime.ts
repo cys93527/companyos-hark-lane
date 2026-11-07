@@ -30,7 +30,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { ExecutorExecutionRequest } from '@companyos/engine';
-import { domainError, type DomainError, type InvocationResult, err, ok, reportedCachedInputTokens, type Result } from '@companyos/core';
+import { domainError, type DomainError, type InvocationResult, err, ok, type Result } from '@companyos/core';
+import { reportedCachedInputTokens } from '../models/provider-usage.js';
 
 /** The immutable runtime manifest written by the materialization step. */
 /**

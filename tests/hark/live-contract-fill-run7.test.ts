@@ -7,9 +7,10 @@
  * the attested cache-hit rate; admission bounds stay worst case (all cache-miss).
  */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { reportedCachedInputTokens } from '@companyos/core';
+import { reportedCachedInputTokens } from '../../apps/desktop/src/models/provider-usage.js';
 import { observedUsageOf } from '../../packages/engine/src/runtime/agent-runtime.js';
 import { observeResponseUsage } from '../../apps/desktop/src/executor/embedded-dsh-runtime.js';
 import { pinnedBudgetCost, readTrustedBudgetProof, type TrustedBudgetProof, type TrustedBudgetProofSource, type VerifiedBudgetIdentity } from '../../apps/desktop/src/trusted-budget-proof.js';
@@ -107,5 +108,30 @@ describe('run 7: provider-reported prompt-cache hits are priced at the attested 
       const template = JSON.parse(readFileSync(`installer/budget/deepseek-flash${t}.approval-template.json`, 'utf8'));
       expect(template.proof.pricing).toMatchObject({ inputRate: 2_000_000, outputRate: 8_000_000, cacheHitInputRate: 40_000 });
     }
+  });
+});
+
+describe('run-7 CI regression: vendor wire fields stay out of the inner ring (ARCH-037)', () => {
+  it('core does not export the vendor usage parser and inner-ring code names no vendor wire field', async () => {
+    const core = await import('@companyos/core');
+    expect('reportedCachedInputTokens' in core).toBe(false);
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const f = join(dir, e.name);
+        if (e.isDirectory()) walk(f);
+        else if (/\.(?:ts|mts|tsx)$/.test(e.name)) {
+          readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+            const t = line.trim();
+            if (t.startsWith('*') || t.startsWith('//') || t.startsWith('/*')) return;
+            const code = t.replace(/\/\/.*$/, '').replace(/'[^']*'|"[^"]*"|`[^`]*`/g, "''");
+            if (/\b(?:deepseek|openai)\b/i.test(code)) offenders.push(`${f}:${i + 1}`);
+          });
+        }
+      }
+    };
+    walk('packages/core/src');
+    walk('packages/engine/src');
+    expect(offenders).toEqual([]);
   });
 });

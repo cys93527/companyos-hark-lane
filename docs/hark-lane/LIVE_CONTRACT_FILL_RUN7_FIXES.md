@@ -12,7 +12,7 @@ per-step spend cap (35 %) stopped a productive step.
 
 ## Fix
 - `TokenUsage.cachedInputTokens` (optional, provider-reported, validated by
-  `reportedCachedInputTokens`: DeepSeek `prompt_cache_hit_tokens` or OpenAI
+  `reportedCachedInputTokens` (adapter layer, `apps/desktop/src/models/provider-usage.ts`): DeepSeek `prompt_cache_hit_tokens` or OpenAI
   `prompt_tokens_details.cached_tokens`, 0..prompt_tokens, conflicting values refused).
 - Read by the loopback model broker (`observeResponseUsage`), the openai-compatible provider and
   `observedUsageOf` (answered-but-unusable calls).
@@ -23,3 +23,12 @@ per-step spend cap (35 %) stopped a productive step.
   attest 40 000 micros per million.
 
 Regression test: `tests/hark/live-contract-fill-run7.test.ts`.
+
+## CI follow-up (734c426)
+
+hark-ubuntu / hark-windows failed the architecture guard (ARCH-037): the usage parser named
+vendor wire fields inside `packages/core`. Root fix: the parser moved to the adapter layer
+`apps/desktop/src/models/provider-usage.ts`; Core keeps only the vendor-neutral
+`TokenUsage.cachedInputTokens`. Regression: `tests/hark/live-contract-fill-run7.test.ts`
+runs `scripts/check-architecture.mjs` and asserts Core no longer exports the parser.
+

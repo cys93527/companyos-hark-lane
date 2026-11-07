@@ -26,7 +26,6 @@ import {
   normalizeProviderError,
   ok,
   providerErrorToDomainError,
-  reportedCachedInputTokens,
   type HealthReport,
   type InvocationRequest,
   type InvocationResult,
@@ -38,6 +37,7 @@ import {
   type SecretRef,
   type StreamChunk,
 } from '@companyos/core';
+import { reportedCachedInputTokens } from './provider-usage.js';
 
 /** The typed deployment configuration of this adapter (validated, non-secret fields only). */
 export interface OpenAiCompatibleConfig {
