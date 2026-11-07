@@ -241,7 +241,7 @@ jobs:
           name: hark-installer
           path: hark-installer
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload probe-newer installer
         if: always()
@@ -250,4 +250,4 @@ jobs:
           name: hark-installer-next
           path: hark-installer-next
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 1
