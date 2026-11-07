@@ -262,6 +262,7 @@ pnpm dev            # 需要 Electron 运行时二进制，见 ../PROJECT_HANDOF
 - 可信预算证明绑定（桌面外层，候选待独立审查）：[ADR-0033](./adr/0033-trusted-budget-proof-binding.md)
 - Hark 独立开发线（离线候选，待独立审查，不是验收结论）：[hark-lane/TAKEOVER_REPORT.md](./hark-lane/TAKEOVER_REPORT.md) ·
   [hark-lane/KERNEL_DEPENDENCY_INSTALL.md](./hark-lane/KERNEL_DEPENDENCY_INSTALL.md) ·
+  [hark-lane/LIVE_CONTRACT_FILL_RUN6_FIXES.md](./hark-lane/LIVE_CONTRACT_FILL_RUN6_FIXES.md) ·
   [hark-lane/TEST_SPEED.md](./hark-lane/TEST_SPEED.md) ·
   [hark-lane/H17A_FIRST_RUN_SETUP.md](./hark-lane/H17A_FIRST_RUN_SETUP.md) ·
   [hark-lane/3B3E_OFFLINE_RESULT.md](./hark-lane/3B3E_OFFLINE_RESULT.md) ·
