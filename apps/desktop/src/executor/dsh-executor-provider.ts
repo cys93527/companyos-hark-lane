@@ -29,7 +29,7 @@ import {
   type TypedExecutorConfig,
 } from '@companyos/engine';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { readdirSync, statSync, writeFileSync } from 'node:fs';
 
 import {createCoreDomainEvent, domainError, type DomainError, err, ok, redactSecrets, type Result} from '@companyos/core';
 import {createHash} from 'node:crypto';
@@ -302,16 +302,23 @@ export const dshSandboxModeOf = (goalStructured: Readonly<Record<string, unknown
  * CompanyOS knew the ceiling and never told the kernel. The prompt now states the
  * ceiling and how to stay under it (write large files in parts).
  */
+/**
+ * Lines per file part that stay well under the ceiling: tool-call arguments are JSON
+ * escaped code (≈ 12-16 tokens per source line incl. escaping) plus the reply around it.
+ */
+export const outputCeilingPartLines = (outputCeilingTokens: number): number => Math.max(40, Math.floor(outputCeilingTokens / 32));
 export const outputCeilingDirective = (outputCeilingTokens: number): string => {
-  const lines = Math.max(40, Math.floor(outputCeilingTokens / 20));
+  const lines = outputCeilingPartLines(outputCeilingTokens);
   return `Output limit: each of your responses, including tool-call arguments, is capped at about ${String(outputCeilingTokens)} output tokens. ` +
-    `A response that reaches the cap is cut off and the attempt fails. Never write a large file in one tool call: create it in parts of at most about ${String(lines)} lines ` +
-    '(write the first part, then append or edit the following parts in later calls), and keep each reply short.';
+    `A response that reaches the cap is cut off and its tool call is lost. Never write a large file in one tool call: create it in parts of at most about ${String(lines)} lines ` +
+    '(write the first part, then append or edit the following parts in later calls), write one file (or one part of a file) per reply, and keep each reply short.';
 };
 
 export interface DshTaskTextOptions {
   /** The selected route's per-response output ceiling (tokens), when CompanyOS knows it. */
   readonly outputCeilingTokens?: number;
+  /** In-attempt continuation directive after an output-ceiling truncation (rendered last). */
+  readonly continuationDirective?: string;
 }
 
 export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTaskTextOptions = {}): string => {
@@ -377,6 +384,7 @@ export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTas
   if (options.outputCeilingTokens !== undefined && Number.isSafeInteger(options.outputCeilingTokens) && options.outputCeilingTokens > 0) {
     lines.push(outputCeilingDirective(options.outputCeilingTokens));
   }
+  if (options.continuationDirective !== undefined && options.continuationDirective !== '') lines.push(options.continuationDirective);
   return lines.join('\n');
 };
 
@@ -408,6 +416,108 @@ export const kernelFailureReasonCodeOf = (stdoutText: string): string | undefine
   const slug = kind.toUpperCase().replace(/[^A-Z0-9]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 40);
   return slug === '' ? undefined : `EXECUTOR_KERNEL_TURN_${slug}`;
 };
+/**
+ * LIVE-CONTRACT-FILL run 4 (hark-live-goal 42346111946): a single model reply cut at the
+ * output ceiling while writing a file ended the kernel process, the attempt, and after
+ * three identical attempts the whole goal. The step now RECOVERS inside the attempt: the
+ * files already written stay in the workspace, and the kernel is relaunched (bounded)
+ * with a continuation directive naming what was truncated, which files exist, and how
+ * to write the rest in smaller chunks. Only after the bounded continuations does the
+ * attempt fail, with the typed EXECUTOR_KERNEL_OUTPUT_CEILING reason.
+ */
+export const OUTPUT_CEILING_MAX_CONTINUATIONS = 3;
+/** A continuation needs at least this much of the attempt deadline left to be worth launching. */
+export const OUTPUT_CEILING_CONTINUATION_MIN_REMAINING_MS = 30_000;
+const INVENTORY_SKIP_DIRS: ReadonlySet<string> = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.dsh', '.companyos', 'dist', 'build', '.next']);
+export interface WorkspaceFileEntry { readonly path: string; readonly bytes: number }
+/** Bounded, deterministic inventory of the workspace's files (relative '/' paths, sorted). */
+export const workspaceFileInventoryOf = (root: string, limit = 60): { readonly files: readonly WorkspaceFileEntry[]; readonly truncated: boolean } => {
+  const files: WorkspaceFileEntry[] = [];
+  let truncated = false;
+  let visited = 0;
+  const walk = (dir: string, rel: string, depth: number): void => {
+    if (truncated || depth > 8) return;
+    let entries: string[];
+    try { entries = readdirSync(dir).sort(); } catch { return; }
+    for (const name of entries) {
+      if (++visited > 5000) { truncated = true; return; }
+      const abs = join(dir, name);
+      const relPath = rel === '' ? name : `${rel}/${name}`;
+      let st;
+      try { st = statSync(abs); } catch { continue; }
+      if (st.isDirectory()) {
+        if (!INVENTORY_SKIP_DIRS.has(name)) walk(abs, relPath, depth + 1);
+      } else if (st.isFile()) {
+        if (files.length >= limit) { truncated = true; return; }
+        files.push({ path: relPath, bytes: st.size });
+      }
+      if (truncated) return;
+    }
+  };
+  walk(root, '', 0);
+  return { files, truncated };
+};
+export const outputCeilingContinuationDirective = (input: {
+  readonly continuation: number;
+  readonly maxContinuations: number;
+  readonly outputCeilingTokens?: number;
+  readonly files: readonly WorkspaceFileEntry[];
+  readonly filesTruncated: boolean;
+}): string => {
+  const ceiling = input.outputCeilingTokens !== undefined && Number.isSafeInteger(input.outputCeilingTokens) && input.outputCeilingTokens > 0
+    ? input.outputCeilingTokens : undefined;
+  const partLines = ceiling === undefined ? 120 : Math.max(30, Math.floor(outputCeilingPartLines(ceiling) / 2));
+  const inventory = input.files.length === 0
+    ? 'The workspace has no files yet.'
+    : `Files already in the workspace (kept; relative path and size): ${input.files.map((file) => `${file.path} (${String(file.bytes)} B)`).join(', ')}${input.filesTruncated ? ', … (more not listed)' : ''}.`;
+  return [
+    `CONTINUATION ${String(input.continuation)} of ${String(input.maxContinuations)} of this same attempt: your previous reply reached the per-response output limit` +
+      `${ceiling === undefined ? '' : ` (~${String(ceiling)} tokens)`} and was cut off; the tool call in that reply (most likely a large file write) was NOT applied.`,
+    inventory,
+    'Do not redo finished work: inspect the files above (they may be incomplete), then continue the task. A file that should exist but is missing or ends abruptly was the one being written when the reply was cut.',
+    `Write the remaining files ONE file or ONE part per reply, each part at most about ${String(partLines)} lines: create the file with its first part, then append or edit the following parts in later calls. Keep every reply short.`,
+  ].join(' ');
+};
+
+/**
+ * Runs one attempt's kernel launch and recovers output-ceiling truncations in place:
+ * up to `maxContinuations` relaunches on the same workspace, each with the continuation
+ * directive, all within the attempt's ONE deadline. Any other outcome returns at once.
+ */
+export const runWithOutputCeilingRecovery = async (input: {
+  readonly start: (timeoutMs: number, continuationDirective: string | undefined) => Promise<ExecutorProviderOutcome>;
+  readonly workspaceRoot: string;
+  readonly outputCeilingTokens?: number;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+  readonly maxContinuations?: number;
+  readonly now?: () => number;
+}): Promise<{ readonly outcome: ExecutorProviderOutcome; readonly continuations: number }> => {
+  const now = input.now ?? Date.now;
+  const max = input.maxContinuations ?? OUTPUT_CEILING_MAX_CONTINUATIONS;
+  const startedMs = now();
+  let outcome = await input.start(input.timeoutMs, undefined);
+  let continuations = 0;
+  while (continuations < max) {
+    const settled = postProcessDshOutcome(outcome);
+    if (settled.kind !== 'provider-failed' || settled.reasonCode !== KERNEL_OUTPUT_CEILING) break;
+    if (input.signal?.aborted === true) break;
+    const remainingMs = input.timeoutMs - (now() - startedMs);
+    if (remainingMs < OUTPUT_CEILING_CONTINUATION_MIN_REMAINING_MS) break;
+    continuations += 1;
+    const inventory = workspaceFileInventoryOf(input.workspaceRoot);
+    const directive = outputCeilingContinuationDirective({
+      continuation: continuations,
+      maxContinuations: max,
+      ...(input.outputCeilingTokens === undefined ? {} : { outputCeilingTokens: input.outputCeilingTokens }),
+      files: inventory.files,
+      filesTruncated: inventory.truncated,
+    });
+    outcome = await input.start(remainingMs, directive);
+  }
+  return { outcome, continuations };
+};
+
 /**
  * The KNOWN contract-drift signatures (recon §2/§6): each is a parse-level PROOF
  * that the runtime never invoked the task — the CLI rejected the flag, rejected
@@ -1062,6 +1172,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             launchArgv = plan.argvPrefix;
           }
         }
+        let continuationDirective: string | undefined;
         const provider = createProcessExecutorProvider({
           providerKey: DSH_PROVIDER_KEY,
           capabilities: DSH_CAPABILITIES,
@@ -1099,7 +1210,10 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             ) {
               argv.push('--session-id', invocation.continuationSessionId);
             }
-            argv.push(dshTaskTextOf(invocation, { outputCeilingTokens: modelRoute.maxTokens }));
+            argv.push(dshTaskTextOf(invocation, {
+              outputCeilingTokens: modelRoute.maxTokens,
+              ...(continuationDirective === undefined ? {} : { continuationDirective }),
+            }));
             return argv;
           },
           parseResult: (stdoutText) => {
@@ -1112,9 +1226,19 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             return { structured: { ndjson: stdoutText } };
           },
         });
-        const outcome = await provider.start({
-          ...request,
+        const { outcome } = await runWithOutputCeilingRecovery({
+          workspaceRoot,
+          outputCeilingTokens: modelRoute.maxTokens,
           timeoutMs: request.timeoutMs ?? timeoutMs,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+          start: async (attemptTimeoutMs, directive) => {
+            continuationDirective = directive;
+            try {
+              return await provider.start({ ...request, timeoutMs: attemptTimeoutMs });
+            } finally {
+              continuationDirective = undefined;
+            }
+          },
         });
         // STAGE 5B post-spawn gate: a staged-tree tamper in flight means the child
         // may have executed unverified bytes — the attempt fails loud, never silent.

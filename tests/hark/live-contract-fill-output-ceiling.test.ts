@@ -52,14 +52,15 @@ describe('kernel output ceiling (live contract-fill run 2)', () => {
     expect(text.split('\n')[0]).toBe('开发一个跨平台的合同自动填写软件');
     expect(text).toContain(outputCeilingDirective(4096));
     expect(outputCeilingDirective(4096)).toMatch(/4096 output tokens/u);
-    expect(outputCeilingDirective(4096)).toMatch(/in parts of at most about 204 lines/u);
+    expect(outputCeilingDirective(4096)).toMatch(/in parts of at most about 128 lines/u);
     expect(dshTaskTextOf(request('x'))).not.toContain('Output limit');
     expect(dshTaskTextOf(request('x'), { outputCeilingTokens: 0 })).not.toContain('Output limit');
   });
 
   it('the embedded launch passes the selected route ceiling into the prompt', () => {
     const src = readFileSync('apps/desktop/src/executor/dsh-executor-provider.ts', 'utf8');
-    expect(src).toContain('dshTaskTextOf(invocation, { outputCeilingTokens: modelRoute.maxTokens })');
+    expect(src).toMatch(/dshTaskTextOf\(invocation, \{\s*outputCeilingTokens: modelRoute\.maxTokens,/u);
+    expect(src).toContain('await runWithOutputCeilingRecovery({');
   });
 
   it('the settled audit row keeps the typed reason and a bounded redacted stdout tail for a provider failure', () => {
