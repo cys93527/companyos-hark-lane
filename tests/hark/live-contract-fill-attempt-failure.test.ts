@@ -28,7 +28,7 @@ describe('latest failed attempt with its typed reason', () => {
     d.prepare('INSERT INTO events VALUES (?, ?, ?)').run('exa_2', 'executor.dispatch_settled', JSON.stringify({ outcome: 'provider-failed', reasonCode: 'EXECUTOR_KERNEL_OUTPUT_CEILING' }));
     const read = createLatestAttemptFailureReader(d as never);
     expect(await read(['run_goal', 'run_exec'])).toEqual({
-      runId: 'run_exec', taskId: 'tsk_1', attemptId: 'exa_2', failureCode: 'PROVIDER_FAILED', detailCode: 'EXECUTOR_KERNEL_OUTPUT_CEILING', settledAt: '2026-11-05T17:36:00Z',
+      runId: 'run_exec', taskId: 'tsk_1', attemptId: 'exa_2', failureCode: 'PROVIDER_FAILED', detailCode: 'EXECUTOR_KERNEL_OUTPUT_CEILING', detailMessage: null, settledAt: '2026-11-05T17:36:00Z',
     });
   });
   it('no failed attempt -> null; a settled row without a well-formed code -> detail null', async () => {
@@ -64,7 +64,7 @@ describe('a goal that failed in its planner call (no execution attempt) still na
     const d = planner();
     d.prepare('INSERT INTO agent_executions VALUES (?, ?, ?, ?, ?, ?, ?)').run('exec_1', 'run_goal', 'tsk_plan', 'FAILED', 'CAPABILITY_MISSING', message, 't');
     expect(await createLatestAttemptFailureReader(d as never)(['run_goal'])).toEqual({
-      runId: 'run_goal', taskId: 'tsk_plan', attemptId: 'exec_1', failureCode: 'CAPABILITY_MISSING', detailCode: detail, settledAt: 't',
+      runId: 'run_goal', taskId: 'tsk_plan', attemptId: 'exec_1', failureCode: 'CAPABILITY_MISSING', detailCode: detail, detailMessage: null, settledAt: 't',
     });
   });
 });

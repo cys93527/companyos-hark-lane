@@ -24,6 +24,8 @@ export const BLOCKER_LABELS: Readonly<Record<string, string>> = {
   GOAL_USAGE_UNKNOWN: '已阻塞 · 一次模型调用的用量未知，核对后才能继续',
   GOAL_BUDGET_EXHAUSTED: '已阻塞 · 本目标的预算已用完',
   GOAL_DEADLINE_EXCEEDED: '已阻塞 · 已超过目标的截止时间',
+  // LIVE-CONTRACT-FILL run 6: one step reached its share of the goal budget.
+  GOAL_STEP_SPEND_CAP_REACHED: '已阻塞 · 单个步骤的花费已达上限（目标预算的一部分），确认后才能继续',
 };
 
 export const RUN_FAILURE_REASON_LABELS: Readonly<Record<string, string>> = {
@@ -44,6 +46,8 @@ export const FAILURE_DETAIL_LABELS: Readonly<Record<string, string>> = {
   GOAL_BUDGET_EXHAUSTED: '本目标的预算已用完',
   GOAL_USAGE_UNKNOWN: '上一次模型调用的用量未知，已停止继续调用',
   GOAL_DEADLINE_EXCEEDED: '已超过目标的截止时间',
+  GOAL_STEP_SPEND_CAP_REACHED: '单个步骤的花费已达上限，已停止该步骤',
+  EXECUTOR_KERNEL_CONTEXT_WINDOW_TOO_SMALL: '模型工作窗口过小，无法安全压缩上下文（需调高输入上限）',
   GOAL_ADMISSION_REFUSED: '模型调用未获准入',
   PROVIDER_OUTPUT_TRUNCATED: '模型回答达到输出上限被截断',
   PROVIDER_REASONING_EXHAUSTED: '模型的思考过程用完了输出上限，没有给出回答',
@@ -73,12 +77,26 @@ export interface CanonicalAttemptFailure {
   readonly attemptId: string;
   readonly failureCode: string | null;
   readonly detailCode: string | null;
+  /** The kernel's own error line ("CODE: message"), when the attempt carried one. */
+  readonly detailMessage?: string | null;
   readonly settledAt: string | null;
 }
 
-/** The most specific Chinese reason: provider detail first, then the canonical attempt code. */
-export const attemptFailureLabel = (failure: CanonicalAttemptFailure | null | undefined): string | null =>
-  failure === null || failure === undefined ? null : (failureDetailLabel(failure.detailCode) ?? failureDetailLabel(failure.failureCode));
+const DETAIL_MESSAGE_MAX = 160;
+
+/**
+ * The most specific Chinese reason: provider detail first, then the canonical attempt code;
+ * the kernel's own error line follows it (LIVE-CONTRACT-FILL run 6: "智能体内核异常结束（error）"
+ * alone hid the cause).
+ */
+export const attemptFailureLabel = (failure: CanonicalAttemptFailure | null | undefined): string | null => {
+  if (failure === null || failure === undefined) return null;
+  const label = failureDetailLabel(failure.detailCode) ?? failureDetailLabel(failure.failureCode);
+  const message = typeof failure.detailMessage === 'string' ? failure.detailMessage.trim() : '';
+  if (message === '') return label;
+  const shown = message.length <= DETAIL_MESSAGE_MAX ? message : `${message.slice(0, DETAIL_MESSAGE_MAX - 1)}…`;
+  return label === null ? `失败原因：${shown}` : `${label}：${shown}`;
+};
 
 /** One blocker as the boss reads it: Chinese label, plus the real reason for a failed run. */
 export const blockerText = (

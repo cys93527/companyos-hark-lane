@@ -34,6 +34,7 @@ import {
 } from '@companyos/engine';
 import {createHash} from 'node:crypto';
 import {renderRetryDirective, type RetryContinuationEnvelope} from './attempt-supervision.js';
+import {kernelEventsTailOf, kernelTurnErrorOf, textTailOf} from './kernel-failure-detail.js';
 import type { DomainError, Result, SecretRef, StageHandlerOutput } from '@companyos/core';
 import {createCoreDomainEvent, redactSecrets, type DomainEvent} from '@companyos/core';
 import type { ProviderDispatch, ProviderDispatchStore } from '@companyos/persistence';
@@ -745,6 +746,18 @@ ${renderRetryDirective(retryEnvelope)}`;
         const tail = outcome.stdoutText ?? '';
         settledPayload['stdoutTail'] = redactSecrets(tail.slice(-2000), secrets);
         settledPayload['stdoutTailLength'] = tail.length;
+        // LIVE-CONTRACT-FILL run 6 (42385697784): the kernel's own error (message + code), the
+        // stderr tail and its last events - the slug alone ("error") hid the root cause.
+        const kernelError = kernelTurnErrorOf(tail);
+        if (kernelError !== null) {
+          settledPayload['kernelError'] = {
+            kind: kernelError.kind,
+            code: kernelError.code,
+            message: kernelError.message === null ? null : redactSecrets(kernelError.message, secrets),
+          };
+        }
+        settledPayload['kernelEventsTail'] = kernelEventsTailOf(tail).map((line) => redactSecrets(line, secrets));
+        settledPayload['stderrTail'] = redactSecrets(textTailOf(outcome.stderrText), secrets);
       }
       if (outcome.kind === 'transport-failed') {
         settledPayload['reasonCode'] = outcome.reasonCode;

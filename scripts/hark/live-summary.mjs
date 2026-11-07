@@ -97,6 +97,14 @@ export function summarize(dir, { key = '', stepSummary = '', log = console.log }
     say(`checks: ${JSON.stringify(g.checks ?? null)}`);
     say(`tasks: ${JSON.stringify((g.tasks ?? []).map((t) => `${t.kind}:${t.state}`))}`);
     say(`ui failures: ${JSON.stringify(g.ui?.failures ?? [])}`);
+    // Run 6: the kernel's own error per failed attempt (message, code, stderr tail, last events).
+    for (const f of Array.isArray(g.attemptFailures) ? g.attemptFailures : []) {
+      const ke = f.kernelError;
+      say(`attempt failure ${String(f.attemptId ?? '?').slice(0, 30)} #${f.attemptNumber ?? '?'} ${f.failureCode ?? ''} ${f.reasonCode ?? ''} kernelError: ${ke ? `${ke.kind ?? '?'} ${ke.code ?? ''} ${ke.message ?? ''}` : '(none)'}`);
+      if (f.stderrTail) say(`  stderr tail: ${String(f.stderrTail).replace(/\s+/gu, ' ').slice(-600)}`);
+      if (Array.isArray(f.kernelEventsTail) && f.kernelEventsTail.length > 0) say(`  last kernel events: ${f.kernelEventsTail.join(' | ').slice(0, 1600)}`);
+    }
+    if (Array.isArray(g.workspaceSkippedDirs) && g.workspaceSkippedDirs.length > 0) say(`workspace skipped dirs (not evidence): ${JSON.stringify(g.workspaceSkippedDirs.slice(0, 20))}`);
     say(`workspaceFiles (${(g.workspaceFiles ?? []).length}): ${JSON.stringify((g.workspaceFiles ?? []).slice(0, 200))}`);
     say(`projectChecks: ${JSON.stringify(g.projectChecks ?? [])}`);
   }

@@ -33,9 +33,11 @@ export const createLatestAttemptFailureReader =
       .prepare("SELECT payload FROM events WHERE aggregate_id = ? AND type = 'executor.dispatch_settled' ORDER BY rowid DESC LIMIT 1")
       .all(attempt.id) as readonly { payload: string }[];
     let detailCode: string | null = null;
+    let detailMessage: string | null = null;
     try {
-      const payload = settled[0] === undefined ? null : (JSON.parse(settled[0].payload) as { reasonCode?: unknown });
+      const payload = settled[0] === undefined ? null : (JSON.parse(settled[0].payload) as { reasonCode?: unknown; kernelError?: unknown });
       if (typeof payload?.reasonCode === 'string' && REASON_CODE.test(payload.reasonCode)) detailCode = payload.reasonCode;
+      detailMessage = kernelErrorMessageOf(payload?.kernelError);
     } catch {
       detailCode = null;
     }
@@ -45,9 +47,24 @@ export const createLatestAttemptFailureReader =
       attemptId: attempt.id,
       failureCode: attempt.failure_code,
       detailCode,
+      detailMessage,
       settledAt: attempt.settled_at,
     };
   };
+
+/**
+ * LIVE-CONTRACT-FILL run 6 — the kernel's own error line ("CODE: message", bounded, one
+ * line) from the settled row; the slug alone ("error") told the boss nothing.
+ */
+const kernelErrorMessageOf = (value: unknown): string | null => {
+  if (typeof value !== 'object' || value === null) return null;
+  const error = value as { code?: unknown; message?: unknown };
+  const code = typeof error.code === 'string' && error.code.trim() !== '' ? error.code.trim() : null;
+  const message = typeof error.message === 'string' && error.message.trim() !== '' ? error.message.replace(/\s+/gu, ' ').trim() : null;
+  if (code === null && message === null) return null;
+  const line = code === null ? String(message) : message === null ? code : `${code}: ${message}`;
+  return line.length <= 300 ? line : `${line.slice(0, 299)}…`;
+};
 
 /**
  * LIVE-CONTRACT-FILL (hark-live-goal 42085454360): a goal can fail before any execution
@@ -76,6 +93,7 @@ const modelCallFailureOf = (db: SqlLike, runIds: readonly string[], placeholders
     attemptId: execution.execution_id,
     failureCode: execution.error_kind !== null && REASON_CODE.test(execution.error_kind) ? execution.error_kind : null,
     detailCode,
+    detailMessage: null,
     settledAt: execution.finished_at,
   };
 };

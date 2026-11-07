@@ -1360,6 +1360,8 @@ export interface GoalAttemptFailure {
   readonly failureCode: string | null;
   /** The provider's typed reason (e.g. EXECUTOR_KERNEL_OUTPUT_CEILING), when it gave one. */
   readonly detailCode: string | null;
+  /** The kernel's own error line ("CODE: message", bounded), when its settled row carried one. */
+  readonly detailMessage?: string | null;
   readonly settledAt: string | null;
 }
 
