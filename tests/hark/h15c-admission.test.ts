@@ -30,6 +30,9 @@ describe.each([
   ['installer/budget/deepseek-flash.approval-template.json', ENV],
   ['installer/budget/deepseek-flash.h15c.approval-template.json', EXECUTE_ENV],
   ['installer/budget/deepseek-flash.h15d.approval-template.json', { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '4096' }],
+  // live contract-fill (hark-live-goal custom): 8192 by default, any lower configured value still admitted
+  ['installer/budget/deepseek-flash.contract-fill.approval-template.json', { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '8192' }],
+  ['installer/budget/deepseek-flash.contract-fill.approval-template.json', { ...ENV, COS_MODEL_MAX_OUTPUT_TOKENS: '4096' }],
 ] as const)('%s', (template, ENV) => {
   it('admits the production embedded-kernel fallback route exactly as composed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'h15c-budget-')); dirs.push(dir);
@@ -46,7 +49,7 @@ describe.each([
     expect(bound!.costMicros).toBeLessThanOrEqual(deployment!.cap.maxCostMicros);
     // H15d-fix2: the acceptance template's maxCalls is a runaway guard, not the money proof —
     // the durable authority enforces settled cost + in-flight bounds <= maxCostMicros per call.
-    if (!template.includes('.h15d.')) expect(bound!.costMicros * deployment!.cap.maxCalls).toBeLessThanOrEqual(deployment!.cap.maxCostMicros);
+    if (!template.includes('.h15d.') && !template.includes('.contract-fill.')) expect(bound!.costMicros * deployment!.cap.maxCalls).toBeLessThanOrEqual(deployment!.cap.maxCostMicros);
   });
 });
 

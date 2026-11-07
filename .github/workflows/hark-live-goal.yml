@@ -134,7 +134,9 @@ jobs:
       COS_MODEL_ID: deepseek-flash
       COS_MODEL_TIMEOUT_MS: '90000'
       COS_MODEL_STRUCTURED_OUTPUT: json_object
-      COS_MODEL_MAX_OUTPUT_TOKENS: '4096'
+      # Live contract-fill run 4: 4096 cut whole-file writes; 8192 = deepseek-flash non-thinking output max
+      # and the approval template's outputUpperBound. Lower it with repo variable HARK_LIVE_MAX_OUTPUT_TOKENS (256..8192).
+      COS_MODEL_MAX_OUTPUT_TOKENS: ${{ vars.HARK_LIVE_MAX_OUTPUT_TOKENS || '8192' }}
       # mirrors the shipped provider profile (scripts/hark/setup/provider-profile.json thinking)
       COS_MODEL_THINKING: disabled
       COS_PLAN_PREVIEW_WITHOUT_EXECUTOR: '0'
