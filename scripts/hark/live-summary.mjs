@@ -104,6 +104,8 @@ export function summarize(dir, { key = '', stepSummary = '', log = console.log }
       if (f.stderrTail) say(`  stderr tail: ${String(f.stderrTail).replace(/\s+/gu, ' ').slice(-600)}`);
       if (Array.isArray(f.kernelEventsTail) && f.kernelEventsTail.length > 0) say(`  last kernel events: ${f.kernelEventsTail.join(' | ').slice(0, 1600)}`);
     }
+    // Run 10: what the app recorded last (a silent attempt left no other trace in the job log).
+    for (const e of Array.isArray(g.recentEvents) ? g.recentEvents.slice(-15) : []) say(`recent event ${e.at ?? '?'} ${e.type ?? '?'} ${String(e.payload ?? '').replace(/\s+/gu, ' ').slice(0, 300)}`);
     if (Array.isArray(g.workspaceSkippedDirs) && g.workspaceSkippedDirs.length > 0) say(`workspace skipped dirs (not evidence): ${JSON.stringify(g.workspaceSkippedDirs.slice(0, 20))}`);
     say(`workspaceFiles (${(g.workspaceFiles ?? []).length}): ${JSON.stringify((g.workspaceFiles ?? []).slice(0, 200))}`);
     say(`projectChecks: ${JSON.stringify(g.projectChecks ?? [])}`);

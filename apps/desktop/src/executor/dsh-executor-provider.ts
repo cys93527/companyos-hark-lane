@@ -39,6 +39,7 @@ import {createHash} from 'node:crypto';
 import { planIsolatedLaunch, type IsolationLaunchConfig } from './isolation/isolated-launch-seam.js';
 import type { IsolationDispatchDecision } from './isolation/isolation-status.js';
 import {existsSync} from 'node:fs';
+import { createAttemptEarlyStop, kernelSilenceMsOf } from './attempt-early-stop.js';
 
 import {
   startModelBroker,
@@ -268,6 +269,11 @@ export interface DshProviderConfig {
      * environment, see attempt-wrap-up.ts).
      */
     readonly wrapUp?: WrapUpThresholds;
+    /**
+     * LIVE-CONTRACT-FILL run 10: silence (no kernel output, no model exchange) that ends an
+     * attempt early (default: COS_KERNEL_SILENCE_MS, else 10 min; see attempt-early-stop.ts).
+     */
+    readonly kernelSilenceMs?: number;
     /** LIVE-CONTRACT-FILL run 9: external-tool detection (default: PATH + well-known dirs). */
     readonly detectExternalTools?: () => readonly ExternalToolStatus[];
     /** Clock for the attempt's time-left status (tests). */
@@ -1215,6 +1221,18 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
       const clockNow = embedded.now ?? Date.now;
       const attemptClock = { startedMs: clockNow(), deadlineMs: request.timeoutMs ?? timeoutMs };
       let drainForWrapUp: () => void = () => undefined;
+      /*
+       * LIVE-CONTRACT-FILL run 10 — an attempt that can no longer progress (silent kernel, or a
+       * drained wrap-up) ends now, exactly like its deadline, instead of idling until it.
+       */
+      const earlyStop = createAttemptEarlyStop({
+        silenceMs: embedded.kernelSilenceMs ?? kernelSilenceMsOf(process.env),
+        now: clockNow,
+        armTimer: config.timer ?? ((ms: number, callback: () => void) => {
+          const handle = setTimeout(callback, ms);
+          return () => clearTimeout(handle);
+        }),
+      });
       const turnNoter = createTurnNoter({
         thresholds: embedded.wrapUp ?? wrapUpThresholdsOf(process.env),
         status: async () => {
@@ -1228,9 +1246,11 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
       });
       const broker = await startModelBroker({
         rewriteRequest: async (body: Buffer) => {
+          earlyStop.activity();
           const { note, exhausted } = await turnNoter.next();
           if (exhausted) {
             drainForWrapUp();
+            earlyStop.fire('WRAP_UP_DRAINED');
             return { body, drain: true };
           }
           return { body: injectTurnNote(body, note.text, request.modelCallInputBoundBytes) ?? body };
@@ -1239,6 +1259,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         bearer: modelRoute.apiKeyValue,
         ...(exchangeAudit === undefined ? {} : {
           observe: (observation: ModelBrokerExchangeObservation) => {
+            earlyStop.activity();
             const at = new Date().toISOString();
             void exchangeAudit.append([
               createCoreDomainEvent(
@@ -1354,6 +1375,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         // LIVE-CONTRACT-FILL run 9: the verified-work tracker reads every tool call/result live.
         const verifiedWork = createVerifiedWorkTracker();
         const tapStdoutLine = (line: string): void => {
+          earlyStop.activity();
           toolTap?.(line);
           activityTap?.(line);
           verifiedWork.observe(line);
@@ -1419,6 +1441,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             beginDeadlineDrain();
             await broker.value.whenIdle(ATTEMPT_DEADLINE_INFLIGHT_GRACE_MS);
           },
+          earlyTimeout: (fire: () => void) => earlyStop.subscribe(fire),
           capabilities: DSH_CAPABILITIES,
           executable: launchExecutable,
           baseArgv: [...launchArgv],
@@ -1489,12 +1512,13 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         }
         const dependenciesInstalled = resumed !== undefined && existsSync(join(workspaceRoot, 'node_modules'));
         attemptClock.startedMs = clockNow();
+        earlyStop.start();
         const attemptStartedAt = new Date().toISOString();
         const { outcome: rawOutcome } = await runWithOutputCeilingRecovery({
           workspaceRoot,
           outputCeilingTokens: modelRoute.maxTokens,
           timeoutMs: attemptDeadlineMs,
-          shouldStop: () => deadlineDraining,
+          shouldStop: () => deadlineDraining || earlyStop.reason() !== null,
           ...(resumed === undefined || (resumed.files.length === 0 && priorNotes === undefined) ? {} : {
             initialDirective: resumedAttemptDirective({
               attemptNumber: request.attemptNumber, files: resumed.files, filesTruncated: resumed.truncated,
@@ -1512,6 +1536,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           },
         });
         cancelDrainLead();
+        earlyStop.stop();
         const outcome = deadlineDrainOutcome(rawOutcome, deadlineDraining);
         /*
          * LIVE-CONTRACT-FILL run 9 — CREDIT VERIFIED WORK: an attempt that ran out of time or budget
@@ -1537,7 +1562,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
               taskId: request.taskId,
               attemptNumber: request.attemptNumber,
               outcome: outcome.kind,
-              endReason: (outcome as { readonly reasonCode?: string }).reasonCode ?? kernelFailureReasonCodeOf(stdoutText) ?? null,
+              endReason: earlyStop.reason() ?? (outcome as { readonly reasonCode?: string }).reasonCode ?? kernelFailureReasonCodeOf(stdoutText) ?? null,
               stdoutText,
             })));
           } catch {
@@ -1595,6 +1620,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         }
         return processed;
       } finally {
+        earlyStop.stop();
         // An exchange the kernel abandoned keeps reading upstream so its usage settles
         // KNOWN; give it a bounded moment before the broker (and its sockets) close.
         broker.value.stopAdmitting();

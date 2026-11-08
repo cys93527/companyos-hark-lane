@@ -146,7 +146,10 @@ jobs:
       GOAL_TEXT: ${{ inputs.goal_text }}
       HARK_INLINE_INSTALLER: ${{ (inputs.build_installer || inputs.installer_run_id == '') && 'true' || 'false' }}
       LIVE_WATCHDOG_MS: '9300000'
-      LIVE_IDLE_STOP_MS: '900000'
+      # Run 10 (42441418492): 15 min idle stopped the harness while the attempt (30 min deadline) was
+      # still open. CompanyOS now ends a silent attempt itself after COS_KERNEL_SILENCE_MS (10 min) +
+      # a bounded drain (<= 2 min), so the harness waits longer than that before calling it idle.
+      LIVE_IDLE_STOP_MS: '1200000'
     steps:
       - uses: actions/checkout@v4
       # LIVE-CONTRACT-FILL run 9 (42429421366): the generated project's PDF export needs LibreOffice

@@ -9,6 +9,7 @@
  * so every surface can carry it, and builds the compact prior-attempt notes a retry
  * resumes from instead of rediscovering the workspace.
  */
+import { earlyStopHintOf } from './attempt-early-stop.js';
 
 export interface KernelTurnError {
   /** The kernel's turn_end reason kind ("error", "max-tokens", "aborted", ...). */
@@ -154,6 +155,7 @@ export const attemptNotesOf = (input: {
 export const renderAttemptNotes = (notes: AttemptNotes): string =>
   bounded([
     `Summary of attempt ${String(notes.attemptNumber)} (ended ${notes.outcome}${notes.endReason === null ? '' : `, ${notes.endReason}`}${notes.kernelError === null ? '' : `: ${notes.kernelError}`}).`,
+    earlyStopHintOf(notes.endReason) ?? '',
     notes.commands.length === 0 ? '' : `Its last actions: ${notes.commands.join(' | ')}.`,
     notes.lastAgentText === null ? '' : `Its last note: "${notes.lastAgentText}".`,
   ].filter((part) => part !== '').join(' '), 2400);

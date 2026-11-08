@@ -350,6 +350,14 @@ const collected = dbRead((q) => {
           stderrTail: p?.stderrTail ?? null, kernelEventsTail: p?.kernelEventsTail ?? null, durationMs: p?.durationMs ?? null };
       });
     })(),
+    // Run 10: the attempt went silent for 15 min and the evidence artifact was refused (storage
+    // quota), so nothing showed what it was doing. The last events (type, time, payload head)
+    // travel in this JSON, which also reaches the job log.
+    recentEvents: (() => {
+      const last = rows('SELECT type, occurred_at, payload FROM events ORDER BY rowid DESC LIMIT 30');
+      if (!Array.isArray(last)) return last;
+      return last.reverse().map((e) => ({ type: e.type, at: e.occurred_at, payload: String(e.payload ?? '').slice(0, 400) }));
+    })(),
     tables: rows("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"),
   };
 });

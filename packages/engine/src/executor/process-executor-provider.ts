@@ -60,6 +60,14 @@ export interface ProcessExecutorConfig {
    * in-flight call settle so its usage is known (live contract-fill run 5).
    */
   readonly beforeTimeoutStop?: () => Promise<void>;
+  /**
+   * LIVE-CONTRACT-FILL run 10: a composition-owned EARLY deadline. The composition calls
+   * `fire` when the attempt can make no further progress before its deadline (a kernel
+   * silent for longer than any of its own tool timeouts, or a wrap-up whose model calls
+   * are no longer admitted); the run then ends exactly as at the deadline
+   * (`beforeTimeoutStop`, then a proven stop, outcome `timeout`). Returns its disarm.
+   */
+  readonly earlyTimeout?: (fire: () => void) => () => void;
   readonly providerKey: string;
   readonly capabilities: readonly ExecutorCapabilityName[];
   readonly executable: string;
@@ -328,22 +336,28 @@ export const createProcessExecutorProvider = (config: ProcessExecutorConfig): Ex
       };
       request.signal?.addEventListener('abort', onAbort, { once: true });
       if (isAborted()) onAbort();
+      let deadlineFired = false;
+      const onDeadline = (): void => {
+        if (deadlineFired || retired) return;
+        deadlineFired = true;
+        if (config.beforeTimeoutStop === undefined) {
+          stop('timeout');
+          return;
+        }
+        void config.beforeTimeoutStop().catch(() => undefined).then(() => {
+          if (!retired) stop('timeout');
+        });
+      };
       const cancelTimer =
         config.timer !== undefined && request.timeoutMs !== undefined
-          ? config.timer(request.timeoutMs, () => {
-              if (config.beforeTimeoutStop === undefined) {
-                stop('timeout');
-                return;
-              }
-              void config.beforeTimeoutStop().catch(() => undefined).then(() => {
-                if (!retired) stop('timeout');
-              });
-            })
+          ? config.timer(request.timeoutMs, onDeadline)
           : undefined;
+      const cancelEarly = config.timer !== undefined ? config.earlyTimeout?.(onDeadline) : undefined;
 
       await exited;
       retired = true;
       cancelTimer?.();
+      cancelEarly?.();
       cancelCleanup?.();
       request.signal?.removeEventListener('abort', onAbort);
       const finishedAt = new Date().toISOString();
