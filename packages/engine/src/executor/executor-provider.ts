@@ -186,6 +186,13 @@ export interface ExecutorExecutionRequest {
    * the first request past 48 000 bytes).
    */
   readonly modelCallInputBoundBytes?: number;
+  /**
+   * LIVE-CONTRACT-FILL run 9: the step's spend so far and its cap (read from the durable budget
+   * ledger), so an agentic provider can tell the kernel each turn how much of the step's budget is
+   * left and force a wrap-up before the cap. Null when no step cap applies. Read-only evidence —
+   * admission (above) stays the only authority.
+   */
+  readonly modelCallBudgetStatus?: () => Promise<{ readonly stepSpentMicros: number; readonly stepCapMicros: number } | null>;
   readonly companyId: string;
   readonly runId: string;
   readonly taskId: string;

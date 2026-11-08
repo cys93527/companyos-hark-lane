@@ -31,6 +31,8 @@ import {
 import { join } from 'node:path';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { attemptNotesOf, parseAttemptNotes, renderAttemptNotes } from './kernel-failure-detail.js';
+import { createTurnNoter, detectExternalTools, externalToolsLineOf, injectTurnNote, wrapUpThresholdsOf, type ExternalToolStatus, type WrapUpThresholds } from './attempt-wrap-up.js';
+import { createVerifiedWorkTracker, verifiedWorkCreditOf } from './verified-work-credit.js';
 
 import {createCoreDomainEvent, domainError, type DomainError, err, ok, redactSecrets, type Result} from '@companyos/core';
 import {createHash} from 'node:crypto';
@@ -261,6 +263,15 @@ export interface DshProviderConfig {
       ids: {id(prefix?: string): string; ulid(): string};
       onFailure(error: unknown): void;
     };
+    /**
+     * LIVE-CONTRACT-FILL run 9: wrap-up thresholds (default: from COS_WRAPUP_* in the process
+     * environment, see attempt-wrap-up.ts).
+     */
+    readonly wrapUp?: WrapUpThresholds;
+    /** LIVE-CONTRACT-FILL run 9: external-tool detection (default: PATH + well-known dirs). */
+    readonly detectExternalTools?: () => readonly ExternalToolStatus[];
+    /** Clock for the attempt's time-left status (tests). */
+    readonly now?: () => number;
   };
   /**
    * The dsh profile the frozen one-task contract is invoked under. The installed
@@ -409,12 +420,34 @@ export const planContextLinesOf = (planContext: ExecutorExecutionRequest['work']
   return lines;
 };
 
+/**
+ * LIVE-CONTRACT-FILL run 9 (hark-live-goal 42429421366): the step's tests passed but the kernel never
+ * answered, so the attempt timed out with its work unrecognised. CompanyOS now credits a timed-out
+ * attempt whose last test run passed and whose tests prove every criterion (verified-work-credit.ts);
+ * that needs tests named after the criterion they prove. It also appends a status note with the time
+ * and budget left to every turn and forces a wrap-up near the end (attempt-wrap-up.ts).
+ */
+export const VERIFICATION_DIRECTIVE =
+  'Verification: name every test after the acceptance criterion it proves, starting with the criterion id in brackets ' +
+  '(for example "[criterion-id] what it checks"), so CompanyOS can map test results to criteria. A criterion this environment ' +
+  'cannot satisfy is reported in your final answer, never chased. CompanyOS appends a status note to your inputs with the time ' +
+  'and budget left in this attempt; when it says WRAP-UP, stop new work, run the tests once and give your final answer.';
+
 export interface DshTaskTextOptions {
   /** The selected route's per-response output ceiling (tokens), when CompanyOS knows it. */
   readonly outputCeilingTokens?: number;
+  /** LIVE-CONTRACT-FILL run 9: the detected external tools line (externalToolsLineOf). */
+  readonly externalToolsLine?: string;
   /** In-attempt continuation directive after an output-ceiling truncation (rendered last). */
   readonly continuationDirective?: string;
 }
+
+/** The goal's declared file deliveries that belong to this step's criteria. */
+export const relevantFileDeliveriesOf = (request: ExecutorExecutionRequest): unknown[] => {
+  const criteria = request.work.acceptanceCriteria ?? [];
+  const fileRequirements = request.work.goalStructured?.['fileDeliveries'];
+  return Array.isArray(fileRequirements) ? fileRequirements.filter((item: unknown) => typeof item === 'object' && item !== null && criteria.some((criterion) => criterion.criterionId === (item as Record<string, unknown>)['criterionId'])) : [];
+};
 
 export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTaskTextOptions = {}): string => {
   // The objective stays the FIRST line: the frozen S24 one-task contract (and its
@@ -472,8 +505,9 @@ export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTas
     }
   }
   lines.push(ENGINEERING_PRACTICE_DIRECTIVE);
-  const fileRequirements = request.work.goalStructured?.['fileDeliveries'];
-  const relevantFiles = Array.isArray(fileRequirements) ? fileRequirements.filter((item: unknown) => typeof item === 'object' && item !== null && criteria.some((criterion) => criterion.criterionId === (item as Record<string, unknown>)['criterionId'])) : [];
+  if (options.externalToolsLine !== undefined && options.externalToolsLine !== '') lines.push(options.externalToolsLine);
+  if (criteria.length > 0) lines.push(VERIFICATION_DIRECTIVE);
+  const relevantFiles = relevantFileDeliveriesOf(request);
   if (relevantFiles.length > 0) {
     lines.push(`Required file delivery: ${JSON.stringify(relevantFiles)}`);
     lines.push(`Final text must be JSON {"schema":"companyos/business-files/1","goalRunId":${JSON.stringify(request.work.fileDeliveryGoalRunId)},"runId":${JSON.stringify(request.runId)},"taskId":${JSON.stringify(request.taskId)},"files":[{"relativePath":"the required relative path","sizeBytes":123,"sha256":"actual lowercase sha256"}]}. Report only actual nonempty files in the authorized Workspace. Exit code zero is not file delivery proof.`);
@@ -1173,7 +1207,34 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
       // never a port held past the attempt, never a secret in kernel-visible config
       // or env — the Sprint24 §35 secret law holds literally).
       const exchangeAudit = embedded.toolInvocationAudit;
+      /*
+       * LIVE-CONTRACT-FILL run 9 — WRAP-UP MECHANISM: every model request carries the attempt's
+       * time left and the step's spend left; below a threshold it carries the forced WRAP-UP
+       * instruction, and once the bounded wrap-up window is used up the attempt drains.
+       */
+      const clockNow = embedded.now ?? Date.now;
+      const attemptClock = { startedMs: clockNow(), deadlineMs: request.timeoutMs ?? timeoutMs };
+      let drainForWrapUp: () => void = () => undefined;
+      const turnNoter = createTurnNoter({
+        thresholds: embedded.wrapUp ?? wrapUpThresholdsOf(process.env),
+        status: async () => {
+          let step: { readonly stepSpentMicros: number; readonly stepCapMicros: number } | null = null;
+          try { step = (await request.modelCallBudgetStatus?.()) ?? null; } catch { step = null; }
+          return {
+            attemptMsLeft: attemptClock.deadlineMs - (clockNow() - attemptClock.startedMs),
+            ...(step === null ? {} : { stepSpentMicros: step.stepSpentMicros, stepCapMicros: step.stepCapMicros }),
+          };
+        },
+      });
       const broker = await startModelBroker({
+        rewriteRequest: async (body: Buffer) => {
+          const { note, exhausted } = await turnNoter.next();
+          if (exhausted) {
+            drainForWrapUp();
+            return { body, drain: true };
+          }
+          return { body: injectTurnNote(body, note.text, request.modelCallInputBoundBytes) ?? body };
+        },
         upstreamBaseURL: modelRoute.baseURL,
         bearer: modelRoute.apiKeyValue,
         ...(exchangeAudit === undefined ? {} : {
@@ -1290,12 +1351,13 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             runId: String(request.runId),
             roleId: String(request.roleId),
           });
-        const tapStdoutLine = toolTap === undefined && activityTap === undefined
-          ? undefined
-          : (line: string): void => {
-            toolTap?.(line);
-            activityTap?.(line);
-          };
+        // LIVE-CONTRACT-FILL run 9: the verified-work tracker reads every tool call/result live.
+        const verifiedWork = createVerifiedWorkTracker();
+        const tapStdoutLine = (line: string): void => {
+          toolTap?.(line);
+          activityTap?.(line);
+          verifiedWork.observe(line);
+        };
         // STAGE 4 E2E: with no dedicated node configured, the child runs on THIS
         // Electron binary. ELECTRON_RUN_AS_NODE=1 makes it a plain Node runtime for the
         // kernel CLI (Electron's Node satisfies the manifest nodeRange) — without it the
@@ -1330,6 +1392,9 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           }
         }
         let continuationDirective: string | undefined;
+        // LIVE-CONTRACT-FILL run 9: tell the kernel which external tools exist on this machine.
+        let externalToolsLine: string | null = null;
+        try { externalToolsLine = externalToolsLineOf((embedded.detectExternalTools ?? (() => detectExternalTools(process.env)))()); } catch { externalToolsLine = null; }
         /*
          * LIVE-CONTRACT-FILL run 5 — DEADLINE DRAIN. Shortly before the attempt deadline the
          * broker stops admitting new model calls; at the deadline the kill waits (bounded) for
@@ -1342,6 +1407,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           deadlineDraining = true;
           broker.value.stopAdmitting();
         };
+        drainForWrapUp = beginDeadlineDrain;
         const armTimer = config.timer ?? ((ms: number, callback: () => void) => {
           const handle = setTimeout(callback, ms);
           return () => clearTimeout(handle);
@@ -1379,7 +1445,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             const handle = setTimeout(callback, ms);
             return () => clearTimeout(handle);
           }),
-          ...(tapStdoutLine === undefined ? {} : { tapStdoutLine }),
+          tapStdoutLine,
           buildArgs: (invocation) => {
             const argv: string[] = [];
             if (
@@ -1390,6 +1456,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             }
             argv.push(dshTaskTextOf(invocation, {
               outputCeilingTokens: modelRoute.maxTokens,
+              ...(externalToolsLine === null ? {} : { externalToolsLine }),
               ...(continuationDirective === undefined ? {} : { continuationDirective }),
             }));
             return argv;
@@ -1421,6 +1488,8 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
           }
         }
         const dependenciesInstalled = resumed !== undefined && existsSync(join(workspaceRoot, 'node_modules'));
+        attemptClock.startedMs = clockNow();
+        const attemptStartedAt = new Date().toISOString();
         const { outcome: rawOutcome } = await runWithOutputCeilingRecovery({
           workspaceRoot,
           outputCeilingTokens: modelRoute.maxTokens,
@@ -1444,7 +1513,23 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         });
         cancelDrainLead();
         const outcome = deadlineDrainOutcome(rawOutcome, deadlineDraining);
-        if (outcome.kind !== 'succeeded') {
+        /*
+         * LIVE-CONTRACT-FILL run 9 — CREDIT VERIFIED WORK: an attempt that ran out of time or budget
+         * after its last test run passed and proved every criterion finishes the step (files kept)
+         * instead of a blind retry. Anything less stays a resumable timeout (notes below).
+         */
+        const credit = outcome.kind === 'succeeded' ? null : (() => {
+          const inventory = workspaceFileInventoryOf(workspaceRoot);
+          return verifiedWorkCreditOf({
+            outcome: outcome as { readonly kind: string; readonly stdoutText?: string; readonly stderrText?: string },
+            evidence: verifiedWork.evidence(),
+            criteria: request.work.acceptanceCriteria ?? [],
+            requiresFileDelivery: relevantFileDeliveriesOf(request).length > 0,
+            files: inventory.files,
+            filesTruncated: inventory.truncated,
+          });
+        })();
+        if (outcome.kind !== 'succeeded' && credit === null) {
           const stdoutText = (outcome as { readonly stdoutText?: string }).stdoutText ?? '';
           try {
             mkdirSync(join(notesPath, '..'), { recursive: true });
@@ -1468,6 +1553,36 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             reasonCode: String(postSpawn.error.details['reason'] ?? 'EXECUTOR_EMBEDDED_RUNTIME_TAMPERED_POST_SPAWN'),
             detail: postSpawn.error.message,
           };
+        }
+        if (credit !== null) {
+          const stdoutText = (outcome as { readonly stdoutText?: string }).stdoutText ?? '';
+          const sessionId = (outcome as { readonly providerSessionId?: string }).providerSessionId ?? parseSessionId(stdoutText) ?? undefined;
+          if (exchangeAudit !== undefined) {
+            const at = new Date().toISOString();
+            void exchangeAudit.append([
+              createCoreDomainEvent(
+                'executor.verified_work_credited',
+                {type: 'ExecutionAttempt', id: String(request.attemptId)},
+                {attemptId: String(request.attemptId), taskId: String(request.taskId), runId: String(request.runId), endedAs: outcome.kind, criteria: credit.criteria, testRun: credit.run, wrapUpTurns: turnNoter.wrapUpTurns(), wrapUpTrigger: turnNoter.trigger(), at},
+                {traceId: `trace_attempt_${String(request.attemptId)}`, actorId: 'system:dsh-executor', now: at, ids: exchangeAudit.ids},
+              ),
+            ]).catch((error: unknown) => exchangeAudit.onFailure(error));
+          }
+          const credited: ExecutorProviderOutcome = {
+            kind: 'succeeded',
+            exitCode: 0,
+            stdoutText,
+            ...(sessionId === undefined ? {} : { providerSessionId: sessionId }),
+            structured: {
+              finalText: credit.finalText,
+              events: [],
+              verifiedWorkCredit: { endedAs: outcome.kind, criteria: credit.criteria, testRun: credit.run },
+              artifactContent: ['companyos/verified-work-credit/1', `ended ${outcome.kind}`, `test ${credit.run.command.slice(0, 200)} passed=${String(credit.run.passed)} failed=0 skipped=${String(credit.run.skipped)}`, `criteria ${credit.criteria.join(',')}`].join('\n'),
+            },
+            startedAt: attemptStartedAt,
+            finishedAt: new Date().toISOString(),
+          };
+          return modelSnapshot === undefined ? credited : { ...credited, selectedModel: modelSnapshot } as typeof credited;
         }
         // STAGE 6: the Selected Model Snapshot is execution evidence (Boss §10) —
         // attached to the provider outcome metadata for audit, never a second truth.

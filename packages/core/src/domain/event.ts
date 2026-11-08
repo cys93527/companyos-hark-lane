@@ -108,6 +108,9 @@ export const CORE_DOMAIN_EVENT_TYPES = [
   // Hark H15c: one evidence row per loopback model-broker exchange (status, sizes,
   // usage disposition) — explains a budget reservation left UNKNOWN; never content.
   'executor.model_exchange_observed',
+  // Hark live contract-fill run 9: a timed-out / capped attempt whose last test run passed and
+  // proved every criterion finished its step (evidence row: criteria, test summary; never content).
+  'executor.verified_work_credited',
   // model router audit (Sprint 10A: contract only - no emitter until 10B)
   'router.requested',
   'router.candidates_built',
@@ -269,6 +272,7 @@ export const CORE_EVENT_EMITTERS: Readonly<Record<CoreDomainEventType, string>> 
   'executor.tool_invocation_requested': 'desktop:embedded-executor',
   'executor.attempt_activity': 'desktop:embedded-executor',
   'executor.model_exchange_observed': 'desktop:embedded-executor',
+  'executor.verified_work_credited': 'desktop:embedded-executor',
   'router.requested': 'model-router:S10',
   'router.candidates_built': 'model-router:S10',
   'router.recommendation_created': 'model-router:S10',

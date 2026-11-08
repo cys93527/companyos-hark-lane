@@ -87,6 +87,8 @@ export interface ProviderDispatchDeps {
     readonly admitBody: NonNullable<ExecutorExecutionRequest['modelCallAdmission']>;
     /** H15d-fix3: the body byte bound admitBody enforces (kernel working window source). */
     readonly inputUpperBoundBytes?: number;
+    /** LIVE-CONTRACT-FILL run 9: the step's spend and cap for the kernel's per-turn status note. */
+    readonly stepBudget?: NonNullable<ExecutorExecutionRequest['modelCallBudgetStatus']>;
     release(): void;
   }>;
   readonly registry: ExecutorProviderRegistry;
@@ -678,7 +680,7 @@ ${renderRetryDirective(retryEnvelope)}`;
     const fileDeliveryGoalRunId = await deps.fileDeliveryGoalOf?.(request.runId);
     if (externalAdmission?.signal.aborted === true) return failed('GOAL_CANCEL_REQUESTED', 'Execution was cancelled before provider start.');
     outcome = await provider.start({
-      ...(externalAdmission === undefined ? {} : { modelCallAdmission: externalAdmission.admitBody, signal: externalAdmission.signal, ...(externalAdmission.inputUpperBoundBytes === undefined ? {} : { modelCallInputBoundBytes: externalAdmission.inputUpperBoundBytes }) }),
+      ...(externalAdmission === undefined ? {} : { modelCallAdmission: externalAdmission.admitBody, signal: externalAdmission.signal, ...(externalAdmission.inputUpperBoundBytes === undefined ? {} : { modelCallInputBoundBytes: externalAdmission.inputUpperBoundBytes }), ...(externalAdmission.stepBudget === undefined ? {} : { modelCallBudgetStatus: externalAdmission.stepBudget }) }),
       companyId: request.companyId,
       runId: request.runId,
       taskId: request.taskId,

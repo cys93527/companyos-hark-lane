@@ -54,6 +54,9 @@ describe('E2 — planner contract pins (guidance only, authority unchanged)', ()
     expect(prompt).toContain('tightly coupled sequential');
     expect(prompt).toContain('independent review/validation authority');
     expect(prompt).toContain('self-certifying');
+    // LIVE-CONTRACT-FILL run 9: environment-dependent capabilities are their own item
+    expect(prompt).toContain('Environment-dependent capabilities');
+    expect(prompt).toContain('never mixed into the core');
     // no hard-count heuristic in the guidance
     expect(prompt).not.toMatch(/exactly \d+ work items/i);
     expect(prompt).not.toMatch(/max(?:imum)? \d+ items/i);

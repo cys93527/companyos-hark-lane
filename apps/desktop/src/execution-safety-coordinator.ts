@@ -141,6 +141,13 @@ export function createExecutionSafetyCoordinator(database: DurableDatabase, conf
       return {
         ...lease,
         inputUpperBoundBytes: proof.inputTokens,
+        /** LIVE-CONTRACT-FILL run 9: the step's spend so far and its cap (status only; admitBody enforces). */
+        async stepBudget(): Promise<{ readonly stepSpentMicros: number; readonly stepCapMicros: number } | null> {
+          if (input.taskId === undefined || stepCapMicros <= 0) return null;
+          const attempts = await attemptsOfTask(input.taskId);
+          attempts.add(input.attemptId);
+          return { stepSpentMicros: stepSpendMicros((await budget.read(input.runId)).reservations, attempts), stepCapMicros };
+        },
         async admitBody(bytes: Uint8Array) {
           const body = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
           // H15c: bound by the cap field the REAL upstream honours (DeepSeek: max_tokens only).

@@ -149,6 +149,32 @@ jobs:
       LIVE_IDLE_STOP_MS: '900000'
     steps:
       - uses: actions/checkout@v4
+      # LIVE-CONTRACT-FILL run 9 (42429421366): the generated project's PDF export needs LibreOffice
+      # (soffice), which the runner lacks; the kernel chased it for a whole attempt. TEST-ENVIRONMENT
+      # tool for the user's project only - NOT a CompanyOS dependency (CompanyOS never ships or calls it).
+      # Installed first so a failed install stops the job before the inline build and any model spend.
+      - name: Test environment - LibreOffice (soffice) for the generated project (not a CompanyOS dependency)
+        shell: pwsh
+        timeout-minutes: 30
+        run: |
+          New-Item -ItemType Directory -Force hark-evidence | Out-Null
+          $dir = 'C:\Program Files\LibreOffice\program'
+          $ok = Test-Path (Join-Path $dir 'soffice.exe')
+          for ($i = 1; ($i -le 3) -and (-not $ok); $i++) {
+            Write-Host "LibreOffice install attempt $i"
+            choco install libreoffice-fresh -y --no-progress --execution-timeout 1200 2>&1 | Select-Object -Last 15
+            $ok = Test-Path (Join-Path $dir 'soffice.exe')
+            if (-not $ok) { Start-Sleep -Seconds 30 }
+          }
+          if (-not $ok) { Write-Error 'LibreOffice (soffice) is not installed after 3 attempts'; exit 1 }
+          $dir | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          $env:PATH = "$dir;$env:PATH"
+          # bounded: a first soffice start can stall on profile creation
+          $job = Start-Job -ScriptBlock { soffice --version 2>&1 | Out-String }
+          if (-not (Wait-Job $job -Timeout 180)) { Stop-Job $job; Write-Error 'soffice --version timed out'; exit 1 }
+          $v = "$(Receive-Job $job)".Trim()
+          if ($v -notmatch 'LibreOffice') { Write-Error "soffice --version failed: $v"; exit 1 }
+          "$v`n$((Get-Command soffice).Source)" | Tee-Object hark-evidence/soffice-version.txt
       # INLINE INSTALLER (2026-11-07): GitHub Free artifact storage (500 MB) can refuse the
       # hark-installer artifact, so custom mode can build the installer HERE from the checked-out
       # sha. The steps below are byte-identical copies of hark-installer.yml (only the guard line

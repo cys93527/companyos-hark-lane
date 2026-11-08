@@ -319,6 +319,14 @@ const plannerSystemPrompt = (declaredOperationKinds?: readonly string[]): string
     `objective (a Chinese objective gets a Chinese plan); ids stay stable lowercase-hyphen ASCII.`,
     `Software work: plan to build on mature, well-known libraries installed through the`,
     `project's package manager rather than re-implementing file formats or infrastructure.`,
+    /* LIVE-CONTRACT-FILL run 9: PDF export (needs LibreOffice/soffice on the machine) sat inside the
+     * core-library step; with the tool absent that step could never meet its criteria and never
+     * converged. Environment-dependent work is now its own item so the core can finish without it. */
+    `Environment-dependent capabilities: work that depends on an external program or operating-system`,
+    `facility being present on the machine (for example PDF conversion through an office suite such as`,
+    `LibreOffice/soffice, printing, OCR engines, system services, OS integration or installers) is its OWN`,
+    `work item with its own acceptance criterion, depending on the core item - never mixed into the core`,
+    `library/logic item, so the core can be finished and verified without that program.`,
   ].join('\n');
 
 /** The deterministic Task-output provenance key (execution provenance, NEVER plan truth). */

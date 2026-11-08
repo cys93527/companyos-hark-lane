@@ -983,6 +983,14 @@ export const startModelBroker = (input: {
    * to another port the agent could not reach anyway.
    */
   readonly listenPort?: number;
+  /**
+   * LIVE-CONTRACT-FILL run 9 — per-turn request rewrite (the wrap-up mechanism): called with each
+   * request body BEFORE admission, so the admission meters and bounds the body actually sent. It
+   * returns the body to forward (e.g. with the CompanyOS status / WRAP-UP note appended), or
+   * `drain: true` to refuse this call and stop admitting (the attempt's wrap-up window is used up).
+   * A rewrite that throws forwards the original body unchanged.
+   */
+  readonly rewriteRequest?: (body: Buffer) => Promise<{ readonly body: Buffer; readonly drain?: boolean }>;
 }): Promise<Result<ModelBrokerHandle, DomainError>> =>
   new Promise((resolve) => {
     let upstream: URL;
@@ -1148,8 +1156,22 @@ export const startModelBroker = (input: {
       });
       req.on('end', () => { void (async () => {
         if (refused || settled || res.writableEnded) return;
+        let body: Buffer = Buffer.concat(chunks);
+        if (input.rewriteRequest !== undefined) {
+          let rewritten: { readonly body: Buffer; readonly drain?: boolean } | undefined;
+          try { rewritten = await input.rewriteRequest(body); } catch { rewritten = undefined; }
+          if (rewritten?.drain === true) {
+            admitting = false;
+            respond(403, 'attempt deadline reached: no new model calls'); settle(null, 'wrap-up-drained'); return;
+          }
+          if (rewritten !== undefined && rewritten.body.byteLength <= BROKER_MAX_BODY_BYTES) {
+            body = rewritten.body;
+            size = body.byteLength;
+          }
+          if (settled || res.writableEnded) return;
+        }
         if (input.admission !== undefined) {
-          try { admission = await input.admission(Buffer.concat(chunks)); }
+          try { admission = await input.admission(body); }
           catch (error) {
             /*
              * H15d-fix3: a body past the proven input bound is a CONTEXT LIMIT, not a budget
@@ -1277,7 +1299,7 @@ export const startModelBroker = (input: {
           // The kernel side ending (completion, cancel or abort) releases the upstream
           // request too — destroying a settled request is a no-op, so no orphans remain.
           proxied.on('close', () => settle(null, 'upstream-close'));
-          proxied.end(Buffer.concat(chunks));
+          proxied.end(body);
         } catch {
           // SYNCHRONOUS transport failure containment (the live-smoke P1): a request()
           // that throws (or any bug in this block) settles, destroys and answers 502
