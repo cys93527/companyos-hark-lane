@@ -28,6 +28,10 @@ on:
         description: "custom mode only: the user's goal, typed verbatim into the installed app's composer (real GUI driven over CDP)"
         required: false
         default: ''
+      resume_from_run:
+        description: "custom mode only: an earlier hark-live-goal run whose generated project (evidence workspace/) seeds the user's project folder, so the goal continues that work instead of starting from an empty folder; empty = fresh folder"
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -386,6 +390,37 @@ jobs:
           $budget = Join-Path $env:APPDATA 'CompanyOS\budget'
           node scripts/hark/make-budget-approval.mjs $budget installer/budget/deepseek-flash.contract-fill.approval-template.json | Tee-Object hark-evidence/budget-approval.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: verify the resume source is a hark-live-goal run of this repository (run 11 resume)
+        if: inputs.mode == 'custom' && inputs.resume_from_run != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESUME_RUN: ${{ inputs.resume_from_run }}
+        run: |
+          if ($env:RESUME_RUN -notmatch '^[0-9]{1,20}$') { Write-Host 'resume_from_run must be a run id'; exit 3 }
+          $r = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RESUME_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $r.path -ne '.github/workflows/hark-live-goal.yml' -or $r.status -ne 'completed') { Write-Host "resume source $env:RESUME_RUN is not a completed hark-live-goal run"; exit 3 }
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'custom' && inputs.resume_from_run != ''
+        with:
+          name: hark-live-goal-evidence
+          path: resume-evidence
+          run-id: ${{ inputs.resume_from_run }}
+          github-token: ${{ github.token }}
+      - name: Seed the user's project folder with the resumed run's generated project
+        if: inputs.mode == 'custom' && inputs.resume_from_run != ''
+        shell: pwsh
+        env:
+          RESUME_RUN: ${{ inputs.resume_from_run }}
+        run: |
+          $src = Join-Path $env:GITHUB_WORKSPACE 'resume-evidence\workspace'
+          if (-not (Test-Path $src)) { Write-Host "run $env:RESUME_RUN has no generated project (workspace/) in its evidence"; exit 3 }
+          $ws = Join-Path $env:USERPROFILE 'ContractFillProject'
+          New-Item -ItemType Directory -Force $ws | Out-Null
+          Copy-Item -Path (Join-Path $src '*') -Destination $ws -Recurse -Force
+          $n = @(Get-ChildItem $ws -Recurse -File).Count
+          "resumed from hark-live-goal run $env:RESUME_RUN ($n files)" | Tee-Object hark-evidence/resume-source.txt
+          Remove-Item resume-evidence -Recurse -Force
       - name: The user's goal through the installed GUI (CDP driver, screenshots, read-only DB progress)
         shell: pwsh
         env:

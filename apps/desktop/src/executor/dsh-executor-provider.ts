@@ -31,6 +31,7 @@ import {
 import { join } from 'node:path';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { attemptNotesOf, parseAttemptNotes, renderAttemptNotes } from './kernel-failure-detail.js';
+import { workspaceInventoryLineOf, workspaceInventoryOf } from './workspace-inventory.js';
 import { createTurnNoter, detectExternalTools, externalToolsLineOf, injectTurnNote, wrapUpThresholdsOf, type ExternalToolStatus, type WrapUpThresholds } from './attempt-wrap-up.js';
 import { createVerifiedWorkTracker, verifiedWorkCreditOf } from './verified-work-credit.js';
 
@@ -444,6 +445,8 @@ export interface DshTaskTextOptions {
   readonly outputCeilingTokens?: number;
   /** LIVE-CONTRACT-FILL run 9: the detected external tools line (externalToolsLineOf). */
   readonly externalToolsLine?: string;
+  /** LIVE-CONTRACT-FILL run 11: files already in the workspace (workspaceInventoryLineOf). */
+  readonly workspaceInventoryLine?: string;
   /** In-attempt continuation directive after an output-ceiling truncation (rendered last). */
   readonly continuationDirective?: string;
 }
@@ -512,6 +515,7 @@ export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTas
   }
   lines.push(ENGINEERING_PRACTICE_DIRECTIVE);
   if (options.externalToolsLine !== undefined && options.externalToolsLine !== '') lines.push(options.externalToolsLine);
+  if (options.workspaceInventoryLine !== undefined && options.workspaceInventoryLine !== '') lines.push(options.workspaceInventoryLine);
   if (criteria.length > 0) lines.push(VERIFICATION_DIRECTIVE);
   const relevantFiles = relevantFileDeliveriesOf(request);
   if (relevantFiles.length > 0) {
@@ -1417,6 +1421,9 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
         // LIVE-CONTRACT-FILL run 9: tell the kernel which external tools exist on this machine.
         let externalToolsLine: string | null = null;
         try { externalToolsLine = externalToolsLineOf((embedded.detectExternalTools ?? (() => detectExternalTools(process.env)))()); } catch { externalToolsLine = null; }
+        // LIVE-CONTRACT-FILL run 11: tell the kernel what work already exists in its workspace.
+        let workspaceInventoryLine: string | null = null;
+        try { workspaceInventoryLine = workspaceInventoryLineOf(workspaceInventoryOf(workspaceRoot)); } catch { workspaceInventoryLine = null; }
         /*
          * LIVE-CONTRACT-FILL run 5 — DEADLINE DRAIN. Shortly before the attempt deadline the
          * broker stops admitting new model calls; at the deadline the kill waits (bounded) for
@@ -1480,6 +1487,7 @@ const createEmbeddedDshProvider = (config: DshProviderConfig, timeoutMs: number)
             argv.push(dshTaskTextOf(invocation, {
               outputCeilingTokens: modelRoute.maxTokens,
               ...(externalToolsLine === null ? {} : { externalToolsLine }),
+              ...(workspaceInventoryLine === null ? {} : { workspaceInventoryLine }),
               ...(continuationDirective === undefined ? {} : { continuationDirective }),
             }));
             return argv;

@@ -385,7 +385,10 @@ safe('project-checks', () => {
   if (out.workspace === undefined) return;
   const roots = [out.workspace, ...readdirSync(out.workspace, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== 'node_modules').map((e) => join(out.workspace, e.name))]
     .filter((d) => existsSync(join(d, 'package.json')));
-  const childEnv = { ...process.env, CI: '1' }; delete childEnv.ELECTRON_RUN_AS_NODE; delete childEnv.COMPANYOS_MODEL_API_KEY;
+  // Run 11: the en-US runner's console code page (cp1252) made the generated Python tests' Chinese
+  // output raise UnicodeEncodeError in this independent check; a Chinese Windows (cp936) and the
+  // kernel's own runs did not. UTF-8 stdio keeps the check about the project, not the runner locale.
+  const childEnv = { ...process.env, CI: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }; delete childEnv.ELECTRON_RUN_AS_NODE; delete childEnv.COMPANYOS_MODEL_API_KEY;
   const npm = (cwd, args, timeout) => { const r = spawnSync('cmd.exe', ['/d', '/s', '/c', `npm ${args}`], { cwd, encoding: 'utf8', timeout, env: childEnv }); return { status: r.status, tail: `${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000) }; };
   out.projectChecks = roots.map((root) => {
     const pkg = parse(readFileSync(join(root, 'package.json'), 'utf8')) ?? {};

@@ -7,8 +7,8 @@
     "organization": null
   },
   "cap": {
-    "maxCalls": 450,
-    "maxTokens": 93772800,
+    "maxCalls": 1000,
+    "maxTokens": 100000000,
     "maxCostMicros": 8000000,
     "durationMs": 9000000
   },

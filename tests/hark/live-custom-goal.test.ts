@@ -23,7 +23,19 @@ describe('live custom goal (real GUI, per-run cap CNY 8)', () => {
     const perCall = Math.ceil((t.proof.tokens.inputUpperBound * t.proof.pricing.inputRate + t.proof.tokens.outputUpperBound * t.proof.pricing.outputRate) / 1e6);
     expect(perCall).toBeLessThanOrEqual(t.cap.maxCostMicros);
     expect(t.cap.maxCalls).toBeLessThanOrEqual(1000);
-    expect(t.cap.maxCalls * (t.proof.tokens.inputUpperBound + t.proof.tokens.outputUpperBound)).toBeLessThanOrEqual(t.cap.maxTokens);
+    // Every single worst-case call is admissible under the token cap (approval ceiling 100M).
+    expect(t.proof.tokens.inputUpperBound + t.proof.tokens.outputUpperBound).toBeLessThanOrEqual(t.cap.maxTokens);
+    expect(t.cap.maxTokens).toBeLessThanOrEqual(100_000_000);
+  });
+
+  it('live contract-fill run 11 (42564411429): the call guard is not sized by worst-case tokens and does not stop a run long before its money cap', () => {
+    // Run 11 ended GOAL_BUDGET_EXHAUSTED at 450 calls (= 93.77M / 208 384 worst-case tokens) after 5 of 6
+    // steps with CNY 3.157935 of 8 spent. Settled calls count at their REAL usage in the goal envelope, so
+    // the worst-case product is not a bound the run can reach; money and real tokens bound it instead.
+    const run11 = { calls: 450, micros: 3_157_935 };
+    expect(t.cap.maxCalls).toBe(1000);
+    expect(t.cap.maxCalls * (run11.micros / run11.calls)).toBeGreaterThanOrEqual(0.85 * t.cap.maxCostMicros);
+    expect(t.cap.maxCalls * (t.proof.tokens.inputUpperBound + t.proof.tokens.outputUpperBound)).toBeGreaterThan(t.cap.maxTokens);
     // live contract-fill run 4: 4096 cut whole-file writes -> 8192; run 5: documented max output 384K
     // (api-docs.deepseek.com/quick_start/pricing) -> 16384 headroom, configurable down.
     expect(customJob).toMatch(/COS_MODEL_MAX_OUTPUT_TOKENS: \$\{\{ vars\.HARK_LIVE_MAX_OUTPUT_TOKENS \|\| '16384' \}\}/u);
@@ -55,6 +67,8 @@ describe('live custom goal (real GUI, per-run cap CNY 8)', () => {
     const driver = readFileSync('scripts/hark/live-goal-gui.mjs', 'utf8');
     expect(driver).not.toMatch(/apps\/desktop\/dist|@companyos\//u);
     expect(driver).toMatch(/readOnly: true/u);
+    // run 11: the independent project check runs Python with UTF-8 stdio (runner cp1252 broke Chinese output)
+    expect(driver).toMatch(/PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8'/u);
     expect(driver).toMatch(/--remote-debugging-port/u);
     expect(driver).toMatch(/Page\.captureScreenshot/u);
     expect(driver).toMatch(/approval-card__approve/u);
