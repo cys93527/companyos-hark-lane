@@ -137,6 +137,8 @@ export interface RepoTestCheckDeps {
    */
   readonly runTestContract: (input: {
     readonly cwd: string;
+    /** Live contract-fill run 13: the contract's own deadline — what is left of the invocation bound after the snapshot copy, minus headroom. */
+    readonly timeoutMs: number;
   }) => Promise<{ readonly exitCode: number; readonly timedOut: boolean; readonly outputTail: string }>;
   /**
    * F3 — OPTIONAL snapshot bounds (composition/test seam). Defaults to a real-project
@@ -209,6 +211,30 @@ export const REPO_TEST_CHECK_SPEC: RepoTestCheckSpec = {
     required: ['verdict', 'command', 'exitCode', 'timedOut', 'outputTail', 'accessPolicy', 'executedOn', 'reasons', 'evidenceRefs', 'report'],
     additionalProperties: false,
   },
+};
+
+/**
+ * Live contract-fill run 13 (hark-live-goal 42624351676): the registry bounds the WHOLE invocation
+ * (snapshot copy + `npm test` + settle) by `spec.timeoutMs`, and the test-contract process was given
+ * the SAME 600 000 ms deadline, started only after the snapshot copy. The registry timeout therefore
+ * always won: the invocation ended as a bare tool TIMEOUT (validation status `error`, no exit code,
+ * no output tail), the process tree's own deadline never fired, so the agent's corrective rework
+ * never learned which test hung and 5 stages failed the same way.
+ * The contract deadline is strictly inside the invocation bound, leaving headroom for the snapshot
+ * copy, the tree kill and the settle grace, so a slow or hanging test contract becomes a `fail`
+ * verdict WITH its output tail.
+ */
+export const REPO_TEST_CONTRACT_HEADROOM_MS = 90_000;
+
+/** Below this a test contract cannot meaningfully run; the verdict says why instead. */
+export const REPO_TEST_CONTRACT_MIN_MS = 30_000;
+
+export const repoTestContractDeadlineMs = (spec: Pick<RepoTestCheckSpec, 'timeoutMs'>): number => {
+  const deadline = spec.timeoutMs - REPO_TEST_CONTRACT_HEADROOM_MS;
+  if (!Number.isInteger(deadline) || deadline < REPO_TEST_CONTRACT_MIN_MS) {
+    throw new Error(`repo.test-check timeoutMs ${String(spec.timeoutMs)} leaves no room for the test contract deadline.`);
+  }
+  return deadline;
 };
 
 /** Build the registry record (validated by Core, so the spec cannot be malformed). */
@@ -531,6 +557,7 @@ export const createRepoTestCheckPort = (
       // F3 (2) — the validator NEVER executes against the user's canonical workspace:
       // a bounded fresh snapshot copy (links materialized, dependencies included) is the
       // execution root, deleted after the run.
+      const invocationStartedMs = Date.now();
       const snapshot = buildSnapshot(ctx.root, deps.limits ?? DEFAULT_SNAPSHOT_LIMITS);
       if (!snapshot.ok) {
         return err(
@@ -544,12 +571,30 @@ export const createRepoTestCheckPort = (
       try {
         // The validator executes the test contract ITSELF — the implementation's own runs
         // and claims are never consulted (the P1 independence rule).
-        const run = await deps.runTestContract({ cwd: snapshot.dir });
+        // Live contract-fill run 13: the snapshot copy is inside the registry's invocation bound,
+        // so the contract gets only what is left of it (minus headroom) — its own deadline then
+        // always fires first and the verdict carries the contract's output tail.
+        const copyMs = Date.now() - invocationStartedMs;
+        const contractTimeoutMs = repoTestContractDeadlineMs(spec) - copyMs;
+        if (contractTimeoutMs < REPO_TEST_CONTRACT_MIN_MS) {
+          return finish(
+            'fail',
+            {
+              command: script,
+              exitCode: -1,
+              timedOut: true,
+              outputTail: `[VALIDATOR_SNAPSHOT_SLOW] 复制工作区快照用了 ${String(copyMs)} ms，剩余时间不足以运行测试。请清理工作区中测试运行留下的临时文件（例如 .tmp 下的配置目录），或让测试把临时文件写到系统临时目录并在结束时删除。`,
+              reasons: [`the workspace snapshot copy took ${String(copyMs)} ms, leaving under ${String(REPO_TEST_CONTRACT_MIN_MS)} ms for the test contract.`],
+            },
+            'error',
+          );
+        }
+        const run = await deps.runTestContract({ cwd: snapshot.dir, timeoutMs: contractTimeoutMs });
         const passed = !run.timedOut && run.exitCode === 0;
         const reasons = passed
           ? ['the workspace test contract ran fresh under the validator (snapshot) and exited 0.']
           : run.timedOut
-            ? ['the workspace test contract exceeded the validator deadline.']
+            ? [`the workspace test contract exceeded the validator deadline (${String(contractTimeoutMs)} ms after a ${String(copyMs)} ms snapshot copy) and its process tree was ended; see outputTail for the last output.`]
             : [`the workspace test contract exited ${String(run.exitCode)}.`];
         return finish(
           passed ? 'pass' : 'fail',

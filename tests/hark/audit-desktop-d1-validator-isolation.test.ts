@@ -94,7 +94,7 @@ describe('AUDIT-D1 validator runs inside the isolation boundary', () => {
 
   it('core-services wires the runner with the production isolation config, state root and trusted root', () => {
     const src = readFileSync(join(__dirname, '../../apps/desktop/src/core-services.ts'), 'utf8');
-    expect(src).toContain('repoTestContractRunner({ cwd: input.cwd, timeoutMs: REPO_TEST_CHECK_SPEC.timeoutMs })');
+    expect(src).toContain('repoTestContractRunner({ cwd: input.cwd, timeoutMs: Math.min(input.timeoutMs, repoTestContractDeadlineMs(REPO_TEST_CHECK_SPEC)) })');
     expect(src).toContain('isolation: options.embeddedDshIsolation');
     expect(src).toContain('trustedStateRoot: options.validatorTrustedStateRoot');
     const main = readFileSync(join(__dirname, '../../apps/desktop/src/main.ts'), 'utf8');

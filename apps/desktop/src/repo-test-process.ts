@@ -30,6 +30,11 @@ const ALLOWLISTED_ENV_KEYS: readonly string[] = [
   'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'HOMEDRIVE', 'HOMEPATH',
   'USERPROFILE', 'TEMP', 'TMP', 'NUMBER_OF_PROCESSORS', 'OS', 'PROCESSOR_ARCHITECTURE',
   'USERDOMAIN', 'USERNAME', 'NODE_ENV', 'NPM_CONFIG_UPDATE_NOTIFIER',
+  // Live contract-fill run 13: non-secret Windows system locations/identity that native programs a
+  // test contract legitimately launches (LibreOffice for a PDF export test) expect to exist.
+  'ALLUSERSPROFILE', 'PROGRAMDATA', 'PUBLIC', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
+  'COMMONPROGRAMW6432', 'PROGRAMW6432', 'COMPUTERNAME', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL',
+  'PROCESSOR_REVISION',
 ];
 
 const MAX_CAPTURE_CHARS = 32_768;
@@ -46,6 +51,18 @@ export const UTF8_STDIO_ENV: Readonly<Record<string, string>> = Object.freeze({
   PYTHONUTF8: '1',
   PYTHONIOENCODING: 'utf-8',
 });
+
+/**
+ * Live contract-fill run 13: a Python test contract writing to a pipe is block-buffered, so when the
+ * deadline ends a hanging run the captured tail is empty. CONSTANT: unbuffered stdio, so the verdict
+ * carries the last lines the contract printed (which test hung).
+ */
+export const UNBUFFERED_STDIO_ENV: Readonly<Record<string, string>> = Object.freeze({
+  PYTHONUNBUFFERED: '1',
+});
+
+/** Prefix of the output tail when the contract deadline ended the process tree. */
+export const CONTRACT_DEADLINE_MARKER = '[VALIDATOR_DEADLINE]';
 
 /**
  * AUDIT-D2 — the deadline must bound the WHOLE `npm test` tree. Killing only the direct
@@ -118,6 +135,7 @@ export const runRepoTestContract = async (input: {
     if (ALLOWLISTED_ENV_KEYS.includes(key) || key === 'HOME') childEnv[key] = value;
   }
   for (const [key, value] of Object.entries(UTF8_STDIO_ENV)) childEnv[key] = value;
+  for (const [key, value] of Object.entries(UNBUFFERED_STDIO_ENV)) childEnv[key] = value;
   return await new Promise<RepoTestContractRun>((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -149,7 +167,14 @@ export const runRepoTestContract = async (input: {
       settled = true;
       clearTimeout(deadline);
       if (grace !== null) clearTimeout(grace);
-      resolve({ exitCode, timedOut, outputTail: `${stdout}\n${stderr}`.trim() });
+      const output = `${stdout}\n${stderr}`.trim();
+      resolve({
+        exitCode,
+        timedOut,
+        outputTail: timedOut
+          ? `${CONTRACT_DEADLINE_MARKER} 测试脚本超过 ${String(input.timeoutMs)} ms 仍未结束，进程树已终止。最后输出：\n${output}`.trim()
+          : output,
+      });
     };
     child.on('error', () => settle(-1));
     child.on('close', (code) => settle(typeof code === 'number' ? code : -1));

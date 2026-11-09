@@ -25,6 +25,7 @@ import {
   EVIDENCE_GROUNDING_TOOL_ID,
   REPO_TEST_CHECK_SPEC,
   REPO_TEST_CHECK_TOOL_ID,
+  repoTestContractDeadlineMs,
   createEvidenceGroundingPort,
   createEvidenceGroundingRecord,
   createRepoTestCheckPort,
@@ -1298,7 +1299,7 @@ export async function composeCoreServices(
       // AUDIT-D1: agent-written `npm test` runs inside the isolation boundary when it is configured
       // (refused when degraded); unconfigured runs are labelled 未隔离 and guard the trusted state.
       runTestContract: async (input) =>
-        repoTestContractRunner({ cwd: input.cwd, timeoutMs: REPO_TEST_CHECK_SPEC.timeoutMs }),
+        repoTestContractRunner({ cwd: input.cwd, timeoutMs: Math.min(input.timeoutMs, repoTestContractDeadlineMs(REPO_TEST_CHECK_SPEC)) }),
       clock,
     }));
 
