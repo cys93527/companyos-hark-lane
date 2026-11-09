@@ -220,6 +220,19 @@ export const classifyPathClaim = (
     }
   };
   const normalized = token.replace(/\\/g, '/');
+  /*
+   * Live contract-fill run 12 (hark-live-goal 42577881852): a report on a .docx exporter named the
+   * archive members it rewrites (`word/document.xml`, `_rels/.rels`, `[Content_Types].xml`); they are
+   * not workspace files, but the workspace's own source names them verbatim. A token that is not under
+   * an existing workspace directory and that the workspace text names verbatim is a grounded REFERENCE
+   * (archive member, resource or route name), not an unsupported file claim. A token under an existing
+   * workspace directory (`src/missing.py`) stays a strict path claim.
+   */
+  const namedReference = (candidate: string): boolean => {
+    const head = candidate.includes('/') ? (candidate.split('/')[0] ?? '') : '';
+    if (head !== '' && exists(head)) return false;
+    return candidate.length >= 3 && workspaceText.includes(candidate);
+  };
   const drive = /^[A-Za-z]:\//.test(normalized);
   const relativeCandidate = normalized.replace(/^\.\//, '');
   if (relativeCandidate === 'report.md' || relativeCandidate.endsWith('/report.md')) return { kind: 'not-a-path' };
@@ -236,9 +249,9 @@ export const classifyPathClaim = (
       // mentions both parts, otherwise it stays unsupported either way.
       const mentioned = segments.every((segment) => new RegExp(`(^|[^A-Za-z0-9_$])${segment.replace(/\$/g, '\\$')}($|[^A-Za-z0-9_$])`).test(workspaceText));
       if (mentioned) return { kind: 'grounded', path: reference };
-      return { kind: 'unsupported' };
+      return namedReference(relativeCandidate) ? { kind: 'grounded', path: relativeCandidate } : { kind: 'unsupported' };
     }
-    return { kind: 'unsupported' };
+    return namedReference(relativeCandidate) ? { kind: 'grounded', path: relativeCandidate } : { kind: 'unsupported' };
   }
 
   const firstSegment = relativeCandidate.split('/')[0] ?? '';
@@ -250,7 +263,8 @@ export const classifyPathClaim = (
     FILE_EXTENSION.test(normalized) ||
     (firstSegment !== '' && exists(firstSegment));
   if (!pathShaped) return { kind: 'not-a-path' };
-  return exists(relativeCandidate) ? { kind: 'grounded', path: relativeCandidate } : { kind: 'unsupported' };
+  if (exists(relativeCandidate)) return { kind: 'grounded', path: relativeCandidate };
+  return namedReference(relativeCandidate) ? { kind: 'grounded', path: relativeCandidate } : { kind: 'unsupported' };
 };
 
 /** Bounded recursive text inventory of the opened workspace. */

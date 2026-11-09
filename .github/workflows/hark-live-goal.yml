@@ -101,8 +101,18 @@ jobs:
           # CompanyOS.exe is a GUI-subsystem binary: '&' does NOT wait for it, so wait explicitly.
           $script = if ('${{ inputs.mode }}' -eq 'planning') { 'scripts/hark/live-goal-planning.mjs' } else { 'scripts/hark/live-goal-execute.mjs' }
           $argv = @($script, "`"$env:APPDIR\resources\app`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$env:BUDGETDIR`"")
-          $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
+          # Run 12: `Start-Process -Wait` also waits for every DESCENDANT; a process left behind by the run
+          # (generated project / test tooling) kept the step waiting 3 h after the driver had finished.
+          # Wait for the driver process only, then record and end whatever it left running.
+          $before = @(Get-Process | ForEach-Object { $_.Id })
+          $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
+          $null = $p.Handle
+          $p.WaitForExit()
           $code = $p.ExitCode
+          $left = @(Get-CimInstance Win32_Process | Where-Object { $before -notcontains $_.ProcessId -and $_.ProcessId -ne $PID -and $_.Name -notin @('conhost.exe','WmiPrvSE.exe') })
+          $left | ForEach-Object { "$($_.ProcessId) parent=$($_.ParentProcessId) $($_.Name) $([string]$_.CommandLine)".Substring(0, [Math]::Min(400, "$($_.ProcessId) parent=$($_.ParentProcessId) $($_.Name) $([string]$_.CommandLine)".Length)) } | Set-Content hark-evidence\leftover-processes.txt -Encoding utf8
+          Write-Host "processes left running after the driver: $($left.Count)"
+          $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           Get-Content hark-evidence\harness-stdout.txt -ErrorAction SilentlyContinue | Select-Object -Last 80
           Write-Host "harness exit=$code"
           if (Select-String -Path hark-evidence\* -SimpleMatch $env:COMPANYOS_MODEL_API_KEY -Quiet) { Write-Host 'KEY LEAKED'; Remove-Item hark-evidence\* -Force; exit 9 }
@@ -429,8 +439,18 @@ jobs:
           $env:ELECTRON_RUN_AS_NODE = '1'
           $ws = Join-Path $env:USERPROFILE 'ContractFillProject'
           $argv = @('scripts/hark/live-goal-gui.mjs', "`"$env:APPDIR`"", "`"$env:GITHUB_WORKSPACE\hark-evidence`"", "`"$ws`"")
-          $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -Wait -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
+          # Run 12: `Start-Process -Wait` also waits for every DESCENDANT; a process left behind by the run
+          # (generated project / test tooling) kept the step waiting 3 h after the driver had finished.
+          # Wait for the driver process only, then record and end whatever it left running.
+          $before = @(Get-Process | ForEach-Object { $_.Id })
+          $p = Start-Process -FilePath "$env:APPDIR\CompanyOS.exe" -ArgumentList $argv -PassThru -NoNewWindow -RedirectStandardOutput hark-evidence\harness-stdout.txt -RedirectStandardError hark-evidence\harness-stderr.txt
+          $null = $p.Handle
+          $p.WaitForExit()
           $code = $p.ExitCode
+          $left = @(Get-CimInstance Win32_Process | Where-Object { $before -notcontains $_.ProcessId -and $_.ProcessId -ne $PID -and $_.Name -notin @('conhost.exe','WmiPrvSE.exe') })
+          $left | ForEach-Object { "$($_.ProcessId) parent=$($_.ParentProcessId) $($_.Name) $([string]$_.CommandLine)".Substring(0, [Math]::Min(400, "$($_.ProcessId) parent=$($_.ParentProcessId) $($_.Name) $([string]$_.CommandLine)".Length)) } | Set-Content hark-evidence\leftover-processes.txt -Encoding utf8
+          Write-Host "processes left running after the driver: $($left.Count)"
+          $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           Get-Content hark-evidence\harness-stdout.txt -ErrorAction SilentlyContinue | Select-Object -Last 120
           Write-Host "driver exit=$code"
           $leak = Get-ChildItem hark-evidence -Recurse -File | Where-Object { $_.Length -lt 200MB } | Select-String -SimpleMatch $env:COMPANYOS_MODEL_API_KEY -List -ErrorAction SilentlyContinue

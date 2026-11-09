@@ -35,6 +35,19 @@ const ALLOWLISTED_ENV_KEYS: readonly string[] = [
 const MAX_CAPTURE_CHARS = 32_768;
 
 /**
+ * Live contract-fill run 12 (hark-live-goal 42577881852): the validator decodes the captured
+ * output as UTF-8, but a Python test contract writing to a pipe uses the ANSI code page; on the
+ * en-US runner (cp1252) the generated tests' Chinese prints raised UnicodeEncodeError, so a project
+ * whose tests pass in a console failed `repo.test-check` on every stage and the corrective cap ended
+ * the goal. CONSTANT values (never copied from the parent environment): the child's stdio is UTF-8,
+ * the same encoding this port decodes with, independent of the machine locale.
+ */
+export const UTF8_STDIO_ENV: Readonly<Record<string, string>> = Object.freeze({
+  PYTHONUTF8: '1',
+  PYTHONIOENCODING: 'utf-8',
+});
+
+/**
  * AUDIT-D2 — the deadline must bound the WHOLE `npm test` tree. Killing only the direct
  * child (cmd.exe / sh) left npm and the test runner alive holding the stdio pipes, so the
  * old 'close'-based settle waited for the grandchildren and the deadline bounded nothing.
@@ -104,6 +117,7 @@ export const runRepoTestContract = async (input: {
   for (const [key, value] of Object.entries(input.envOverrides ?? {})) {
     if (ALLOWLISTED_ENV_KEYS.includes(key) || key === 'HOME') childEnv[key] = value;
   }
+  for (const [key, value] of Object.entries(UTF8_STDIO_ENV)) childEnv[key] = value;
   return await new Promise<RepoTestContractRun>((resolve) => {
     let stdout = '';
     let stderr = '';
