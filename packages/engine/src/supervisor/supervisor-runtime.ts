@@ -984,6 +984,11 @@ export function createSupervisorDecisionRuntime(
           SUPERVISOR_CONTEXT_LIMITS.maxEvidenceRefs,
         ),
         finishedAt: latestValidation.finishedAt,
+        // A failure a corrective round already acted on is shown as such: it is no longer a
+        // corrective cause, the engine's re-validation of the corrected work is what is owed.
+        ...(consumedValidationIds.has(String(latestValidation.id))
+          ? { consumedByCorrective: true, note: 'already corrected; re-validation pending' }
+          : {}),
       };
       if (latestValidation.evidenceRefs.length > SUPERVISOR_CONTEXT_LIMITS.maxEvidenceRefs) {
         truncated.push('validation.evidenceRefs');
@@ -1069,7 +1074,13 @@ export function createSupervisorDecisionRuntime(
             ? (['COMPLETE'] as const)
             : (['CONTINUE', 'COMPLETE'] as const)
           ).slice()
-        : (['CONTINUE', 'REQUEST_CORRECTIVE', 'ESCALATE'] as const).slice();
+        : // Live contract-fill run 15: with NO blocking condition there is no legal corrective
+          // cause (REVIEW_FINDING needs an unconsumed CHANGES_REQUESTED report, VALIDATION_FAILED
+          // an actionable failing row — both are blocking conditions) and ESCALATE is refused
+          // without one. Offering them made the model re-cite a CONSUMED failure while the
+          // re-validation was owed, three times in a row (SUPERVISOR_INVALID_ACTIONS_EXHAUSTED).
+          // The window states only what the application accepts: CONTINUE.
+          (['CONTINUE'] as const).slice();
 
     /*
      * F1 closure — the corrective-cause truth: the run's ACTIONABLE failing validations

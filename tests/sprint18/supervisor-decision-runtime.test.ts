@@ -2188,3 +2188,71 @@ describe('FINAL-P1 supervisor corrective-cause citation', () => {
     expect(envelope.evidenceRefs.map((entry) => entry.ref)).toEqual([`artifact:${reportId}`]);
   });
 });
+
+/*
+ * Live contract-fill run 15 (hark-live-goal 42690434549): after a corrective round consumed the
+ * failing validations, the supervisor turn that precedes the re-validation was OFFERED
+ * REQUEST_CORRECTIVE/ESCALATE and shown the consumed FAIL as the latest validation. The model
+ * re-cited it three times; every proposal was refused ("no actionable failing validation") and
+ * the driver ended SUPERVISOR_INVALID_ACTIONS_EXHAUSTED with all eight tasks DONE.
+ */
+describe('live contract-fill run 15 — consumed failure before re-validation', () => {
+  const seedConsumed = async (f: Fixture, label: string) => {
+    const { runId } = await f.runWithGoal(label);
+    const parent = await f.seedTask('build', { state: 'DONE' });
+    const validationId = await f.seedValidation({ runId, status: 'fail' });
+    const child = await f.seedTask('build', {
+      state: 'DONE',
+      inputs: {
+        corrective: {
+          schema: 'companyos/corrective-task/1',
+          parentTaskId: parent,
+          rootTaskId: parent,
+          round: 1,
+          originDecisionId: 'dec_origin',
+          originDecisionVersion: 1,
+          reasonCode: 'VALIDATION_FAILED',
+          causeEvidenceRefs: [validationId],
+        },
+      },
+    });
+    return { runId, child, validationId };
+  };
+
+  it('offers only CONTINUE and marks the consumed failure as already corrected', async () => {
+    const f = makeFixture();
+    const { runId, child, validationId } = await seedConsumed(f, 'run15window');
+    const built = await f.runtime.buildContext({ companyId: COMPANY, runId, taskId: child, actorId: ACTOR });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.value.blockingConditions).toEqual([]);
+    expect(built.value.blockingValidations).toEqual([]);
+    expect(built.value.allowedActions).toEqual(['CONTINUE']);
+    expect(built.value.validation?.['validationId']).toBe(validationId);
+    expect(built.value.validation?.['consumedByCorrective']).toBe(true);
+  });
+
+  it('the provider request narrows the action enum to CONTINUE, and CONTINUE is recorded', async () => {
+    const f = makeFixture();
+    const { runId, child } = await seedConsumed(f, 'run15turn');
+    f.model.structured = proposal({ subject: { taskId: child } });
+    const result = await f.runtime.runOneSupervisorDecisionTurn(turnOf({ runId, taskId: child }));
+    expect(result.ok).toBe(true);
+    const request = JSON.stringify(f.model.requests[0]);
+    expect(request).toContain('The ONLY legal actions for THIS decision are: CONTINUE.');
+    expect(request).not.toContain('"REQUEST_CORRECTIVE","ESCALATE"');
+    expect((await f.decisionRows()).length).toBe(1);
+  });
+
+  it('an actionable (unconsumed) failure still opens the corrective window', async () => {
+    const f = makeFixture();
+    const { runId } = await f.runWithGoal('run15actionable');
+    const work = await f.seedTask('build', { state: 'DONE' });
+    await f.seedValidation({ runId, status: 'fail' });
+    const built = await f.runtime.buildContext({ companyId: COMPANY, runId, taskId: work, actorId: ACTOR });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.value.allowedActions).toEqual(['REQUEST_CORRECTIVE', 'ESCALATE']);
+    expect(built.value.validation?.['consumedByCorrective']).toBeUndefined();
+  });
+});
