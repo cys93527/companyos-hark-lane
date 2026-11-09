@@ -1301,6 +1301,8 @@ export async function composeCoreServices(
       runTestContract: async (input) =>
         repoTestContractRunner({ cwd: input.cwd, timeoutMs: Math.min(input.timeoutMs, repoTestContractDeadlineMs(REPO_TEST_CHECK_SPEC)) }),
       clock,
+      // The engine reads no system timer (engine boundary law): the composition root supplies it.
+      monotonicMs: () => performance.now(),
     }));
 
     const gitRecord = createRepositoryGitToolRecord(REPOSITORY_GIT_TOOL_SPEC, clock.nowIso());

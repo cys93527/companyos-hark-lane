@@ -146,6 +146,14 @@ export interface RepoTestCheckDeps {
    */
   readonly limits?: SnapshotLimits;
   readonly clock: { nowIso(): string };
+  /**
+   * Live contract-fill run 13 (CI fix): OPTIONAL monotonic millisecond reading supplied by the
+   * composition root, used ONLY to measure how long the snapshot copy took so the contract gets
+   * what is left of the invocation bound. The engine never reads a system timer itself (engine
+   * boundary law); without this seam the copy is counted as 0 ms and the fixed headroom
+   * (REPO_TEST_CONTRACT_HEADROOM_MS) is the only margin.
+   */
+  readonly monotonicMs?: () => number;
 }
 
 export interface RepoTestCheckSpec {
@@ -557,7 +565,7 @@ export const createRepoTestCheckPort = (
       // F3 (2) — the validator NEVER executes against the user's canonical workspace:
       // a bounded fresh snapshot copy (links materialized, dependencies included) is the
       // execution root, deleted after the run.
-      const invocationStartedMs = Date.now();
+      const invocationStartedMs = deps.monotonicMs?.() ?? 0;
       const snapshot = buildSnapshot(ctx.root, deps.limits ?? DEFAULT_SNAPSHOT_LIMITS);
       if (!snapshot.ok) {
         return err(
@@ -574,7 +582,7 @@ export const createRepoTestCheckPort = (
         // Live contract-fill run 13: the snapshot copy is inside the registry's invocation bound,
         // so the contract gets only what is left of it (minus headroom) — its own deadline then
         // always fires first and the verdict carries the contract's output tail.
-        const copyMs = Date.now() - invocationStartedMs;
+        const copyMs = Math.max(0, Math.round((deps.monotonicMs?.() ?? 0) - invocationStartedMs));
         const contractTimeoutMs = repoTestContractDeadlineMs(spec) - copyMs;
         if (contractTimeoutMs < REPO_TEST_CONTRACT_MIN_MS) {
           return finish(

@@ -8,7 +8,7 @@
  * verdict carries the contract's last (unbuffered) output.
  */
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -95,7 +95,7 @@ const dirs: string[] = [];
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
 
 describe('live contract-fill run 13: the port hands the contract what is left of the invocation bound', () => {
-  const portFor = (seen: number[], result = { exitCode: 1, timedOut: true, outputTail: `${CONTRACT_DEADLINE_MARKER} x\ntest_a ... ` }) => {
+  const portFor = (seen: number[], result = { exitCode: 1, timedOut: true, outputTail: `${CONTRACT_DEADLINE_MARKER} x\ntest_a ... ` }, monotonicMs?: () => number) => {
     const root = mkdtempSync(join(tmpdir(), 'run13-ws-'));
     dirs.push(root);
     writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'python tests/run_all.py' } }));
@@ -103,6 +103,7 @@ describe('live contract-fill run 13: the port hands the contract what is left of
       resolveRunContext: async () => ({ root, accessPolicy: 'WORKSPACE_OPERATION', mismatch: false }),
       runTestContract: async (input) => { seen.push(input.timeoutMs); return result; },
       clock: { nowIso: () => 'Mon 2026-11-09 10:23 PM CST (UTC+08:00)' },
+      ...(monotonicMs === undefined ? {} : { monotonicMs }),
     });
   };
 
@@ -119,5 +120,31 @@ describe('live contract-fill run 13: the port hands the contract what is left of
     expect(out.value?.output['timedOut']).toBe(true);
     expect(String(out.value?.output['outputTail'])).toContain('test_a');
     expect(String((out.value?.output['reasons'] as string[])[0])).toMatch(/validator deadline/);
+  });
+
+  it('the snapshot copy time comes from the injected monotonic seam (the engine reads no timer) and is subtracted', async () => {
+    const seen: number[] = [];
+    const readings = [1_000, 21_000];
+    await portFor(seen, undefined, () => readings.shift() ?? 21_000).invoke({ input: { targetRef: 'artifact:a', artifactId: 'a', runId: 'r' } } as never);
+    expect(seen).toEqual([repoTestContractDeadlineMs(REPO_TEST_CHECK_SPEC) - 20_000]);
+  });
+
+  it('a snapshot copy that eats the bound is a FAIL that says so, and the contract never starts', async () => {
+    const seen: number[] = [];
+    const readings = [0, repoTestContractDeadlineMs(REPO_TEST_CHECK_SPEC) - 1_000];
+    const out = await portFor(seen, undefined, () => readings.shift() ?? 0).invoke({ input: { targetRef: 'artifact:a', artifactId: 'a', runId: 'r' } } as never) as {
+      ok: boolean; value?: { output: Readonly<Record<string, unknown>> };
+    };
+    expect(seen).toHaveLength(0);
+    expect(out.ok).toBe(true);
+    expect(out.value?.output['verdict']).toBe('fail');
+    expect(String(out.value?.output['outputTail'])).toContain('VALIDATOR_SNAPSHOT_SLOW');
+  });
+
+  it('production composition wires the monotonic seam (engine boundary: no Date.now in the engine)', () => {
+    const engineSrc = readFileSync(join(process.cwd(), 'packages/engine/src/validation/repo-test-check-tool.ts'), 'utf8');
+    expect(engineSrc).not.toMatch(/Date\.now|performance\.now/);
+    const composition = readFileSync(join(process.cwd(), 'apps/desktop/src/core-services.ts'), 'utf8');
+    expect(composition).toMatch(/monotonicMs: \(\) => performance\.now\(\)/);
   });
 });

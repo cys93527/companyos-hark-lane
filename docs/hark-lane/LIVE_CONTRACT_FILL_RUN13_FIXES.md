@@ -28,3 +28,11 @@ way, the corrective rework could not learn anything, and the goal ended FAILED. 
 - Constant `UNBUFFERED_STDIO_ENV` (`PYTHONUNBUFFERED=1`) in the validator child environment.
 - Allowlist extended with the non-secret Windows system keys above (secrets still never pass).
 - Regression test: `tests/hark/live-contract-fill-run13.test.ts`.
+
+## CI follow-up (hark-ubuntu on 35b0b0f)
+The first version measured the snapshot copy with `Date.now()` inside `@companyos/engine`, which breaks
+the engine boundary law (`packages/engine/tests/boundary.test.ts`: no system timers in the engine).
+Root fix: the elapsed time comes from an optional `monotonicMs` seam in `RepoTestCheckDeps`, supplied by
+the composition root (`core-services.ts`: `performance.now()`); without it the copy counts as 0 ms and the
+90 s headroom is the margin. Regression tests in `tests/hark/live-contract-fill-run13.test.ts` cover the
+seam, the slow-snapshot FAIL and the production wiring. Local gates now include `packages/engine/tests`.
