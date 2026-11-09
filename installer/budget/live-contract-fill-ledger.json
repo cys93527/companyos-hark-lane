@@ -101,6 +101,12 @@
       "reservedMicros": 8000000,
       "settledMicros": 5387342,
       "calls": 748
+    },
+    {
+      "run": "hark-live-goal 42690434549",
+      "status": "RESERVED",
+      "reservedMicros": 8000000,
+      "settledMicros": null
     }
   ],
   "entries": [
@@ -23059,5 +23065,5 @@
     }
   ],
   "totalMicros": 33994651,
-  "openReservationsMicros": 0
+  "openReservationsMicros": 8000000
 }
