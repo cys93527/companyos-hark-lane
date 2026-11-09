@@ -265,7 +265,61 @@ export interface RepoTestContractRunnerOptions {
   readonly trustedStateRoot?: string;
   readonly platform?: NodeJS.Platform;
   readonly run?: typeof runRepoTestContract;
+  /** Directory removal seam (tests); production = recursive rmSync with Windows lock retries. */
+  readonly removeDir?: (path: string) => void;
 }
+
+/** Prefix of the note appended to a verdict whose per-run scratch/copy could not be removed. */
+export const SCRATCH_CLEANUP_MARKER = '[VALIDATOR_SCRATCH_CLEANUP]';
+
+const defaultRemoveDir = (path: string): void => {
+  // Windows: a file a just-ended test process (or an orphaned helper it started, e.g. a
+  // LibreOffice soffice.bin) still holds open makes the removal fail EPERM/EBUSY; retry briefly.
+  rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+};
+
+/**
+ * Live contract-fill run 14 (hark-live-goal 42668857942): every repo.test-check call failed
+ * `EPERM, Permission denied: ...\\companyos-validator-home-XXXX` — the test contract had already
+ * run, but removing the per-run scratch profile threw from the `finally` (LibreOffice processes the
+ * tests launched still held its profile files), so the throw REPLACED the verdict and the validation
+ * became a tool error on every stage until the corrective cap ended the goal. Removing the scratch is
+ * housekeeping: it is best-effort, never replaces the contract's verdict, and a failure is reported in
+ * the verdict tail (the leftover directory is swept by a later run).
+ */
+export const removeBestEffort = (path: string, removeDir: (path: string) => void = defaultRemoveDir): string | null => {
+  try {
+    removeDir(path);
+    return null;
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code: unknown }).code) : 'ERROR';
+    return `${SCRATCH_CLEANUP_MARKER} 临时目录未能删除（${code}），已留待下次清理：${path}`;
+  }
+};
+
+const SCRATCH_PREFIX = 'companyos-validator-home-';
+const STALE_SCRATCH_MS = 60 * 60 * 1000;
+
+/** Best-effort sweep of scratch profiles an earlier run could not remove (older than an hour). */
+export const sweepStaleScratch = (
+  root: string = tmpdir(),
+  removeDir: (path: string) => void = defaultRemoveDir,
+  nowMs: number = Date.now(),
+): void => {
+  let names: string[];
+  try { names = readdirSync(root); } catch { return; }
+  for (const name of names) {
+    if (!name.startsWith(SCRATCH_PREFIX)) continue;
+    const abs = join(root, name);
+    try {
+      if (nowMs - lstatSync(abs).mtimeMs < STALE_SCRATCH_MS) continue;
+      removeDir(abs);
+    } catch { /* still locked: a later run retries */ }
+  }
+};
+
+const withCleanupNote = (result: RepoTestContractRun, note: string | null): RepoTestContractRun =>
+  note === null ? result : { ...result, outputTail: `${result.outputTail}\n${note}`.trim() };
 
 const UNISOLATED_LABEL = '[validator: 未隔离]';
 
@@ -273,6 +327,7 @@ export const createRepoTestContractRunner = (options: RepoTestContractRunnerOpti
   async (input: { readonly cwd: string; readonly timeoutMs: number }): Promise<RepoTestContractRun> => {
     const run = options.run ?? runRepoTestContract;
     const platform = options.platform ?? process.platform;
+    const removeDir = options.removeDir ?? defaultRemoveDir;
     const before = options.trustedStateRoot === undefined ? null : captureTrusted(options.trustedStateRoot);
     const guard = (result: RepoTestContractRun): RepoTestContractRun => {
       if (before === null || options.trustedStateRoot === undefined) return result;
@@ -296,6 +351,7 @@ export const createRepoTestContractRunner = (options: RepoTestContractRunnerOpti
       }
       const workRoot = join(options.isolatedStateRoot, 'validator');
       const copy = join(workRoot, randomUUID());
+      let result: RepoTestContractRun;
       try {
         mkdirSync(workRoot, { recursive: true });
         cpSync(input.cwd, copy, { recursive: true, dereference: false, verbatimSymlinks: true });
@@ -312,14 +368,18 @@ export const createRepoTestContractRunner = (options: RepoTestContractRunnerOpti
           const problems = plan.kind === 'refused' ? plan.problems : ['validator:unexpectedPlan'];
           return { exitCode: -1, timedOut: false, outputTail: `[ISOLATION_DEGRADED] ${problems.join(', ')}` };
         }
-        return guard(await run({ cwd: copy, timeoutMs: input.timeoutMs, command: { executable: plan.executable, argv: plan.argvPrefix } }));
-      } finally {
-        rmSync(copy, { recursive: true, force: true });
+        result = guard(await run({ cwd: copy, timeoutMs: input.timeoutMs, command: { executable: plan.executable, argv: plan.argvPrefix } }));
+      } catch (error) {
+        removeBestEffort(copy, removeDir);
+        throw error;
       }
+      return withCleanupNote(result, removeBestEffort(copy, removeDir));
     }
 
     // Never configured: as the user, labelled, with a per-run scratch profile.
-    const scratch = mkdtempSync(join(tmpdir(), 'companyos-validator-home-'));
+    if (options.removeDir === undefined) sweepStaleScratch();
+    const scratch = mkdtempSync(join(tmpdir(), SCRATCH_PREFIX));
+    let labelled: RepoTestContractRun;
     try {
       // AUDIT-RUN7-1: only the DIRECTORY-valued keys are created. HOMEDRIVE ('C:') is a drive and
       // HOMEPATH a drive-relative path naming the scratch itself: a recursive mkdir of a drive root
@@ -332,8 +392,10 @@ export const createRepoTestContractRunner = (options: RepoTestContractRunnerOpti
         ? { ...directories, HOMEDRIVE: scratch.slice(0, 2), HOMEPATH: scratch.slice(2) }
         : directories;
       const result = guard(await run({ cwd: input.cwd, timeoutMs: input.timeoutMs, envOverrides }));
-      return { ...result, outputTail: `${UNISOLATED_LABEL}\n${result.outputTail}`.trim() };
-    } finally {
-      rmSync(scratch, { recursive: true, force: true });
+      labelled = { ...result, outputTail: `${UNISOLATED_LABEL}\n${result.outputTail}`.trim() };
+    } catch (error) {
+      removeBestEffort(scratch, removeDir);
+      throw error;
     }
+    return withCleanupNote(labelled, removeBestEffort(scratch, removeDir));
   };
