@@ -1,6 +1,6 @@
 {
   "name": "@companyos/observability",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "CompanyOS observability — structured JSON-lines logging with redaction, correlation ids and rotating file sink.",
   "type": "module",

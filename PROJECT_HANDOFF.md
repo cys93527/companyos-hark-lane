@@ -1,3 +1,6 @@
+## Hark lane — v0.1.4 release (2026-11-10)
+- Version 0.1.3 → 0.1.4 on top of 965a6c0 (contract-fill live-test root fixes runs 2–17, live goal run 18 hark-live-goal 42756324973 GOAL_COMPLETED_CLEAN on 135c3a8; plus test speed, SQLite DB backup, provider catalogue reconcile / Windows black-window fix; 135c3a8 CI all green: windows 42752831627, ubuntu 42752831311, installer 42752831645). Summary docs/hark-lane/V014_RELEASE.md; tag hark-v0.1.4 (prerelease, unsigned installer, SmartScreen warning). No real model calls in this commit, no new deps. Hark self-review only; real-PC acceptance and independent review NOT RUN.
+
 ## Hark lane — live contract-fill goal COMPLETED (2026-11-10)
 - Run 18 hark-live-goal 42756324973 on 135c3a8: GOAL_COMPLETED_CLEAN (goal COMPLETED, validation/review/delivery passed after one corrective round with validator failure detail). CNY 1.495868; 18 contract-fill runs total CNY 42.001. Generated app meets the goal (field detection, manual/paste input, preview edit, DOCX/PDF export, layout kept, responsive phone/desktop; own tests 89/89). Summary docs/hark-lane/LIVE_CONTRACT_FILL.md. No tag/release, version stays 0.1.3. Hark self-review only.
 

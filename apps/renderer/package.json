@@ -1,6 +1,6 @@
 {
   "name": "@companyos/renderer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "CompanyOS renderer — React 19 + Vite shell that proves the typed preload bridge works.",
   "type": "module",
