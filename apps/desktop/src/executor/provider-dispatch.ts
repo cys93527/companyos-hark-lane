@@ -77,6 +77,11 @@ export interface ProviderWorkEnvelope {
     readonly total: number;
     readonly steps: readonly { readonly objective: string; readonly current: boolean }[];
   };
+  /**
+   * LIVE-CONTRACT-FILL run 17 — for a corrective task, the failing validators' reports rendered
+   * as plain lines (why the previous result was rejected). Context only, never authority.
+   */
+  readonly correctiveCauses?: readonly string[];
 }
 
 export interface ProviderDispatchDeps {
@@ -706,6 +711,9 @@ ${renderRetryDirective(retryEnvelope)}`;
           : {}),
         ...(envelope !== undefined && envelope.value.planContext !== undefined
           ? { planContext: envelope.value.planContext }
+          : {}),
+        ...(envelope !== undefined && envelope.value.correctiveCauses !== undefined && envelope.value.correctiveCauses.length > 0
+          ? { correctiveCauses: envelope.value.correctiveCauses }
           : {}),
         ...(retryEnvelope === null ? {} : { retry: retryEnvelope }),
         ...(roleContext === null ? {} : { roleContext }),

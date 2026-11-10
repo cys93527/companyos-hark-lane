@@ -40,6 +40,16 @@ const ALLOWLISTED_ENV_KEYS: readonly string[] = [
 const MAX_CAPTURE_CHARS = 32_768;
 
 /**
+ * Live contract-fill run 17 (hark-live-goal 42730130436): append a chunk and keep only the most
+ * recent MAX_CAPTURE_CHARS characters, so the verdict's output tail is the END of the run (the
+ * test that was running when a deadline fired), never its beginning.
+ */
+export const keepRecentOutput = (buffer: string, chunk: string, maxChars: number = MAX_CAPTURE_CHARS): string => {
+  const next = buffer + chunk;
+  return next.length <= maxChars ? next : next.slice(next.length - maxChars);
+};
+
+/**
  * Live contract-fill run 12 (hark-live-goal 42577881852): the validator decodes the captured
  * output as UTF-8, but a Python test contract writing to a pipe uses the ANSI code page; on the
  * en-US runner (cp1252) the generated tests' Chinese prints raised UnicodeEncodeError, so a project
@@ -137,8 +147,11 @@ export const runRepoTestContract = async (input: {
   for (const [key, value] of Object.entries(UTF8_STDIO_ENV)) childEnv[key] = value;
   for (const [key, value] of Object.entries(UNBUFFERED_STDIO_ENV)) childEnv[key] = value;
   return await new Promise<RepoTestContractRun>((resolve) => {
-    let stdout = '';
-    let stderr = '';
+    // Live contract-fill run 17: a ROLLING window of the most recent output (stdout and stderr in
+    // arrival order). The old capture kept the FIRST 32 KiB and then dropped everything, so a long
+    // test contract that ran past its deadline reported its early passing tests and never the test
+    // that was still running when the deadline fired.
+    let captured = '';
     let timedOut = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | null = null;
@@ -155,11 +168,10 @@ export const runRepoTestContract = async (input: {
       killTree(child);
     }, input.timeoutMs);
     const capture = (chunk: Buffer | string): void => {
-      if (stdout.length + stderr.length >= MAX_CAPTURE_CHARS) return;
-      const text = String(chunk);
-      if (stdout.length < MAX_CAPTURE_CHARS / 2) stdout += text;
-      else stderr += text;
+      captured = keepRecentOutput(captured, String(chunk));
     };
+    child.stdout?.setEncoding?.('utf8');
+    child.stderr?.setEncoding?.('utf8');
     child.stdout?.on('data', capture);
     child.stderr?.on('data', capture);
     const settle = (exitCode: number): void => {
@@ -167,7 +179,7 @@ export const runRepoTestContract = async (input: {
       settled = true;
       clearTimeout(deadline);
       if (grace !== null) clearTimeout(grace);
-      const output = `${stdout}\n${stderr}`.trim();
+      const output = captured.trim();
       resolve({
         exitCode,
         timedOut,

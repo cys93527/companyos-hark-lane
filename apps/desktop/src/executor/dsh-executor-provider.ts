@@ -471,6 +471,8 @@ export const dshTaskTextOf = (request: ExecutorExecutionRequest, options: DshTas
     for (const criterion of criteria) lines.push(`- [${criterion.criterionId}] ${criterion.requirement}`);
   }
   lines.push(...planContextLinesOf(request.work.planContext));
+  // LIVE-CONTRACT-FILL run 17: a corrective round states WHY the previous result was rejected.
+  lines.push(...(request.work.correctiveCauses ?? []));
   const goalStructured = request.work.goalStructured;
   if (goalStructured !== undefined && Object.keys(goalStructured).length > 0) {
     lines.push(`Goal structured constraints: ${JSON.stringify(goalStructured)}`);

@@ -102,6 +102,11 @@ export interface ExecutorWorkInput {
     readonly steps: readonly { readonly objective: string; readonly current: boolean }[];
   };
   /**
+   * LIVE-CONTRACT-FILL run 17 — for a corrective task, the failing validators' reports rendered
+   * as plain lines (why the previous result was rejected). Context only, never authority.
+   */
+  readonly correctiveCauses?: readonly string[];
+  /**
    * The run-owned canonical goal's bounded structured constraints (Final Readiness
    * Gate): human-supplied at goal ingress — scope, parameters, resource lists,
    * output requirements. The canonical owner is the run-goal artifact; this is the

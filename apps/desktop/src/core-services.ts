@@ -149,6 +149,7 @@ import {
   type FinalOutcomeProjection,
   type GoalAutonomyState,
 } from './autonomy/goal-outcome-autonomy-driver.js';
+import { correctiveCauseLinesOf } from './executor/corrective-cause-detail.js';
 
 const SESSION_ACTOR = 'user_owner';
 
@@ -1805,7 +1806,27 @@ export async function composeCoreServices(
                   taskId,
                 });
                 if (!pkg.ok) return pkg;
-                return ok(projectWorkEnvelope(pkg.value));
+                const workEnvelope = projectWorkEnvelope(pkg.value);
+                /*
+                 * LIVE-CONTRACT-FILL run 17: a corrective task carries only the cited ids; the
+                 * failing validators' durable reports are resolved here and rendered as plain
+                 * context, so the rework knows WHAT was rejected (context only, never authority).
+                 */
+                const correctiveCauses = await correctiveCauseLinesOf(workEnvelope.taskInputs, {
+                  validation: async (validationId) => {
+                    const row = await database.validationStore?.get(validationId as never);
+                    return row === null || row === undefined
+                      ? null
+                      : { validatorId: String(row.validatorId), status: String(row.status), evidenceRefs: row.evidenceRefs.map(String) };
+                  },
+                  artifact: async (artifactId) => {
+                    const row = await database.artifactStore?.get(artifactId as never);
+                    return row === null || row === undefined ? null : { kind: String(row.kind), contentRef: String(row.contentRef) };
+                  },
+                  content: async (contentRef) =>
+                    artifactFoundation === null ? null : ((await artifactFoundation.contentStore.get(contentRef)) as Uint8Array | null),
+                });
+                return ok(correctiveCauses.length === 0 ? workEnvelope : { ...workEnvelope, correctiveCauses });
               },
               /*
                * Final Readiness Gate — canonical ARTIFACT materialization for declared
