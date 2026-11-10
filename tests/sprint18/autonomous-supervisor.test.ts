@@ -123,11 +123,11 @@ const sleepFor = (ms: number): Promise<void> =>
 
 /** A per-fixture scriptable timer, so a deadline can be expired deterministically. */
 const createTimers = () => {
-  const pending: { fire: () => void; cleared: boolean }[] = [];
+  const pending: { fire: () => void; cleared: boolean; ms: number }[] = [];
   return {
     timer: (ms: number, onTimeout: () => void): (() => void) => {
       const handle = setTimeout(onTimeout, ms);
-      const entry = { fire: onTimeout, cleared: false };
+      const entry = { fire: onTimeout, cleared: false, ms };
       pending.push(entry);
       return () => {
         entry.cleared = true;
@@ -136,6 +136,10 @@ const createTimers = () => {
     },
     fireAll(): void {
       for (const entry of pending) if (!entry.cleared) entry.fire();
+    },
+    /** Fire only the live timers armed with exactly `ms` (e.g. one window, not the deadline). */
+    fireArmedWith(ms: number): void {
+      for (const entry of pending) if (!entry.cleared && entry.ms === ms) entry.fire();
     },
     pendingCount(): number {
       return pending.filter((entry) => !entry.cleared).length;
@@ -198,7 +202,7 @@ interface Fixture {
   /** Drive an EXECUTING run to FINALIZING through the engine's legal commands. */
   toFinalizing(runId: string): Promise<void>;
   /** Re-open the SAME durable files in a fresh composition. */
-  restart(): void;
+  restart(): Promise<void>;
 }
 
 const makeFixture = (
@@ -716,7 +720,7 @@ const makeFixture = (
         if (!dispatched.ok) throw new Error(`${type} refused: ${dispatched.error.message}`);
       }
     },
-    restart() {
+    async restart() {
       db.close();
       const tracked = openDatabases.indexOf(db);
       if (tracked >= 0) openDatabases.splice(tracked, 1);
@@ -724,8 +728,10 @@ const makeFixture = (
       openDatabases.push(db);
       built = build(db);
       // The durable provider/model rows survive; re-registering is a no-op that also re-binds
-      // the in-memory adapter for the new composition.
-      void registerProvider();
+      // the in-memory adapter for the new composition. It is AWAITED: a fire-and-forget
+      // registration raced the next test step's open transaction on the same connection
+      // (unhandled CROSS_CONTEXT_TRANSACTION_READ_REFUSED rejection).
+      await registerProvider();
     },
   };
 };
@@ -1470,7 +1476,7 @@ describe('T18-07 autonomous supervisor — idempotency (21–27)', () => {
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const tasksBefore = taskCount(f);
-    f.restart();
+    await f.restart();
     // The fresh composition's own counters start from zero; what matters is that the replay
     // adds NOTHING to them.
     const advancesAfterRestart = f.advanceCalls();
@@ -2146,7 +2152,7 @@ describe('T18-07 autonomous supervisor — escalation & resume (53–57)', () =>
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.stopReason).toBe('escalated');
-    f.restart();
+    await f.restart();
     // A fresh composition over the SAME files: the escalated state is durable and machine-readable.
     const run = await f.db.runs.get(runId as never);
     expect(run?.state).toBe('WAITING_APPROVAL');
@@ -2328,5 +2334,54 @@ describe('T18-07 autonomous supervisor — model binding (39–44)', () => {
     expect(result.value.stopReason).toBe('invariant_failure');
     // Every attempt used the SAME model: no alternate provider, no fallback binding.
     for (const call of f.model.calls) expect(call.modelId).toBe(PROVIDER_MODEL_ID);
+  });
+});
+
+/**
+ * Live contract-fill run 16 (hark-live-goal 42711818830): the stage work a CONTINUE applied
+ * consumed the whole-run deadline, the NEXT supervisor turn started in its last seconds, our
+ * own timer aborted it (durable CANCELLED execution) and the §28 rule then parked the Goal
+ * forever (driver AUTONOMY_STALLED, UI still 执行中). A new model turn never starts once the
+ * turn window has closed: the run yields `timeout` with no execution, and the next call goes on.
+ */
+describe('live run 16 — no supervisor turn starts in the closing deadline window', () => {
+  it('yields timeout without a CANCELLED execution; the next call takes the turn', async () => {
+    const f = makeFixture({
+      stageOutcomes: { 'pack-a:build': ['succeeded'], 'pack-a:review': ['succeeded'] },
+      config: { timeoutMs: 2_000, minTurnWindowMs: 1_000 },
+    });
+    const { runId } = await f.runAt('turn-window', ['build', 'review']);
+    const work = await f.seedTask({ stageId: 'build' });
+    await f.seedTask({ stageId: 'review' });
+    scriptProposals(f.model, [proposal(), proposal()]);
+    const realAdvance = f.engine.advance.bind(f.engine);
+    let slow = true;
+    f.engine.advance = async (request) => {
+      const advanced = await realAdvance(request);
+      if (slow) {
+        slow = false;
+        // Long stage work inside the same autonomous run: it outlasts the turn window
+        // (armed at 2 000 - 1 000 ms) while the 2 000 ms deadline is still running.
+        f.timers.fireArmedWith(1_000);
+      }
+      return advanced;
+    };
+    const first = await f.autonomous.run(runOf({ runId, taskId: work, identity: 'turn-window-1' }));
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.stopReason).toBe('timeout');
+    expect(f.model.calls.length).toBe(1);
+    const cancelled = f.db.db
+      .prepare("SELECT COUNT(*) AS c FROM agent_executions WHERE error_kind = 'CANCELLED' OR status = 'CANCELLED'")
+      .get() as { c: number | bigint };
+    expect(Number(cancelled.c)).toBe(0);
+    expect(f.timers.pendingCount()).toBe(0);
+
+    const second = await f.autonomous.run(runOf({ runId, taskId: work, identity: 'turn-window-2' }));
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.stopReason).not.toBe('cancelled');
+    expect(second.value.stopReason).not.toBe('timeout');
+    expect(f.model.calls.length).toBeGreaterThan(1);
   });
 });

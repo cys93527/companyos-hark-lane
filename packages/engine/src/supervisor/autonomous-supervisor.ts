@@ -137,6 +137,15 @@ export interface AutonomousSupervisorConfig {
   readonly maxIdleTurns?: number;
   /** Whole-run deadline ceiling. One AbortSignal + one deadline cover every turn (§49). */
   readonly timeoutMs?: number;
+  /**
+   * Live contract-fill run 16: the least whole-run deadline that must REMAIN for a NEW
+   * supervisor model turn to start (default min(60 s, half the run deadline)). Stage work
+   * inside the same run consumes the deadline; a turn started in its last seconds was
+   * aborted by our OWN bound, settled CANCELLED, and the frozen §28 rule then parked the
+   * Goal forever. Below the window the run yields `timeout` with ZERO new executions and the
+   * next advance starts the turn under a fresh deadline.
+   */
+  readonly minTurnWindowMs?: number;
   /** Risk level recorded on the Approval an ESCALATE creates (trusted, never model output). */
   readonly escalationRiskLevel?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   /** Trusted identity that may decide a resumed approval (must differ from the requester). */
@@ -607,6 +616,9 @@ export const consecutiveIllegalProposalCount = (input: {
 };
 
 /* -------------------------------------------------------------------- factory */
+
+/** Default least deadline window a new supervisor model turn needs (live run 16). */
+const DEFAULT_MIN_TURN_WINDOW_MS = 60_000;
 
 export function createAutonomousSupervisorRuntime(
   deps: AutonomousSupervisorRuntimeDeps,
@@ -1689,6 +1701,16 @@ export function createAutonomousSupervisorRuntime(
     }
     const timeoutMs = Math.min(command.timeoutMs ?? timeoutCeiling, timeoutCeiling);
     const traceId = command.traceId ?? deps.ids.id('trace');
+    // Live run 16: the turn window closes minTurnWindowMs before the deadline (same shell
+    // timer seam as the deadline itself — the engine never reads a wall clock).
+    const minTurnWindowMs = Math.min(
+      deps.config?.minTurnWindowMs ?? DEFAULT_MIN_TURN_WINDOW_MS,
+      Math.floor(timeoutMs / 2),
+    );
+    let turnWindowClosed = false;
+    const releaseTurnWindowTimer = deps.timer(timeoutMs - minTurnWindowMs, () => {
+      turnWindowClosed = true;
+    });
 
     /* One AbortSignal + one deadline cover the WHOLE run (§49). */
     const controller = new AbortController();
@@ -2052,6 +2074,26 @@ export function createAutonomousSupervisorRuntime(
           );
         }
 
+        /*
+         * Live contract-fill run 16 (root cause): never START a model turn our own whole-run
+         * deadline cannot carry. The stage work this run already applied consumed the
+         * bound; a turn begun in its last seconds is aborted by OUR timer, settles as a
+         * durable CANCELLED execution, and §28 (a CANCELLED execution is never re-entered
+         * automatically) then parks the Goal with no user-visible decision. Yielding here
+         * creates no execution and no Decision; the caller's next advance gets a fresh
+         * deadline. A provider that hangs through a FULL window still settles CANCELLED.
+         */
+        if (turnWindowClosed) {
+          return ok(
+            outcome({
+              stopReason: 'timeout',
+              turns: turnIndex,
+              lastDecision,
+              progressFingerprint,
+            }),
+          );
+        }
+
         const turn = await deps.supervisorRuntime.runOneSupervisorDecisionTurn({
           companyId: command.companyId,
           runId: command.runId,
@@ -2394,6 +2436,7 @@ export function createAutonomousSupervisorRuntime(
       );
     } finally {
       releaseTimer();
+      releaseTurnWindowTimer();
       if (caller !== undefined) caller.removeEventListener('abort', onCallerAbort);
     }
   };
