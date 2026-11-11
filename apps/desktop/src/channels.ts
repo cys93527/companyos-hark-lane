@@ -45,6 +45,14 @@ export const CHANNELS = {
    * the trusted main process against the artifact CAS.
    */
   artifacts: 'companyos:artifacts',
+  /**
+   * UI-AUDIT-3 — 设置 → 模型服务 (docs/hark-lane/UI_AUDIT_3.md). ONE typed channel:
+   * `{ operation: 'status' | 'test' | 'save' | 'remove' | 'restart', payload }`, handled by the
+   * MAIN-process provider-settings service. The API key goes one way (renderer → main → DPAPI);
+   * nothing returned carries it. Budget approval, removal and restart need the user's click in a
+   * MAIN-owned native confirm dialog. Only the app window's top frame may call it.
+   */
+  providerSettings: 'companyos:provider-settings',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -60,6 +68,7 @@ export const ALLOWED_CHANNELS: readonly ChannelName[] = Object.freeze([
   CHANNELS.workspaceCurrent,
   CHANNELS.workspaceSwitch,
   CHANNELS.artifacts,
+  CHANNELS.providerSettings,
 ]);
 
 export const isAllowedChannel = (channel: string): channel is ChannelName =>
@@ -166,5 +175,7 @@ export interface CompanyOsBridge {
     readonly operation: 'preview' | 'open' | 'reveal';
     readonly artifactId: string;
   }): Promise<unknown>;
+  /** UI-AUDIT-3: 设置 → 模型服务 (see CHANNELS.providerSettings). */
+  providerSettings(request: { readonly operation: string; readonly payload?: unknown }): Promise<unknown>;
   channels(): readonly string[];
 }

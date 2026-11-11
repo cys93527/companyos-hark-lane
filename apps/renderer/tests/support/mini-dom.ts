@@ -366,3 +366,30 @@ export const clickableWithText = (root: MiniNode, text: string): MiniElement | n
   const matches = elementsWithText(root, text).filter((element) => element.tagName === 'BUTTON');
   return matches[matches.length - 1] ?? null;
 };
+
+/** UI-AUDIT-3: elements whose attribute `name` contains `text` (support detail moved to tooltips). */
+export const elementsWithAttribute = (root: MiniNode, name: string, text: string): readonly MiniElement[] => {
+  const found: MiniElement[] = [];
+  const walk = (node: MiniNode): void => {
+    if (node instanceof MiniElement && (node.getAttribute(name) ?? '').includes(text)) found.push(node);
+    for (const child of node.childNodes) walk(child);
+  };
+  walk(root);
+  return found;
+};
+
+/** UI-AUDIT-3: the run panel's phase tooltip (目标 · 规划 · 执行 state words), '' when absent. */
+export const phaseTitleOf = (root: MiniNode): string => {
+  const phases = elementsWithAttribute(root, 'class', 'phase').filter((element) => /(^| )phase( |$)/u.test(element.getAttribute('class') ?? ''));
+  return phases.map((element) => element.getAttribute('title') ?? '').join(' | ');
+};
+
+/** UI-AUDIT-3: the composer field's current value (React props), '' when absent. */
+export const goalFieldValue = (root: MiniNode): string => {
+  const field = elementsWithAttribute(root, 'data-testid', 'goal-objective')[0];
+  if (field === undefined) return '';
+  const record = field as unknown as Record<string, unknown>;
+  const key = Object.keys(record).find((name) => name.startsWith('__reactProps$'));
+  const value = key === undefined ? undefined : (record[key] as Record<string, unknown>)['value'];
+  return typeof value === 'string' ? value : '';
+};

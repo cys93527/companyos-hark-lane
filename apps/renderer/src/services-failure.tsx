@@ -29,7 +29,7 @@ export function servicesFailureText(failure: ServicesFailureView): { readonly ti
   if (failure.code === 'MODEL_PROVIDER_REFUSED') {
     return {
       title: '模型提供商未启用',
-      body: `CompanyOS 已启动，但没有启用已配置的模型提供商，暂时无法发送目标。${failure.message === '' || !CJK.test(failure.message) ? '' : `原因：${failure.message}`} 请检查模型配置（开始菜单「CompanyOS 首次配置」或 COS_MODEL_* 环境变量）后重新打开 CompanyOS；数据未被改动。`,
+      body: `CompanyOS 已启动，但没有启用已配置的模型提供商，暂时无法发送目标。${failure.message === '' || !CJK.test(failure.message) ? '' : `原因：${failure.message}`} 请在 设置 → 模型服务 检查服务、API Key 和预算，保存后重启 CompanyOS；数据未被改动。`,
     };
   }
   return {

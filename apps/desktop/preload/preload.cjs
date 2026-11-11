@@ -27,6 +27,7 @@ const ALLOWED_CHANNELS = Object.freeze([
   'companyos:workspace-current',
   'companyos:workspace-switch',
   'companyos:artifacts',
+  'companyos:provider-settings',
 ]);
 
 function invoke(channel, ...args) {
@@ -52,6 +53,8 @@ contextBridge.exposeInMainWorld(
     workspaceSwitch: (root) => invoke('companyos:workspace-switch', root),
     // STAGE 3: bounded artifact actions. The renderer names a canonical artifact id only.
     artifactAction: (request) => invoke('companyos:artifacts', request),
+    // UI-AUDIT-3: 设置 → 模型服务. The key goes one way to main; nothing returned carries it.
+    providerSettings: (request) => invoke('companyos:provider-settings', request),
     channels: () => [...ALLOWED_CHANNELS],
   }),
 );

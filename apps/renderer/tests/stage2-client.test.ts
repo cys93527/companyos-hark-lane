@@ -474,8 +474,9 @@ describe('UX-13..17 runtime panel projections', () => {
         onSelectTask: () => {},
       }),
     );
-    expect(html).toContain('目标 · 执行中');
-    expect(html).toContain('规划 · 待开始');
+    // UI-AUDIT-3: state words in the phase tooltip; the task id in the task row's tooltip.
+    expect(html).toContain('目标 执行中');
+    expect(html).toContain('规划 待开始');
     expect(html).toContain('task_work_1');
   });
 

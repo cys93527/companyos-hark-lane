@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SUBMISSION_INTENT_STORAGE_KEY } from '../src/intent-store.js';
 import { createLocalDraftStore } from '../src/local-draft-store.js';
 import { createSubmissionController, type SubmissionIntentRecord } from '../src/submission-intent.js';
-import { memoryStorage, mountApp, unmountApp, WORKSPACE } from './support/audit-app-harness.js';
+import { memoryStorage, mountApp, unmountApp, waitFor, WORKSPACE } from './support/audit-app-harness.js';
+import { goalFieldValue } from './support/mini-dom.js';
 
 afterEach(() => unmountApp());
 
@@ -140,13 +141,14 @@ describe('AUDIT R6 — a submitted objective is not restored as an unsubmitted d
       storage,
       control: (call) => (call.operation === 'goal.create' ? { ok: true, value: { runId: 'run_goal_7' } } : undefined),
     });
-    expect(app.view.textContent).toContain('已恢复本地未提交草稿');
+    // UI-AUDIT-3: the draft is restored silently into the field.
+    await waitFor(() => goalFieldValue(app.view) === '生成周报');
     await app.click('发送');
     expect(app.callsOf('goal.create')).toHaveLength(1);
     expect(createLocalDraftStore(storage).load('company_default', WORKSPACE)).toBeNull();
     unmountApp();
     const again = await mountApp({ storage, control: () => undefined });
-    expect(again.view.textContent).not.toContain('已恢复本地未提交草稿');
+    expect(goalFieldValue(again.view)).toBe('');
   });
 
   it('App: a different saved draft survives the submission of other text', async () => {

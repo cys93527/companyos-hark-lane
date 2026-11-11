@@ -2204,3 +2204,108 @@ form {
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
+
+/* ------------------------------------------------ UI-AUDIT-3 (2026-11-11) */
+/* Pages without an open Goal have no run panel: the centre takes the width. */
+.shell-v2--no-runtime {
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+}
+/* 设置 → 模型服务: summary, form, restart strip. */
+.settings-service {
+  display: grid;
+  gap: var(--sp-3);
+  font-size: var(--fs-13);
+}
+.settings-service__form {
+  display: grid;
+  gap: var(--sp-3);
+  max-width: 560px;
+}
+.settings-service__mode,
+.settings-policy {
+  display: grid;
+  gap: var(--sp-2);
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.settings-service__custom {
+  display: grid;
+  gap: var(--sp-3);
+}
+.settings-field {
+  display: grid;
+  gap: 4px;
+}
+.settings-field__label {
+  font-size: var(--fs-12);
+  color: var(--ink-2);
+  font-weight: 600;
+}
+.settings-field__hint {
+  font-size: var(--fs-11);
+}
+.settings-radio {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: var(--sp-2);
+  align-items: baseline;
+  cursor: pointer;
+}
+.settings-radio > .muted {
+  grid-column: 2;
+  font-size: var(--fs-11);
+}
+.settings-service__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.settings-service__restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent, #9a3b2a);
+  background: var(--paper-2);
+}
+.settings-service__notice {
+  font-size: var(--fs-12);
+  margin: 0;
+}
+.settings-budget__lines {
+  font-size: var(--fs-12);
+  margin-top: var(--sp-2);
+}
+.settings-delivery {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-12);
+}
+.settings-advanced h4 {
+  margin: var(--sp-3) 0 var(--sp-2);
+}
+/* Composer: only an attached file requirement and the autosave's credential note. */
+.composer__attached {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-11);
+  color: var(--ink-2);
+}
+.composer__draft-note {
+  margin: 0;
+  font-size: var(--fs-11);
+}
+/* Pages without the composer keep only the failure line / notices; empty = no space. */
+.composer-dock--bare {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.composer-dock--bare:has(> *) {
+  padding-top: 8px;
+  padding-bottom: 12px;
+}

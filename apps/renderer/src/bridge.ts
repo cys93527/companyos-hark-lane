@@ -62,6 +62,11 @@ export interface CompanyOsBridge {
     readonly operation: 'preview' | 'open' | 'reveal';
     readonly artifactId: string;
   }): Promise<unknown>;
+  /**
+   * UI-AUDIT-3: 设置 → 模型服务 (one typed channel to the MAIN-process service). The API key
+   * goes one way; nothing this returns carries it.
+   */
+  providerSettings?(request: { readonly operation: string; readonly payload?: unknown }): Promise<unknown>;
   channels(): readonly string[];
 }
 

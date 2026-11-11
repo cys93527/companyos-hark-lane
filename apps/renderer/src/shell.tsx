@@ -9,7 +9,6 @@
  * subscription-usage card anywhere in this shell.
  */
 import { createElement as h, type JSX, type ReactNode } from 'react';
-import { authorityStatusLabel } from './composer.js';
 import { goalStateWord, isGoalLive } from './format.js';
 import { goalModelOptions, MODALITY_WORDS, selectionFailureText, type ModelOptionRow } from './models.js';
 import { budgetGateFor, formatMoney, type BudgetReadiness } from './budget.js';
@@ -144,12 +143,7 @@ export function SidebarView(props: SidebarViewProps): JSX.Element {
     h(
       'div',
       { className: 'sidebar__bottom' },
-      h(
-        'p',
-        { className: 'sidebar__workspace' },
-        h('span', { className: 'sidebar__workspace-label' }, '工作空间'),
-        h('span', { className: 'sidebar__workspace-path mono', title: props.workspaceRoot ?? undefined }, props.workspaceRoot ?? '--'),
-      ),
+      // UI-AUDIT-3: the workspace is shown once, on the composer chip (and in 设置); not repeated here.
       h(
         'button',
         {
@@ -222,6 +216,13 @@ export interface SettingsViewProps {
   readonly onSetModelEnabled?: (option: ModelOptionRow, enabled: boolean) => void;
   /** UI-AUDIT-2: budget readiness (main's budget.readiness); null = unknown. */
   readonly budgetReadiness?: BudgetReadiness | null;
+  /** UI-AUDIT-3: the 模型服务 section (service + key + budget), rendered by App with the bridge. */
+  readonly modelService?: JSX.Element | null;
+  /** UI-AUDIT-3: the default access policy for new Goals (moved out of the composer). */
+  readonly defaultPolicy?: AccessPolicyValue;
+  readonly onSetDefaultPolicy?: (policy: AccessPolicyValue) => void;
+  /** UI-AUDIT-3: the optional file-delivery requirement for the next Goal (moved out of the composer). */
+  readonly deliveryRequirement?: JSX.Element | null;
 }
 
 export interface ReadinessRow {
@@ -238,31 +239,34 @@ const READINESS_LABELS: Readonly<Record<ReadinessRow['state'], string>> = {
   ERROR: '异常',
 };
 
-const SETUP_STEPS = '在开始菜单运行「CompanyOS 首次配置」：选 1 = DeepSeek，或选 2 = 其他 OpenAI 兼容服务（填写服务地址、对话模型 id 和公布的价格），粘贴 API Key，再填写每个目标最多花多少钱。完成后重新打开 CompanyOS。';
+/** UI-AUDIT-3: the one place a budget or key is set is 设置 → 模型服务 (the Start-menu helper still works). */
+const SETUP_STEPS = '在上面的「模型服务」里选择服务、粘贴 API Key 并填写每个目标最多花多少钱，保存后重启 CompanyOS。';
 
-/** UI-AUDIT-2: the budget section's lines (pure; tested without a DOM). */
+/** UI-AUDIT-2/3: the budget section's lines (pure; tested without a DOM). */
 export const budgetSettingsLines = (readiness: BudgetReadiness | null | undefined): readonly string[] => {
   if (readiness === null || readiness === undefined) return ['预算状态读取中…'];
   if (readiness.state === 'NOT_APPROVED') return ['预算为 0：还没有批准每个目标的花费上限，所有付费模型调用都会被拒绝，目标无法执行。'];
   const cap = readiness.capCostMicros === null ? '--' : formatMoney(readiness.capCostMicros, readiness.currency);
   const lines = [
-    `每个目标最多花费 ${cap}${readiness.source === 'provider-setup' ? '（首次配置设置）' : readiness.source === 'operator' ? '（部署方设置）' : ''}`,
+    `每个目标最多花费 ${cap}${readiness.source === 'operator' ? '（部署方设置）' : ''}`,
   ];
-  if (readiness.state === 'RESTART_REQUIRED') lines.push('预算已更新，重新打开 CompanyOS 后生效。');
+  if (readiness.state === 'RESTART_REQUIRED') lines.push('预算已更新，重启 CompanyOS 后生效。');
   for (const entry of readiness.covered) {
     const until = Number.isFinite(entry.validUntilMs) ? new Date(entry.validUntilMs).toLocaleDateString('zh-CN') : '--';
-    lines.push(`适用模型 ${entry.modelId} · ${entry.valid ? `价格确认有效至 ${until}` : '价格确认已过期（重新运行首次配置）'}`);
+    lines.push(`适用模型 ${entry.modelId} · ${entry.valid ? `价格确认有效至 ${until}` : '价格确认已过期（在「模型服务」里重新保存即可）'}`);
   }
   if (readiness.covered.length === 0) lines.push('没有适用的模型：预算对任何模型都不生效。');
   return lines;
 };
 
+export type AccessPolicyValue = 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS';
+
 /**
- * Settings — 工作区 / 模型 / 预算 / 权限与安全 / 运行与诊断 / 关于. No subscription, team or
- * quota advertising; no raw secret storage (the API key and the budget are written by the
- * trusted first-run setup outside the renderer, V1 boundary §2). UI-AUDIT-2: the model
- * section manages WHICH models can run Goals (add from the provider, enable, disable, set
- * default); the composer only ever lists those.
+ * Settings — UI-AUDIT-3 order, most-used first:
+ *   模型服务 (service + API key + per-Goal budget, in-app) · 模型 (which models run Goals) ·
+ *   新目标默认 (access policy, the approval explainer, the optional file-delivery requirement — moved
+ *   out of the composer) · 工作区 · 高级与技术信息 (readiness, versions, paths, IPC) · 关于.
+ * The key is entered in 模型服务 and goes one way to the main process; nothing here shows it.
  */
 export function SettingsView(props: SettingsViewProps): JSX.Element {
   const providerConfigured = props.modelStatus.kind !== 'provider-not-configured';
@@ -280,23 +284,24 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     { className: 'card settings', 'data-testid': 'settings', 'aria-label': '设置' },
     h('h2', null, '设置'),
 
-    h('h3', null, '工作区'),
-    h('dl', { className: 'kv' },
-      h('dt', null, '当前工作空间'),
-      h('dd', null, props.workspaceRoot ?? '未选择'),
-      h('dt', null, '操作'),
-      h('dd', null, h('button', { type: 'button', className: 'btn btn--quiet', onClick: props.onChangeWorkspace }, '更换工作空间')),
+    h('h3', { id: 'settings-budget' }, '模型服务'),
+    h('p', { className: 'muted' }, '执行目标要用到的模型服务、API Key 和每个目标的预算。'),
+    props.modelService ?? null,
+    h(
+      'div',
+      { 'data-testid': 'settings-budget' },
+      h('ul', { className: budgetMissing ? 'settings-budget__lines model-onboarding__warn' : 'settings-budget__lines muted' }, budgetLines.map((line, index) => h('li', { key: `l${String(index)}` }, line))),
+      props.modelService === undefined || props.modelService === null ? h('p', { className: 'muted' }, `设置或修改预算：${SETUP_STEPS}`) : null,
     ),
 
     h('h3', { id: 'settings-models' }, '模型'),
     !providerConfigured
       ? h('div', { 'data-testid': 'settings-models-empty' },
-          h('p', null, '尚未配置模型提供商。'),
-          h('p', { className: 'muted' }, SETUP_STEPS))
+          h('p', { className: 'muted' }, '先在上面的「模型服务」里配置服务和 API Key，重启后这里会列出可用的模型。'))
       : h(
           'div',
           { 'data-testid': 'settings-models' },
-          h('p', { className: 'muted' }, '执行目标只会使用下面这些模型（首次配置的模型，和你在这里添加的对话模型）。'),
+          h('p', { className: 'muted' }, '执行目标只会使用下面这些模型。输入框右下角可以为下一个目标换模型。'),
           goalModels.length === 0
             ? h('p', { className: 'model-onboarding__warn' }, '还没有可以执行目标的对话模型。')
             : h(
@@ -312,7 +317,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                     h(
                       'span',
                       { className: 'settings-models__meta muted' },
-                      [option.configured === true ? '首次配置' : '已添加', gate === null ? null : gate.ok ? '预算已批准' : gate.short, isDefault ? '默认' : null]
+                      [option.configured === true ? '模型服务' : '已添加', gate === null ? null : gate.ok ? '预算已批准' : gate.short, isDefault ? '默认' : null]
                         .filter((part): part is string => part !== null)
                         .join(' · '),
                     ),
@@ -348,7 +353,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 'details',
                 { className: 'settings-models__add', 'data-testid': 'settings-models-add' },
                 h('summary', null, `从模型服务添加对话模型（${String(addable.length)} 个可添加）`),
-                h('p', { className: 'muted' }, '添加后可以在输入框右下角选择。注意：预算只对首次配置时填写的模型生效，其他模型要重新运行首次配置才能使用。'),
+                h('p', { className: 'muted' }, '添加后可以在输入框右下角选择。注意：预算只对「模型服务」里填写的模型生效。'),
                 h(
                   'ul',
                   { className: 'settings-models__list' },
@@ -374,48 +379,61 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             : h(TypedErrorLine, { failure: props.modelFailure, text: selectionFailureText(props.modelFailure) }),
         ),
 
-    h('h3', { id: 'settings-budget' }, '预算'),
+    // UI-AUDIT-3: moved out of the composer (rarely changed per message).
+    h('h3', { id: 'settings-defaults' }, '新目标默认'),
     h(
       'div',
-      { 'data-testid': 'settings-budget' },
-      h('ul', { className: budgetMissing ? 'settings-budget__lines model-onboarding__warn' : 'settings-budget__lines' }, budgetLines.map((line, index) => h('li', { key: `l${String(index)}` }, line))),
-      h('p', { className: 'muted' }, `设置或修改预算：${SETUP_STEPS}`),
-    ),
-
-    h('h3', null, '权限与安全'),
-    h('dl', { className: 'kv' },
-      // AUDIT-R4: the run-state projection is a status, the access policy is chosen per Goal.
-      h('dt', null, '当前目标状态'),
-      h('dd', null, (props.authority ?? null) === null ? '--' : authorityStatusLabel(props.authority!)),
-      h('dt', null, '访问权限'),
-      h('dd', null, '在输入框的「权限」按钮中为下一个目标选择（询问权限 / 只读 / 工作区操作），随目标一起保存并在执行时强制；已创建的目标不能改。'),
-      h('dt', null, '高风险操作'),
-      h('dd', null, '会先停下来等你在目标页面批准或拒绝。'),
-    ),
-
-    h('h3', null, '运行与诊断'),
-    (props.readiness ?? null) === null
-      ? h('p', { className: 'muted' }, '就绪状态读取中…')
-      : h(
-          'dl',
-          { className: 'kv' },
-          (props.readiness ?? []).map((row) =>
-            h('div', { key: row.label, className: 'readiness-row' },
-              h('dt', null, row.label),
-              h('dd', null, `${READINESS_LABELS[row.state]}${row.detail === '' ? '' : ` · ${row.detail}`}`),
-            ),
+      { 'data-testid': 'settings-defaults' },
+      h(
+        'fieldset',
+        { className: 'settings-policy', 'aria-label': '访问权限' },
+        h('legend', { className: 'settings-field__label' }, '访问权限'),
+        ACCESS_POLICY_CHOICES.map((choice) =>
+          h(
+            'label',
+            { key: choice.value, className: 'settings-radio' },
+            h('input', { type: 'radio', name: 'default-policy', checked: (props.defaultPolicy ?? 'ASK_PERMISSION') === choice.value, onChange: () => props.onSetDefaultPolicy?.(choice.value) }),
+            h('span', null, choice.label),
+            h('span', { className: 'muted' }, choice.hint),
           ),
         ),
+        h('p', { className: 'muted' }, '随每个新目标一起保存并在执行时强制；已创建的目标不受影响。高风险操作总会先停下来，等你在目标页面批准或拒绝。'),
+      ),
+      props.deliveryRequirement ?? null,
+    ),
+
+    h('h3', null, '工作区'),
+    h('dl', { className: 'kv' },
+      h('dt', null, '当前工作空间'),
+      h('dd', null, props.workspaceRoot ?? '未选择'),
+      h('dt', null, '操作'),
+      h('dd', null, h('button', { type: 'button', className: 'btn btn--quiet', onClick: props.onChangeWorkspace }, '更换工作空间')),
+    ),
 
     h('h3', null, '关于'),
     h('dl', { className: 'kv' },
       h('dt', null, 'CompanyOS 版本'),
       h('dd', null, props.appVersion),
     ),
+    // UI-AUDIT-3: developer/technical information lives here, collapsed.
     h(
       'details',
-      { className: 'tech' },
-      h('summary', null, '技术信息'),
+      { className: 'tech settings-advanced', 'data-testid': 'settings-advanced' },
+      h('summary', null, '高级与技术信息'),
+      h('h4', { className: 'label' }, '运行与诊断'),
+      (props.readiness ?? null) === null
+        ? h('p', { className: 'muted' }, '就绪状态读取中…')
+        : h(
+            'dl',
+            { className: 'kv' },
+            (props.readiness ?? []).map((row) =>
+              h('div', { key: row.label, className: 'readiness-row' },
+                h('dt', null, row.label),
+                h('dd', null, `${READINESS_LABELS[row.state]}${row.detail === '' ? '' : ` · ${row.detail}`}`),
+              ),
+            ),
+          ),
+      h('h4', { className: 'label' }, '技术信息'),
       h('dl', { className: 'kv' },
         h('dt', null, 'Electron 版本'),
         h('dd', null, props.electronVersion ?? '--'),
@@ -434,6 +452,13 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   );
 }
 
+/** The three policies, same words as the composer used to show (composer.ACCESS_POLICY_OPTIONS). */
+const ACCESS_POLICY_CHOICES: readonly { readonly value: AccessPolicyValue; readonly label: string; readonly hint: string }[] = [
+  { value: 'ASK_PERMISSION', label: '询问权限（推荐）', hint: '自动执行；高风险操作会先停下来等你批准' },
+  { value: 'WORKSPACE_OPERATIONS', label: '工作区操作', hint: '只能修改当前工作空间里的文件；高风险操作仍需你批准' },
+  { value: 'READ_ONLY', label: '只读', hint: '只能读取，任何写入都会被拒绝' },
+];
+
 /* ----------------------------------------------------------------- shell --- */
 
 export interface AppShellViewProps {
@@ -441,7 +466,8 @@ export interface AppShellViewProps {
   readonly sidebar: SidebarViewProps;
   readonly center: JSX.Element;
   readonly composer: JSX.Element | null;
-  readonly runtime: JSX.Element;
+  /** UI-AUDIT-3: null = no run panel on this page (only 对话与任务 has one). */
+  readonly runtime: JSX.Element | null;
   /** UI-PAPER-INK: the 44px bar above the centre (breadcrumb + goal actions). */
   readonly topbar?: JSX.Element | null;
   /** A banner every view shows above its content (e.g. the database failure). */
@@ -453,7 +479,7 @@ export function AppShellView(props: AppShellViewProps): JSX.Element {
   return h(
     'div',
     {
-      className: props.runtimeCollapsed === true ? 'shell-v2 shell-v2--runtime-collapsed' : 'shell-v2',
+      className: props.runtime === null ? 'shell-v2 shell-v2--no-runtime' : props.runtimeCollapsed === true ? 'shell-v2 shell-v2--runtime-collapsed' : 'shell-v2',
       'data-testid': 'app-shell',
       'aria-label': 'CompanyOS',
     },
@@ -469,6 +495,6 @@ export function AppShellView(props: AppShellViewProps): JSX.Element {
       ),
       props.composer,
     ),
-    h('div', { className: 'shell-v2__right' }, props.runtime),
+    props.runtime === null ? null : h('div', { className: 'shell-v2__right' }, props.runtime),
   );
 }

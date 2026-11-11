@@ -112,7 +112,7 @@ describe('budget is known before Send', () => {
     });
     expect(byTestId(app.view, 'composer-blocked')?.textContent).toContain('预算为 0：还没有批准每个目标的花费上限');
     expect(app.button('发送')?.getAttribute('disabled')).not.toBeNull();
-    await app.click('查看预算设置');
+    await app.click('设置预算');
     expect(byTestId(app.view, 'settings-budget')?.textContent).toContain('预算为 0');
   });
   it('the App replaces a pinned image model with the configured chat model and says so', async () => {
@@ -135,7 +135,7 @@ describe('budget is known before Send', () => {
     });
     await settle();
     expect(policies).toMatchObject([{ manualModelKey: 'mdl_chat' }]);
-    expect(app.view.textContent).toContain('原来选择的「acc-image-v8.2-hd」不能执行目标，已改用首次配置的「chat-1」');
+    expect(app.view.textContent).toContain('原来选择的「acc-image-v8.2-hd」不能执行目标，已改用模型服务的「chat-1」');
     expect(app.view.textContent).not.toContain('EXPLICIT_USER_CHOICE');
   });
 });
@@ -196,7 +196,7 @@ describe('failures read as plain Chinese with the fix', () => {
   });
   it('budget rows explain the zero cap instead of the currency', () => {
     const rows = budgetRows({ state: 'ZERO_COST_POLICY', currency: null, cap: null, settled: { calls: 0, tokens: 0, costMicros: 0 }, unknown: { calls: 0, tokens: 0, costMicros: 0 }, held: { calls: 0, tokens: 0, costMicros: 0 }, reconciled: { calls: 0, tokens: 0, costMicros: 0 }, remaining: null, worstCaseCostMicros: 0 });
-    expect(rows.join('\n')).toContain('CompanyOS 首次配置');
+    expect(rows.join('\n')).toContain('设置 → 模型服务');
   });
   it('a typed failure line shows plain text; the code is behind 详情', () => {
     const html = renderToStaticMarkup(h(TypedErrorLine, { failure: { code: 'IPC_FAILED', message: 'socket hang up' } }));
@@ -218,8 +218,8 @@ describe('settings manage which models can run Goals, and show the budget', () =
     expect(html).toContain('qwen-max');
     expect(html).toContain('不能执行目标的模型（3 个');
     expect(html).toContain('acc-image-v8.2-hd · 图像模型');
-    expect(html).toContain('每个目标最多花费 ¥5.00（首次配置设置）');
-    expect(html).toContain('2 = 其他 OpenAI 兼容服务');
+    expect(html).toContain('每个目标最多花费 ¥5.00');
+    expect(html).toContain('模型服务'); // UI-AUDIT-3: set in the app, not the Start-menu menu
   });
   it('budget lines: none approved says 预算为 0', () => {
     expect(budgetSettingsLines(NOT_APPROVED)[0]).toContain('预算为 0');

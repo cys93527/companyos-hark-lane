@@ -323,7 +323,15 @@ describe('BB-001 — the production Desktop executor wiring', () => {
     const providerOps = CONTROL_PLANE_OPERATIONS.filter((op) => /provider/iu.test(op));
     expect(providerOps).toEqual([]);
     const preload = await import('node:fs').then((fs) => fs.readFileSync('apps/desktop/preload/preload.cjs', 'utf8'));
-    expect(/provider/iu.test(preload)).toBe(false); // no provider surface on the bridge
+    // UI-AUDIT-3 CONTRACT CHANGE (user approval 2026-11-11 "需要"): the bridge has ONE provider surface,
+    // 设置 → 模型服务 (companyos:provider-settings). It writes the user's setup files through a main-owned
+    // confirm and takes effect only at the next start; it never selects or routes a provider at run time
+    // (tests/hark/ui-audit-3-provider-settings.test.ts pins the boundary).
+    const providerLines = preload.split('\n').filter((line) => /provider/iu.test(line) && !/^\s*(?:\/\/|\*)/u.test(line));
+    expect(providerLines.map((line) => line.trim())).toEqual([
+      "'companyos:provider-settings',",
+      "providerSettings: (request) => invoke('companyos:provider-settings', request),",
+    ]);
   });
 
   it('a provider OUTAGE (adapter fails) settles the task truthfully FAILED with intact canonical state', async () => {

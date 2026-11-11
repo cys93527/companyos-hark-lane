@@ -25,7 +25,6 @@ import {
 } from './bridge.js';
 import { ChatView, projectConversation } from './chat.js';
 import {
-  AuthorityPopover,
   ACCESS_POLICY_OPTIONS,
   ComposerView,
   ModelSelectorView,
@@ -50,7 +49,9 @@ import {
 } from './models.js';
 import { createSubmissionController, type SubmissionController, type SubmissionResult } from './submission-intent.js';
 import { createSubmissionIntentStore } from './intent-store.js';
-import { LocalDraftControls } from './local-draft-controls.js';
+import { DraftAutosave } from './local-draft-controls.js';
+import { ModelServiceSection, providerSettingsRequestOf } from './provider-settings-view.js';
+import { readDefaultPolicy, writeDefaultPolicy, type NewGoalPolicy } from './new-goal-defaults.js';
 import { browserDraftStorage, createLocalDraftStore } from './local-draft-store.js';
 import { fileDeliveryConstraints } from './file-delivery-input.js';
 import {
@@ -183,7 +184,7 @@ export function App() {
   // UI-AUDIT-2: budget readiness BEFORE a Goal is sent, and the last model change in plain words.
   const [budgetReadiness, setBudgetReadiness] = useState<BudgetReadiness | null>(null);
   const [modelNotice, setModelNotice] = useState<string | null>(null);
-  const [settingsFocus, setSettingsFocus] = useState<{ readonly section: 'budget' | 'models'; readonly at: number } | null>(null);
+  const [settingsFocus, setSettingsFocus] = useState<{ readonly section: 'budget' | 'models' | 'defaults'; readonly at: number } | null>(null);
   const [pendingIntent, setPendingIntent] = useState(false);
   const [pendingObjective, setPendingObjective] = useState<string | null>(null);
   const [popover, setPopover] = useState<'model' | 'authority' | 'runtime' | null>(null);
@@ -206,9 +207,13 @@ export function App() {
   // STAGE 4 — the user's access-policy selection for the NEXT goal. Display state only:
   // the authoritative value is bound canonically at goal.create and read back through
   // goal.workspace. Nothing is persisted in the renderer.
-  const [selectedAccessPolicy, setSelectedAccessPolicy] = useState<
-    'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS'
-  >('ASK_PERMISSION');
+  // UI-AUDIT-3: chosen in 设置 → 新目标默认 and remembered on this machine (a UI preference;
+  // the canonical policy is still bound at goal.create and read back from the Goal).
+  const [selectedAccessPolicy, setSelectedAccessPolicyState] = useState<NewGoalPolicy>(() => readDefaultPolicy(browserDraftStorage()));
+  const setSelectedAccessPolicy = useCallback((policy: NewGoalPolicy) => {
+    setSelectedAccessPolicyState(policy);
+    writeDefaultPolicy(browserDraftStorage(), policy);
+  }, []);
   const [pendingDecisions, setPendingDecisions] = useState<readonly PendingDecision[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
   // UI-AUDIT-06: single-flight approval decision (two quick clicks never send two decisions).
@@ -251,6 +256,11 @@ export function App() {
       bridge !== null && typeof bridge.controlPlaneRequest === 'function'
         ? { controlPlaneRequest: (request) => safeRequest(() => (bridge.controlPlaneRequest as NonNullable<typeof bridge.controlPlaneRequest>)(request)) }
         : null,
+    [bridge],
+  );
+  // UI-AUDIT-3: 设置 → 模型服务 (the key goes one way to main; nothing returned carries it).
+  const providerSettingsRequest = useMemo(
+    () => providerSettingsRequestOf(bridge !== null && typeof bridge.providerSettings === 'function' ? (request) => (bridge.providerSettings as NonNullable<typeof bridge.providerSettings>)(request) : undefined),
     [bridge],
   );
   const workspaceSelection: WorkspaceSelectionBridge | null = useMemo(
@@ -368,7 +378,7 @@ export function App() {
     // UI-AUDIT-2: a pinned model that cannot run Goals (chosen from the old full-catalogue list)
     // is replaced by the configured chat model — said once, in plain words.
     const previous = modelStatus.kind === 'selected' ? modelOptions.find((option) => option.modelKey === modelStatus.modelKey) ?? null : null;
-    void chooseModel(sole, previous === null ? undefined : `原来选择的「${previous.displayName}」不能执行目标，已改用首次配置的「${sole.displayName}」。`);
+    void chooseModel(sole, previous === null ? undefined : `原来选择的「${previous.displayName}」不能执行目标，已改用模型服务的「${sole.displayName}」。`);
   }, [modelOptions, modelStatus, modelBusy, chooseModel]);
 
   /** UI-AUDIT-2: Settings → 添加 (register only) / 启用 / 停用; each re-reads main's truth. */
@@ -1366,6 +1376,19 @@ export function App() {
     onRemedy: openRemedy,
   });
 
+  // UI-AUDIT-3: the optional file-delivery requirement for the NEXT Goal lives in 设置 → 新目标默认
+  // (it is rarely used and needs an exact path + content); the composer only shows that one is attached.
+  const deliveryFields = h(
+    'details',
+    { className: 'composer__details settings-delivery', open: deliveryPath.trim() !== '' || deliveryText !== '' ? true : undefined },
+    h('summary', null, deliveryPath.trim() === '' && deliveryText === '' ? '下一个目标的文件交付要求（可选，高级）' : '下一个目标的文件交付要求（已填写）'),
+    h('fieldset', { disabled: submissionBusy, 'data-testid': 'file-delivery-requirement', 'aria-label': '文件交付要求' },
+      h('legend', { className: 'sr-only' }, '文件交付要求（可选）'),
+      h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'data-testid': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
+      h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'data-testid': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
+      h('p', { className: 'muted' }, '只随下一个发送的目标提交：目标完成时，工作空间里必须有这个文件且内容逐字一致。发送后自动清空。')),
+  );
+
   const center =
     view === 'settings'
       ? h(SettingsView, {
@@ -1391,6 +1414,16 @@ export function App() {
           onAddModel: (option: ModelOptionRow) => void addModel(option),
           onSetModelEnabled: (option: ModelOptionRow, enabled: boolean) => void changeModelEnabled(option, enabled),
           budgetReadiness,
+          modelService: h(ModelServiceSection, {
+            request: providerSettingsRequest,
+            onChanged: () => {
+              void refreshModels().catch(() => undefined);
+              if (workflow !== null) void loadBudgetReadiness(workflow).then(setBudgetReadiness).catch(() => undefined);
+            },
+          }),
+          defaultPolicy: selectedAccessPolicy,
+          onSetDefaultPolicy: setSelectedAccessPolicy,
+          deliveryRequirement: deliveryFields,
         })
       : view === 'tools'
         ? h(ToolsSurfaceView, { rows: toolRows, failure: surfaceFailure })
@@ -1444,13 +1477,13 @@ export function App() {
   // UI-AUDIT-2: every reason Send is unavailable, in order, each with its one fix — so a Goal
   // that would certainly be refused (no budget, non-chat model) is never sent.
   const openModelPicker = { label: '选择对话模型', onClick: () => setPopover('model') };
-  const openBudgetSettings = { label: '查看预算设置', onClick: () => openRemedy('budget') };
+  const openBudgetSettings = { label: '设置预算', onClick: () => openRemedy('budget') };
   const blocked: { readonly reason: string; readonly action: { readonly label: string; readonly onClick: () => void } | null } | null = databaseFailure !== null
     ? { reason: '本地数据库不可用，暂时不能创建目标（见上方说明）。', action: null }
     : modelStatus.kind === 'provider-not-configured'
-      ? { reason: '尚未配置模型提供商：请在开始菜单运行「CompanyOS 首次配置」，完成后重新打开 CompanyOS。', action: { label: '查看设置', onClick: () => openRemedy('budget') } }
+      ? { reason: '还没有配置模型服务：在 设置 → 模型服务 里填写 API Key 和预算。', action: { label: '去设置', onClick: () => openRemedy('budget') } }
       : modelOptions.length > 0 && usableModels.length === 0
-        ? { reason: '还没有可以执行目标的对话模型：请在设置里添加对话模型，或重新运行「CompanyOS 首次配置」。', action: { label: '管理模型', onClick: () => { setView('settings'); setSettingsFocus({ section: 'models', at: Date.now() }); } } }
+        ? { reason: '还没有可以执行目标的对话模型：请在设置里添加对话模型，或在「模型服务」里换一个对话模型。', action: { label: '管理模型', onClick: () => { setView('settings'); setSettingsFocus({ section: 'models', at: Date.now() }); } } }
         : selectedUnusable !== null
           ? { reason: `${selectedUnusable}。请改选对话模型。`, action: openModelPicker }
           : modelStatus.kind !== 'selected'
@@ -1459,6 +1492,7 @@ export function App() {
               ? { reason: budgetGate.text, action: budgetGate.kind === 'NOT_COVERED' && usableModels.length > 1 ? openModelPicker : openBudgetSettings }
               : null;
   const blockedReason = blocked?.reason ?? null;
+  const composerVisible = view === 'home' || view === 'chat';
 
   return h(AppShellView, {
     view,
@@ -1491,9 +1525,13 @@ export function App() {
       },
     },
     center,
+    // UI-AUDIT-3: the composer belongs to 首页 and 对话与任务; the other pages are not places to send from.
+    // UI-AUDIT-3: the composer belongs to 首页 and 对话与任务 only; the dock itself stays on every
+    // view so an action failure (e.g. a refused workspace switch in 设置) is still visible, and the
+    // draft autosave stays mounted while the user is elsewhere.
     composer: h(
       'div',
-      { className: 'composer-dock' },
+      { className: composerVisible ? 'composer-dock' : 'composer-dock composer-dock--bare' },
       h(ActionFailureLine, {
         failures: [
           submissionFailure,
@@ -1504,7 +1542,7 @@ export function App() {
       modelNotice === null
         ? null
         : h('p', { className: 'model-notice', role: 'status', 'data-testid': 'model-notice' }, modelNotice),
-      h(ComposerView, {
+      !composerVisible ? null : h(ComposerView, {
         draft,
         ready: modelReady && workspaceRoot !== null && !pendingIntent && databaseFailure === null,
         busy: submissionBusy,
@@ -1519,32 +1557,11 @@ export function App() {
         onDraftChange: setDraft,
         onSubmit: () => void sendGoal(),
         onChangeWorkspace: changeWorkspace,
-        onOpenTools: () => setView('tools'),
-        onOpenAuthority: () => setPopover(popover === 'authority' ? null : 'authority'),
         onOpenModel: () => setPopover(popover === 'model' ? null : 'model'),
-        authorityOpen: popover === 'authority',
         modelOpen: popover === 'model',
         blockedReason,
         blockedAction: blocked?.action ?? null,
-        footHint: openGoalRunId !== null && view === 'chat'
-          ? '发送会创建一个新目标，当前目标不受影响；高风险操作会停在批准边界，由你决定'
-          : '高风险操作会停在批准边界，由你决定',
-        sessionCost: openGoalRunId === null ? null : modelView.cost,
         popovers: [
-          h(AuthorityPopover, {
-            key: 'authority',
-            authority,
-            open: popover === 'authority',
-            selectedPolicy: selectedAccessPolicy,
-            onSelectPolicy: (policy) => {
-              setSelectedAccessPolicy(policy);
-              setPopover(null);
-            },
-            onClose: () => setPopover(null),
-            // AUDIT-R4: only the open Goal's canonical read-back - never a default when it is unknown.
-            effectiveGoalPolicy:
-              ACCESS_POLICY_OPTIONS.find((option) => option.value === runtimeWorkspace?.accessPolicy)?.label ?? null,
-          }),
           h(ModelSelectorView, {
             key: 'model',
             triggerless: true,
@@ -1566,24 +1583,26 @@ export function App() {
             },
           }),
         ],
+        // UI-AUDIT-3: only what the user needs to see — a file requirement that WILL go with this
+        // Goal (edit/clear in 设置), and the silent draft autosave's one actionable note.
         extras: h(
           'div',
           { className: 'composer__extras' },
-          h(
-            'details',
-            { className: 'composer__details' },
-            h('summary', null, deliveryPath.trim() === '' && deliveryText === '' ? '文件交付要求（可选）' : '文件交付要求（已填写）'),
-            h('fieldset', { disabled: submissionBusy, 'data-testid': 'file-delivery-requirement', 'aria-label': '文件交付要求' },
-              h('legend', { className: 'sr-only' }, '文件交付要求（可选）'),
-              h('label', null, '相对文件路径', h('input', { value: deliveryPath, 'data-testid': 'delivery-path', onChange: (e: { target: { value: string } }) => setDeliveryPath(e.target.value) })),
-              h('label', null, '期望内容（UTF-8，逐字匹配）', h('textarea', { value: deliveryText, 'data-testid': 'delivery-content', onChange: (e: { target: { value: string } }) => setDeliveryText(e.target.value) })),
-              h('p', { className: 'muted' }, '文件要求仅随明确提交发送，不包含在本地文字草稿中。')),
-          ),
-          h(LocalDraftControls, { companyId: COMPANY_ID, workspaceRoot, objective: draft, busy: submissionBusy, onRestore: setDraft }),
+          deliveryPath.trim() === '' && deliveryText === ''
+            ? null
+            : h(
+                'p',
+                { className: 'composer__attached', 'data-testid': 'composer-delivery-attached' },
+                h('span', null, `本目标附带文件交付要求：${deliveryPath.trim() === '' ? '（未填路径）' : deliveryPath.trim()}`),
+                h('button', { type: 'button', className: 'btn btn--text', disabled: submissionBusy, onClick: () => { setView('settings'); setSettingsFocus({ section: 'defaults', at: Date.now() }); } }, '修改'),
+                h('button', { type: 'button', className: 'btn btn--text', disabled: submissionBusy, onClick: () => { setDeliveryPath(''); setDeliveryText(''); } }, '清除'),
+              ),
         ),
       }),
+      h(DraftAutosave, { companyId: COMPANY_ID, workspaceRoot, objective: draft, onRestore: setDraft }),
     ),
-    runtime: h(RuntimePanelView, {
+    // UI-AUDIT-3: the run panel describes an open Goal; other pages get the full width.
+    runtime: view !== 'chat' ? null : h(RuntimePanelView, {
       open: true,
       expanded: runtimeExpanded,
       tab: runtimeTab,

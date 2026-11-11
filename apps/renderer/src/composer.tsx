@@ -1,14 +1,13 @@
 /**
  * STAGE 2 — the ChatGPT-like composer, the model selector and the model runtime popover.
  *
- * The composer carries FOUR affordances and nothing else:
- *   [ + ]            change the workspace (the ONE operational context a Goal runs in)
- *   [ 访问权限 ▾ ]   the CURRENT EFFECTIVE authority, read from canonical run state —
- *                    display-only. CompanyOS Authority owns permission truth; the renderer
- *                    never invents, stores or mutates it.
- *   [ 工具 ]         the canonical tool registry (one bounded invocation per request)
+ * UI-AUDIT-3: the composer carries only what a user needs per message:
+ *   [ workspace ]    change the workspace (the ONE operational context a Goal runs in)
  *   [ model ▾ ]      the canonical COMPANY model selection
  *   [ send ]         ONE submission intent (see submission-intent.ts)
+ * The access policy is a 设置 → 新目标默认 choice (bound canonically at goal.create), 工具 is a
+ * sidebar page, the file-delivery requirement and the approval explainer live in 设置, and the
+ * draft is autosaved (local-draft-controls.tsx).
  *
  * No permanent token card lives in the composer: telemetry belongs in the model popover,
  * runtime detail belongs in the collapsible runtime panel.
@@ -146,7 +145,7 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
                 'div',
                 { className: 'popover__empty' },
                 h('p', { className: 'muted' }, '尚未配置模型提供商'),
-                h('p', { className: 'muted' }, '在开始菜单运行「CompanyOS 首次配置」，完成后重新打开 CompanyOS。'),
+                h('p', { className: 'muted' }, '在 设置 → 模型服务 里填写 API Key 和预算。'),
                 h('button', { type: 'button', className: 'btn btn--quiet', onClick: props.onOpenSettings }, '前往设置'),
               )
             : choices.length === 0
@@ -181,7 +180,7 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
                             onClick: () => props.onChoose(option),
                           },
                           h('span', null, option.displayName),
-                          h('span', { className: note === null ? 'muted' : 'popover__warn' }, note ?? (option.configured === true ? '首次配置' : '已添加')),
+                          h('span', { className: note === null ? 'muted' : 'popover__warn' }, note ?? (option.configured === true ? '模型服务' : '已添加')),
                         ),
                       );
                     }),
@@ -265,16 +264,20 @@ export interface ComposerViewProps {
   readonly onDraftChange: (value: string) => void;
   readonly onSubmit: () => void;
   readonly onChangeWorkspace: () => void;
-  readonly onOpenTools: () => void;
-  readonly onOpenAuthority: () => void;
+  /** UI-AUDIT-3: no longer rendered (工具 is in the sidebar; 权限 is a 设置 default). Kept optional for callers. */
+  readonly onOpenTools?: () => void;
+  readonly onOpenAuthority?: () => void;
   readonly onOpenModel: () => void;
-  readonly authorityOpen: boolean;
+  readonly authorityOpen?: boolean;
   readonly modelOpen: boolean;
   /** UI-PAPER-INK: why Send is unavailable (database down, no model, …), shown under the field. */
   readonly blockedReason?: string | null;
   /** UI-AUDIT-2: the one fix for the blocked reason (e.g. 去设置预算 / 改用对话模型). */
   readonly blockedAction?: { readonly label: string; readonly onClick: () => void } | null;
-  /** The line under the field: the approval-boundary hint and the session cost (`--` when unknown). */
+  /**
+   * The line under the field. UI-AUDIT-3: absent by default — the approval-boundary explainer
+   * moved to 设置 → 新目标默认 and the session cost is on the Goal's 运行 panel.
+   */
   readonly footHint?: string | null;
   readonly sessionCost?: string | null;
   /** Popovers anchored to the composer (model selector, access policy). */
@@ -362,15 +365,7 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
           { type: 'button', className: 'composer__chip composer__chip--mono', onClick: props.onChangeWorkspace, title: props.workspaceLabel === null ? '选择工作空间' : `切换工作空间（当前 ${props.workspaceLabel}）`, 'aria-label': '切换工作空间' },
           props.workspaceLabel ?? '选择工作空间',
         ),
-        h('span', { className: 'composer__sep', 'aria-hidden': true }),
-        h(
-          'button',
-          { type: 'button', className: 'composer__chip', onClick: props.onOpenAuthority, 'aria-expanded': props.authorityOpen, 'aria-haspopup': 'dialog', title: '下一个目标的访问权限' },
-          h('span', { className: 'composer__chip-k' }, '权限'),
-          `${accessPolicyLabel(props.nextPolicy) ?? '访问权限'} ▾`,
-        ),
-        h('span', { className: 'composer__sep', 'aria-hidden': true }),
-        h('button', { type: 'button', className: 'composer__chip', onClick: props.onOpenTools }, '工具'),
+        // UI-AUDIT-3: 权限 (a 设置 default now) and 工具 (only a link to the sidebar's 工具) left the composer.
         h(
           'span',
           { className: 'composer__right' },
@@ -405,14 +400,16 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
             ? null
             : h('button', { type: 'button', className: 'btn btn--text composer__blocked-action', onClick: props.blockedAction.onClick }, props.blockedAction.label),
         ),
-    h(
-      'div',
-      { className: 'composer__foot' },
-      h('span', null, props.footHint ?? '发送会创建一个新目标；高风险操作会停在批准边界，由你决定'),
-      props.sessionCost === undefined || props.sessionCost === null
-        ? null
-        : h('span', { className: 'num', 'data-testid': 'session-cost' }, `会话费用 ${props.sessionCost}`),
-    ),
+    (props.footHint ?? null) === null && (props.sessionCost ?? null) === null
+      ? null
+      : h(
+          'div',
+          { className: 'composer__foot' },
+          h('span', null, props.footHint ?? ''),
+          props.sessionCost === undefined || props.sessionCost === null
+            ? null
+            : h('span', { className: 'num', 'data-testid': 'session-cost' }, `会话费用 ${props.sessionCost}`),
+        ),
     props.extras ?? null,
   );
 }

@@ -370,7 +370,7 @@ export function ModelOnboardingView(props: ModelOnboardingViewProps): JSX.Elemen
       h(
         'p',
         { className: 'muted' },
-        '在开始菜单运行「CompanyOS 首次配置」，填写模型服务、API Key 和每个目标的预算，完成后重新打开 CompanyOS。',
+        '在 设置 → 模型服务 里选择服务、粘贴 API Key 并填写每个目标的预算，保存后重启 CompanyOS。',
       ),
       h('button', { type: 'button', className: 'btn btn--quiet', onClick: props.onOpenSettings }, '查看设置'),
       props.failure === null ? null : h(TypedErrorLine, { failure: props.failure, text: selectionFailureText(props.failure) }),
@@ -408,7 +408,7 @@ export function ModelOnboardingView(props: ModelOnboardingViewProps): JSX.Elemen
                   'span',
                   { className: 'model-option__meta' },
                   [
-                    option.configured === true ? '首次配置的模型' : '已添加',
+                    option.configured === true ? '模型服务的模型' : '已添加',
                     option.contextWindow === null ? null : `${option.contextWindow.toLocaleString('en-US')} tokens`,
                   ]
                     .filter((part): part is string => part !== null)

@@ -117,7 +117,7 @@ export const budgetRows = (view: GoalBudgetView): readonly string[] => {
   if (view.held.calls > 0) rows.push(`进行中预留 · ${String(view.held.calls)} 次 · 最多 ${m(view.held.costMicros)}`);
   if (view.remaining !== null && !zero) rows.push(`最坏情况下剩余 · ${m(view.remaining.costMicros)} · ${String(view.remaining.calls)} 次`);
   // UI-AUDIT-2: a zero cap is the fail-closed default (no budget approved), not a currency question.
-  if (view.state === 'ZERO_COST_POLICY') rows.push('怎么解决 · 在开始菜单运行「CompanyOS 首次配置」设置每个目标的预算，然后重新打开 CompanyOS');
+  if (view.state === 'ZERO_COST_POLICY') rows.push('怎么解决 · 在 设置 → 模型服务 里填写每个目标的预算，保存后重启 CompanyOS');
   else if (view.currency === null) rows.push('未声明币种，金额按原始单位显示');
   return rows;
 };
@@ -165,7 +165,8 @@ export type BudgetGate =
   | { readonly ok: true; readonly capText: string | null }
   | { readonly ok: false; readonly kind: 'NOT_APPROVED' | 'NOT_COVERED' | 'EXPIRED' | 'RESTART_REQUIRED'; readonly text: string; readonly short: string };
 
-const SETUP_HINT = '在开始菜单运行「CompanyOS 首次配置」设置每个目标的预算，完成后重新打开 CompanyOS。';
+/** UI-AUDIT-3: the budget is set in the app (设置 → 模型服务); the Start-menu helper still works. */
+const SETUP_HINT = '点「设置预算」，在 设置 → 模型服务 里填写每个目标最多花多少钱，保存后重启 CompanyOS。';
 
 /** Can a Goal on this (provider, model) spend money at all? `null` readiness = unknown = not blocked. */
 export const budgetGateFor = (
@@ -178,13 +179,13 @@ export const budgetGateFor = (
   }
   const match = readiness.covered.filter((entry) => entry.providerId === model.providerId && entry.modelId === model.providerModelId);
   if (match.length === 0) {
-    return { ok: false, kind: 'NOT_COVERED', short: '未批准预算', text: `「${model.displayName}」没有批准的预算（预算只对首次配置时填写的模型生效），发送后付费调用会被拒绝。请改用已批准预算的模型，或${SETUP_HINT}` };
+    return { ok: false, kind: 'NOT_COVERED', short: '未批准预算', text: `「${model.displayName}」没有批准的预算（预算只对「模型服务」里填写的模型生效），发送后付费调用会被拒绝。请改用已批准预算的模型，或${SETUP_HINT}` };
   }
   if (!match.some((entry) => entry.valid)) {
     return { ok: false, kind: 'EXPIRED', short: '预算已过期', text: `「${model.displayName}」的价格确认已过期（30 天有效），付费调用会被拒绝。${SETUP_HINT}` };
   }
   if (readiness.state === 'RESTART_REQUIRED') {
-    return { ok: false, kind: 'RESTART_REQUIRED', short: '重启后生效', text: '预算已设置，但要重新打开 CompanyOS 后才生效。' };
+    return { ok: false, kind: 'RESTART_REQUIRED', short: '重启后生效', text: '预算已设置，重启 CompanyOS 后生效（设置 → 模型服务 →「立即重启」）。' };
   }
   return { ok: true, capText: readiness.capCostMicros === null ? null : `每个目标上限 ${formatMoney(readiness.capCostMicros, readiness.currency)}` };
 };

@@ -308,7 +308,8 @@ describe('S3-12..15 settings + readiness', () => {
         onChangeWorkspace: () => {},
       }),
     );
-    for (const section of ['工作区', '模型', '预算', '权限与安全', '运行与诊断', '关于']) {
+    // UI-AUDIT-3 order: 模型服务 (key + budget) · 模型 · 新目标默认 (policy) · 工作区 · 关于 · 高级与技术信息 (运行与诊断).
+    for (const section of ['模型服务', '模型', '预算', '新目标默认', '工作区', '运行与诊断', '关于', '高级与技术信息']) {
       expect(html).toContain(section);
     }
     for (const forbidden of ['Team', 'Pro badge', 'quota', 'subscription', '订阅', '任务配额']) {
@@ -333,10 +334,9 @@ describe('S3-12..15 settings + readiness', () => {
     expect(html.toLowerCase()).not.toContain('api_key');
     expect(html).not.toContain('COS_MODEL_API_KEY');
     expect(html).not.toContain('NOT CONFIGURED"');
-    // Authentication status is a label, never a value (UI-AUDIT-14: in Chinese, like every label).
-    expect(html).toContain('未配置');
-    // UI-AUDIT-13: provisioning points at the real trusted helper (H17a), not a pending placeholder.
-    expect(html).toContain('CompanyOS 首次配置');
+    // UI-AUDIT-3: provisioning points at the in-app 模型服务 section (the key goes to main only).
+    expect(html).toContain('模型服务');
+    expect(html).toContain('API Key');
   });
 
   it('S3-14 provider readiness renders safely (READY / NOT_CONFIGURED / DEGRADED labels)', () => {

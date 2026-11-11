@@ -437,12 +437,12 @@ describe('UI-AUDIT-25 composer stays focusable while sending', () => {
 });
 
 describe('UI-AUDIT-13/14 settings text', () => {
-  it('names 「CompanyOS 首次配置」 and renders unknown values as --', () => {
+  it('points at 设置 → 模型服务 (UI-AUDIT-3) and renders unknown values as --', () => {
     const html = renderToStaticMarkup(h(SettingsView, {
       workspaceRoot: null, modelStatus: { kind: 'provider-not-configured' }, catalogueCount: 0, registeredCount: 0,
       appVersion: '0.1.2', databasePath: null, schemaVersion: null, allowedChannels: [],
     }));
-    expect(html).toContain('「CompanyOS 首次配置」');
+    expect(html).toContain('模型服务');
     expect(html).toContain('<dd>--</dd>');
     expect(html).not.toMatch(/<dd>-<\/dd>|<dd>unknown<\/dd>|<dd>none<\/dd>/iu);
   });
@@ -467,6 +467,8 @@ describe('UI-AUDIT-13/15/19 goal page in the app', () => {
 
   it('a running Goal: right panel open (aria-expanded) and its result reads 进行中, never 未交付; no model card', async () => {
     const app = await openGoal(true);
+    // UI-AUDIT-3: the result row lives on the 产出 tab (it was shown twice).
+    await app.click('产出');
     expect(app.view.textContent).toContain('进行中');
     expect(app.view.textContent).not.toContain('未交付');
     const collapse = (function find(node: MiniElement): MiniElement | null {

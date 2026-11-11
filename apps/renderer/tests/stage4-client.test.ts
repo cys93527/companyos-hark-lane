@@ -205,12 +205,15 @@ describe('S4-06..09 selector behavior + restart display', () => {
     expect(intentStore).toContain("SUBMISSION_ACCESS_POLICIES.includes(record['accessPolicy'] as SubmissionAccessPolicy)");
   });
 
-  it('S4-04/S4-09b restart rehydration is read-back only (no client persistence of policy)', () => {
-    // goal.workspace read-back is the rehydration path; the renderer holds a display
-    // selection defaulting to the canonical ASK_PERMISSION.
+  it('S4-04/S4-09b restart rehydration of a Goal policy is read-back only; only the NEW-Goal default is a local preference', () => {
+    // goal.workspace read-back is the rehydration path for every existing Goal. UI-AUDIT-3: the
+    // policy the NEXT Goal requests is the user's 设置 default (new-goal-defaults.ts), falling back
+    // to the canonical ASK_PERMISSION; it is bound canonically at goal.create, never trusted after.
     const sources = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-    expect(sources).toContain("useState<\n    'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS'\n  >('ASK_PERMISSION')");
-    expect(sources).toContain('runtimeWorkspace?.accessPolicy');
+    expect(sources).toContain('useState<NewGoalPolicy>(() => readDefaultPolicy(browserDraftStorage()))');
+    expect(sources).toContain('openWorkspace?.accessPolicy'); // the open Goal's policy, read back (Goal page scope note)
+    const defaults = readFileSync(new URL('../src/new-goal-defaults.ts', import.meta.url), 'utf8');
+    expect(defaults).toContain("?? 'ASK_PERMISSION'");
   });
 });
 

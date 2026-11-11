@@ -52,9 +52,11 @@ describe('AUDIT R11/R12/R13', () => {
       storage,
       control: (call) => (call.operation === 'goal.create' ? { ok: true, value: { runId: 'run_goal_r12' } } : undefined),
     });
+    // UI-AUDIT-3: the requirement is edited in 设置 → 新目标默认 (by test id: 设置 has other labelled inputs).
     const fieldInLabel = (tag: string): MiniElement => {
+      const testId = tag === 'INPUT' ? 'delivery-path' : 'delivery-content';
       const walk = (node: MiniElement): MiniElement | null => {
-        if (node.tagName === tag && (node.parentNode as MiniElement | null)?.tagName === 'LABEL') return node;
+        if (node.tagName === tag && node.getAttribute('data-testid') === testId) return node;
         for (const child of node.childNodes) {
           if ('tagName' in (child as object)) {
             const hit = walk(child as MiniElement);
@@ -73,10 +75,17 @@ describe('AUDIT R11/R12/R13', () => {
         onChange({ target: { value } });
       });
     };
+    await app.click('设置');
     await setValue(fieldInLabel('INPUT'), 'out/result.txt');
     await setValue(fieldInLabel('TEXTAREA'), 'hello');
+    await app.click('首页');
+    // the composer shows that a requirement rides on this Goal
+    expect(app.view.textContent).toContain('本目标附带文件交付要求：out/result.txt');
     await app.click('发送');
-    await waitFor(() => app.callsOf('goal.create').length > 0 && reactProps(fieldInLabel('INPUT'))['value'] === '');
+    await waitFor(() => app.callsOf('goal.create').length > 0);
+    expect(app.view.textContent).not.toContain('本目标附带文件交付要求');
+    await app.click('设置');
+    await waitFor(() => reactProps(fieldInLabel('INPUT'))['value'] === '');
     const first = app.callsOf('goal.create')[0];
     expect(JSON.stringify(first?.payload['structured'] ?? null)).toContain('out/result.txt');
     expect(reactProps(fieldInLabel('INPUT'))['value']).toBe('');

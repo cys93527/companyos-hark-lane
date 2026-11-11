@@ -3,7 +3,7 @@ import { act, createElement as h, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App.js';
-import { LocalDraftControls } from '../src/local-draft-controls.js';
+import { DraftAutosave, DRAFT_CREDENTIAL_NOTE } from '../src/local-draft-controls.js';
 import { createLocalDraftStore } from '../src/local-draft-store.js';
 import { ComposerView } from '../src/composer.js';
 import { createSubmissionController, type SubmissionIntentRecord } from '../src/submission-intent.js';
@@ -13,7 +13,7 @@ import { createContainer, removeContainer, clickableWithText, dispatchMiniEvent,
 
 const memory = () => {
   const data = new Map<string, string>();
-  return { data, getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); } };
+  return { data, getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
 };
 const workspace = 'F:\\isolated\\workspace';
 let root: Root | null = null;
@@ -69,55 +69,80 @@ describe('LOCAL_DRAFT bounded non-authoritative storage', () => {
   });
 });
 
-const harness = (submit = vi.fn(async () => {}), scope = workspace) => {
+const tick = async (ms = 10) => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); }); };
+const harness = (submit = vi.fn(async () => {}), scope = workspace, storage?: ReturnType<typeof memory>) => {
   function Harness() {
     const [text, setText] = useState('');
     return h('div', null,
       h('output', {'aria-label':'editor-value'}, text),
-      h(LocalDraftControls, {companyId:'c',workspaceRoot:scope,objective:text,busy:false,onRestore:setText}),
-      h(ComposerView, {draft:text,ready:true,busy:false,authority:{mode:'read-only',basis:'test',mutable:false},modelLabel:'offline',workspaceLabel:scope,pendingIntent:false,onDraftChange:setText,onSubmit:()=>{void submit();},onChangeWorkspace:()=>{},onOpenTools:()=>{},onOpenAuthority:()=>{},onOpenModel:()=>{},authorityOpen:false,modelOpen:false}));
+      h(DraftAutosave, {companyId:'c',workspaceRoot:scope,objective:text,onRestore:setText,delayMs:0,...(storage === undefined ? {} : {storage})}),
+      h(ComposerView, {draft:text,ready:true,busy:false,authority:{mode:'read-only',basis:'test',mutable:false},modelLabel:'offline',workspaceLabel:scope,pendingIntent:false,onDraftChange:setText,onSubmit:()=>{void submit();},onChangeWorkspace:()=>{},onOpenModel:()=>{},modelOpen:false}));
   }
   return h(Harness);
 };
-
-describe('real React controls: save/restore and explicit submission are separate actions', () => {
-  it('save and restore never call the submission handler; only the explicit button does', async () => {
-    const storage = memory(), submit = vi.fn(async () => {}); vi.stubGlobal('localStorage',storage);
-    createLocalDraftStore(storage).save('c',workspace,'hello'); await render(harness(submit));
-    await click('保存草稿'); await click('恢复草稿'); expect(submit).not.toHaveBeenCalled();
+describe('UI-AUDIT-3: the draft autosaves silently; only explicit 发送 submits', () => {
+  it('no 保存草稿 / 恢复草稿 buttons; a saved draft is restored into the empty field without submitting', async () => {
+    const storage = memory(), submit = vi.fn(async () => {});
+    createLocalDraftStore(storage).save('c',workspace,'saved text');
+    await render(harness(submit, workspace, storage)); await tick();
+    expect(container?.textContent).toContain('saved text');
+    expect(clickableWithText(container!, '保存草稿')).toBeNull();
+    expect(clickableWithText(container!, '恢复草稿')).toBeNull();
+    expect(container?.textContent).not.toContain('已恢复本地未提交草稿');
+    expect(submit).not.toHaveBeenCalled();
     await click('发送'); expect(submit).toHaveBeenCalledTimes(1);
   });
-  it('unmount/remount restores saved editing text, but never submits on restart', async () => {
-    const storage = memory(), submit = vi.fn(async () => {}); vi.stubGlobal('localStorage',storage);
+  it('restores after unmount/remount, never submitting on restart', async () => {
+    const storage = memory(), submit = vi.fn(async () => {});
     createLocalDraftStore(storage).save('c',workspace,'saved text');
-    await render(harness(submit)); await click('保存草稿'); await close();
-    await render(harness(submit)); expect(container?.textContent).toContain('saved text');
+    await render(harness(submit, workspace, storage)); await tick(); await close();
+    await render(harness(submit, workspace, storage)); await tick(); expect(container?.textContent).toContain('saved text');
     expect(submit).not.toHaveBeenCalled();
   });
   it('switching Workspace clears previous editor content and loads only the target draft', async () => {
-    const storage = memory(); vi.stubGlobal('localStorage',storage);
+    const storage = memory();
     const store = createLocalDraftStore(storage); store.save('c',workspace,'draft A'); store.save('c',workspace+'-B','draft B');
     let text = '';
     const restore = (s: string) => { text = s; };
-    await render(h(LocalDraftControls,{companyId:'c',workspaceRoot:workspace,objective:'',busy:false,onRestore:restore})); expect(text).toBe('draft A');
-    await render(h(LocalDraftControls,{companyId:'c',workspaceRoot:workspace+'-B',objective:text,busy:false,onRestore:restore})); expect(text).toBe('draft B');
-    await render(h(LocalDraftControls,{companyId:'c',workspaceRoot:workspace+'-empty',objective:text,busy:false,onRestore:restore})); expect(text).toBe('');
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'',onRestore:restore,storage,delayMs:0})); expect(text).toBe('draft A');
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace+'-B',objective:text,onRestore:restore,storage,delayMs:0})); expect(text).toBe('draft B');
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace+'-empty',objective:text,onRestore:restore,storage,delayMs:0})); expect(text).toBe('');
+    await tick();
+    // the earlier drafts were not overwritten by the switch
+    expect(store.load('c',workspace)?.objective).toBe('draft A');
+    expect(store.load('c',workspace+'-B')?.objective).toBe('draft B');
   });
-  it('failed saves display failure and cannot become submission', async () => {
+  it('typing is saved after the delay; an emptied field removes the draft', async () => {
+    const storage = memory();
+    const store = createLocalDraftStore(storage);
+    const restore = () => undefined;
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'',onRestore:restore,storage,delayMs:0})); await tick();
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'typed text',onRestore:restore,storage,delayMs:0})); await tick();
+    expect(store.load('c',workspace)?.objective).toBe('typed text');
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'  ',onRestore:restore,storage,delayMs:0})); await tick();
+    expect(store.load('c',workspace)).toBeNull();
+  });
+  it('credential-looking text is NOT saved and the user is told (the one visible note)', async () => {
+    const storage = memory();
+    const restore = () => undefined;
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'',onRestore:restore,storage,delayMs:0})); await tick();
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'API_KEY=synthetic-test-only',onRestore:restore,storage,delayMs:0})); await tick();
+    expect(storage.data.size).toBe(0);
+    expect(container?.textContent).toContain(DRAFT_CREDENTIAL_NOTE);
+  });
+  it('storage failures stay silent and never become a submission', async () => {
     const submit = vi.fn(async () => {});
-    vi.stubGlobal('localStorage',{getItem:()=>null,setItem:()=>{throw new Error('Quota');}});
-    await render(harness(submit)); await click('保存草稿');
-    expect(container?.textContent).toContain('保存失败'); expect(submit).not.toHaveBeenCalled();
+    const broken = { data: new Map<string, string>(), getItem: () => null, setItem: () => { throw new Error('Quota'); } };
+    await render(harness(submit, workspace, broken as unknown as ReturnType<typeof memory>)); await tick();
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'hello',onRestore:()=>undefined,storage:broken as unknown as ReturnType<typeof memory>,delayMs:0})); await tick();
+    expect(submit).not.toHaveBeenCalled();
+    expect(container?.textContent).not.toContain(DRAFT_CREDENTIAL_NOTE);
   });
-  it('unavailable storage can still render, reports errors, and does not submit', async () => {
-    vi.stubGlobal('localStorage',undefined); const submit = vi.fn(async () => {});
-    await render(harness(submit)); await click('保存草稿'); expect(container?.textContent).toContain('保存失败'); expect(submit).not.toHaveBeenCalled();
-  });
-  it('does not restore corrupt content into the editor', async () => {
-    const storage = memory(); createLocalDraftStore(storage).save('c',workspace,'A'); storage.data.set([...storage.data.keys()][0]!,'broken');
-    vi.stubGlobal('localStorage',storage); let text = 'previous';
-    await render(h(LocalDraftControls,{companyId:'c',workspaceRoot:workspace,objective:'',busy:false,onRestore:(s)=>{text=s;}}));
-    expect(text).toBe(''); expect(container?.textContent).toContain('读取草稿失败');
+  it('does not restore corrupt content into the editor and does not overwrite it before the user types', async () => {
+    const storage = memory(); createLocalDraftStore(storage).save('c',workspace,'A'); const key = [...storage.data.keys()][0]!; storage.data.set(key,'broken');
+    let text = 'previous';
+    await render(h(DraftAutosave,{companyId:'c',workspaceRoot:workspace,objective:'',onRestore:(s)=>{text=s;},storage,delayMs:0}));
+    expect(text).toBe('');
   });
   it('explicit submission retains the existing budget denial and never invokes a provider', async () => {
     const provider = vi.fn();
@@ -131,12 +156,12 @@ describe('real React controls: save/restore and explicit submission are separate
     const result = await controller.submitObjective('hello',workspace);
     expect(result.status).toBe('failed'); expect(submit).toHaveBeenCalledTimes(1); expect(provider).not.toHaveBeenCalled();
   });
-  it('the actual App save path never sends a canonical Goal creation request', async () => {
+  it('the actual App autosave path never sends a canonical Goal creation request', async () => {
     const storage = memory(); vi.stubGlobal('localStorage',storage);
     createLocalDraftStore(storage).save('company_default',workspace,'saved App objective');
     const controlPlaneRequest = vi.fn(async (r:{operation:string}) => r.operation==='home.summary' ? {ok:true,value:{companyId:'company_default',goals:[]}} : {ok:true,value:{pending:[]}});
     vi.stubGlobal('companyos',{appVersion:async()=> 'test',platformInfo:async()=>({platform:'win32',arch:'x64',electron:'test',node:'test',chrome:'test'}),databaseStatus:async()=>({path:'offline',journalMode:'wal',schemaVersion:1}),channels:()=>[],workflowRequest:async()=>({ok:true,value:[]}),controlPlaneRequest,workspaceCurrent:async()=>workspace,workspaceSelect:async()=>null,workspaceOpen:async()=>({ok:true,root:workspace}),workspaceSwitch:async()=>({ok:true,root:workspace})});
-    await render(h(App)); await click('保存草稿');
+    await render(h(App)); await tick(50);
     expect(createLocalDraftStore(storage).load('company_default',workspace)?.objective).toBe('saved App objective');
     expect(controlPlaneRequest.mock.calls.some(([r])=>r.operation==='goal.create'||r.operation==='goal.advance')).toBe(false);
     expect(storage.getItem('companyos.submission-intent.v1')).toBeNull();

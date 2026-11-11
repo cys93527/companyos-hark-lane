@@ -83,18 +83,18 @@ describe('AUDIT R1 — cancel control', () => {
   });
 });
 
-describe('AUDIT R4 — access chip shows the next Goal policy', () => {
-  it('a fresh app shows the default 询问权限 (what the next Goal gets), not 只读', async () => {
+describe('AUDIT R4 / UI-AUDIT-3 — the next Goal policy is a 设置 default, not a composer chip', () => {
+  it('a fresh app has no 权限 chip in the composer; 设置 → 新目标默认 shows 询问权限 selected', async () => {
     const app = await mountApp({ control: (call) => (call.operation === 'home.summary' ? { ok: true, value: { goals: [] } } : undefined) });
-    const chips = app.view.textContent;
-    expect(chips).toContain('询问权限 ▾');
-    expect(chips).not.toContain('只读 ▾');
+    expect(app.view.textContent).not.toContain('询问权限 ▾');
+    expect(app.view.textContent).not.toContain('只读 ▾');
+    await app.click('设置');
+    expect(app.view.textContent).toContain('新目标默认');
+    expect(app.view.textContent).toContain('询问权限（推荐）');
   });
-  it('the selection drives the chip even while an executing Goal is open', async () => {
+  it('an executing Goal open does not put a policy chip back in the composer', async () => {
     const app = await setup('EXECUTING');
     expect(app.view.textContent).not.toContain('工作区操作 ▾');
-    await app.click('询问权限 ▾');
-    await app.click('只读');
-    expect(app.view.textContent).toContain('只读 ▾');
+    expect(app.view.textContent).not.toContain('询问权限 ▾');
   });
 });

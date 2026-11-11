@@ -11,9 +11,9 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { resolveOpenAiCompatibleConfig } from './models/openai-compatible-provider.js';
-import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
-import { existsSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { app, BrowserWindow, dialog, ipcMain, net, session, shell } from 'electron';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -66,7 +66,9 @@ import { BRIDGE_KEY, CHANNELS, type DatabaseFailure, type DatabaseStatus, type P
 import { resolveRendererEntry, startupErrorUrl, type StartupErrorPage } from './renderer-entry.js';
 import { productionCompositionOptions, productionIsolationResourcesDir, productionResourcesRoot } from './production-composition.js';
 import { captureRuntimeEnv, createProviderRuntimeEnv, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
-import { loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
+import { loadProviderSetupDpapi, loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
+import { createProviderSettingsIpcHandler, createProviderSettingsService, providerSettingsConfirmText, providerSettingsFingerprint, type ProviderSettingsService } from './provider-settings.js';
+import { parseProviderSetupProfile, PROVIDER_SETUP_PROFILE_FILE, type ProviderSetupProfile } from './provider-setup-write.js';
 import { productionIsolationLaunchConfig } from './executor/isolation/isolation-status-runner.js';
 import { createDeploymentBudgetProofSource, readDeploymentBudgetReadiness } from './deployment-budget-proof.js';
 import { CSP, createWindowOptions, denyAllPermissions } from './security.js';
@@ -759,9 +761,12 @@ async function applyInstalledProviderSetup(): Promise<void> {
   const userData = app.getPath('userData');
   const keyExists = existsSync(join(userData, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE));
   const dpapi = keyExists ? await loadProviderSetupUnprotect(productionResourcesRoot()) : { unprotect: null, detail: null };
+  // UI-AUDIT-3: what this run applied, so 设置 → 模型服务 can tell the user a restart is needed.
+  providerSetupAppliedFingerprint = providerSettingsFingerprint(userData);
   const applied = createProviderRuntimeEnv(runtimeEnv, readProviderSetup(userData, dpapi.unprotect));
   runtimeEnv = applied.runtimeEnv;
   const result = applied.result;
+  providerSetupSource = result.source;
   logger.info('provider setup', {
     source: result.source,
     setupState: result.setupState,
@@ -769,6 +774,64 @@ async function applyInstalledProviderSetup(): Promise<void> {
     appliedCount: result.applied.length,
     ...(dpapi.detail === null ? {} : { unprotectDetail: dpapi.detail }),
   });
+}
+
+let providerSetupAppliedFingerprint = '';
+let providerSetupSource: 'environment' | 'provider-setup' | 'none' = 'none';
+let appWindow: BrowserWindow | null = null;
+
+/** UI-AUDIT-3: the shipped preset (deployment data), installed beside the Start-menu helper; dev falls back to the repo copy. */
+function readShippedProviderProfile(): ProviderSetupProfile | null {
+  for (const path of [
+    join(productionResourcesRoot(), 'setup', PROVIDER_SETUP_PROFILE_FILE),
+    join(mainDir, '..', '..', '..', 'scripts', 'hark', 'setup', PROVIDER_SETUP_PROFILE_FILE),
+  ]) {
+    try {
+      if (!existsSync(path)) continue;
+      return parseProviderSetupProfile(JSON.parse(readFileSync(path, 'utf8')));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * UI-AUDIT-3 — 设置 → 模型服务, built on first use (the DPAPI binding loads only then). The
+ * confirm is THIS process's native dialog on the app window: the only thing that can approve a
+ * budget, remove the setup or restart. Logged by operation + result code only.
+ */
+let providerSettingsService: Promise<ProviderSettingsService> | null = null;
+function providerSettings(): Promise<ProviderSettingsService> {
+  providerSettingsService ??= (async () => {
+    const dpapi = await loadProviderSetupDpapi(productionResourcesRoot());
+    let approvedBy = 'user';
+    try {
+      approvedBy = userInfo().username || 'user';
+    } catch { /* keep the fallback */ }
+    return createProviderSettingsService({
+      userDataDir: app.getPath('userData'),
+      readShippedProfile: readShippedProviderProfile,
+      protect: dpapi.protect,
+      unprotect: dpapi.unprotect,
+      environmentDeclared: providerSetupSource === 'environment',
+      appliedFingerprint: providerSetupAppliedFingerprint,
+      confirm: async (request) => {
+        const text = providerSettingsConfirmText(request);
+        const options = { type: request.kind === 'approve-budget' ? 'question' as const : 'warning' as const, title: 'CompanyOS', buttons: ['取消', text.confirmLabel], defaultId: 0, cancelId: 0, noLink: true, message: text.message, detail: text.detail };
+        const answer = appWindow === null ? await dialog.showMessageBox(options) : await dialog.showMessageBox(appWindow, options);
+        return answer.response === 1;
+      },
+      fetch: async (url, init) => net.fetch(url, init),
+      approvedBy,
+      relaunch: () => {
+        app.relaunch();
+        app.quit();
+      },
+      log: (message, fields) => logger.info(message, fields),
+    });
+  })();
+  return providerSettingsService;
 }
 
 /**
@@ -983,6 +1046,16 @@ function registerIpcHandlers(): void {
     return persisted !== null && isExistingDirectory(persisted.root) ? persisted.root : null;
   });
 
+  // UI-AUDIT-3 — 设置 → 模型服务: only the app window's top frame; the key never comes back.
+  const providerSettingsIpc = createProviderSettingsIpcHandler(
+    { handle: async (operation, payload) => (await providerSettings()).handle(operation, payload) },
+    (event) => {
+      const e = event as { sender?: unknown; senderFrame?: unknown } | null;
+      return appWindow !== null && e !== null && e.sender === appWindow.webContents && e.senderFrame === appWindow.webContents.mainFrame;
+    },
+  );
+  ipcMain.handle(CHANNELS.providerSettings, async (event: unknown, request: unknown): Promise<unknown> => providerSettingsIpc(event, request));
+
   // STAGE 3 — the bounded artifact surface. The renderer names a canonical artifact id
   // and nothing else: every path is resolved here, inside the CAS root, and any action
   // that cannot be proven fails closed. No generic openAnyPath primitive exists.
@@ -1041,6 +1114,10 @@ function registerIpcHandlers(): void {
 
 async function createMainWindow(): Promise<BrowserWindow> {
   const window = new BrowserWindow(createWindowOptions(mainDir));
+  appWindow = window;
+  window.on('closed', () => {
+    if (appWindow === window) appWindow = null;
+  });
 
   // No new windows, ever: external links go to the OS browser.
   window.webContents.setWindowOpenHandler(({ url }) => {

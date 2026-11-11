@@ -38,6 +38,8 @@ describe('ipc channel allow-list', () => {
         CHANNELS.workspaceSwitch,
         // DESKTOP STAGE 3: the ONE bounded artifact channel (typed { operation, artifactId }).
         CHANNELS.artifacts,
+        // UI-AUDIT-3 CONTRACT CHANGE (user approval 2026-11-11 "需要"): 设置 → 模型服务, one typed channel.
+        CHANNELS.providerSettings,
       ].sort(),
     );
   });
@@ -64,6 +66,7 @@ describe('ipc channel allow-list', () => {
       CHANNELS.workspaceCurrent,
       CHANNELS.workspaceSwitch,
       CHANNELS.artifacts,
+      CHANNELS.providerSettings,
     ]);
   });
 

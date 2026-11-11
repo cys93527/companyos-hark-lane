@@ -38,6 +38,12 @@ export const createLocalDraftStore = (storage: DraftStorage | null) => ({
     if (Object.keys(r).sort().join(',') !== 'companyId,objective,state,workspaceRoot' || r['state'] !== 'LOCAL_DRAFT' || r['companyId'] !== companyId || r['workspaceRoot'] !== workspaceRoot) throw new Error('LOCAL_DRAFT_RECORD_INVALID');
     return { state: 'LOCAL_DRAFT', companyId, workspaceRoot, objective: checkObjective(r['objective']) };
   },
+  /** UI-AUDIT-3: autosave of an emptied field removes the stored draft. */
+  remove(companyId: string, workspaceRoot: string): void {
+    const key = keyOf(companyId, workspaceRoot);
+    if (storage === null || typeof storage.removeItem !== 'function') throw new Error('LOCAL_DRAFT_STORAGE_UNAVAILABLE');
+    storage.removeItem(key);
+  },
   /**
    * AUDIT R6: drop the saved draft once that exact text has been SUBMITTED (Goal created or
    * replayed), so it is never auto-restored and labelled 「尚未提交」 again. A saved draft

@@ -10,7 +10,6 @@
  * handoffs) · 详情 (run/goal facts). Default: collapsed — the centre stays conversation-first.
  */
 import { blockerText, failureRemedyOf, REMEDY_LABELS, type CanonicalAttemptFailure, type FailureRemedy } from './failure-labels.js';
-import { plainActivity } from './activity.js';
 import { TypedErrorLine } from './typed-error.js';
 import { createElement as h, type JSX } from 'react';
 import { budgetRows, formatMoney, type GoalBudgetRead } from './budget.js';
@@ -452,22 +451,17 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
       : section(
           '阶段',
           'phase',
+          // UI-AUDIT-3: the per-run state words (目标 · 规划 · 执行) are support detail: tooltip only.
           h(
             'div',
-            { className: phaseLive ? 'phase phase--live' : 'phase' },
+            {
+              className: phaseLive ? 'phase phase--live' : 'phase',
+              title: `目标 ${stateWord(lifecycle.runState)} · 规划 ${lifecycle.planningState === null ? '--' : stateWord(lifecycle.planningState)}${lifecycle.executionState == null ? '' : ` · 执行 ${stateWord(lifecycle.executionState)}`} (goal ${lifecycle.runState} · planning ${lifecycle.planningState ?? '--'}${lifecycle.executionState == null ? '' : ` · execution ${lifecycle.executionState}`})`,
+            },
             PHASE_LABELS[lifecycle.phase],
             props.stageProgress == null || props.stageProgress.total === 0
               ? null
               : h('small', { className: 'num' }, `${lifecycle.executionState == null ? '' : '执行 · '}阶段 ${String(props.stageProgress.done)}/${String(props.stageProgress.total)} 完成`),
-          ),
-          // UI-AUDIT-2: Chinese state words; the canonical enums stay in the tooltip.
-          h(
-            'p',
-            {
-              className: 'rt-canonical num',
-              title: `goal ${lifecycle.runState} · planning ${lifecycle.planningState ?? '--'}${lifecycle.executionState == null ? '' : ` · execution ${lifecycle.executionState}`}`,
-            },
-            `目标 · ${stateWord(lifecycle.runState)} · 规划 · ${lifecycle.planningState === null ? '--' : stateWord(lifecycle.planningState)}${lifecycle.executionState == null ? '' : ` · 执行 · ${stateWord(lifecycle.executionState)}`}`,
           ),
         ),
     blockers.length === 0 && pending === null
@@ -527,10 +521,16 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                   { className: 'meter', 'aria-hidden': true },
                   h('i', { style: { transform: `scaleX(${String(Math.min(1, budget.budget.settled.costMicros / budget.budget.cap.costMicros))})` } }),
                 ),
+            // UI-AUDIT-3: calls / tokens / holds are detail; the figure and the meter are the answer.
             h(
-              'ul',
-              { className: 'rt-lines num' },
-              budgetRows(budget.budget).map((line, index) => h('li', { key: `b${String(index)}` }, line)),
+              'details',
+              { className: 'tech runtime-budget__detail' },
+              h('summary', null, '明细'),
+              h(
+                'ul',
+                { className: 'rt-lines num' },
+                budgetRows(budget.budget).map((line, index) => h('li', { key: `b${String(index)}` }, line)),
+              ),
             ),
             zeroBudget && props.onRemedy !== undefined
               ? h('button', { type: 'button', className: 'btn btn--text', onClick: () => props.onRemedy?.('budget') }, REMEDY_LABELS.budget)
@@ -549,34 +549,28 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
             ...(ranModels.length > 0
               ? kvRow('本目标所用模型', ranModels.join('、'), 'm')
               : kvRow('默认模型（尚未调用）', model.modelLabel, 'm')),
-            kvRow('上下文窗口', model.contextWindow, 'w'),
-            kvRow('已用 tokens', model.used, 'u'),
-            kvRow('生成速度', model.speed, 's'),
-            kvRow('缓存命中', model.cacheHit, 'c'),
-            kvRow('上下文剩余', model.remaining, 'r'),
-            kvRow('会话费用', model.cost, 'f'),
           ),
-          props.usageNote === undefined || props.usageNote === null || props.usageNote === ''
-            ? null
-            : h('p', { className: 'rt-note' }, props.usageNote),
-        ),
-    lifecycle === null
-      ? null
-      : section(
-          '验证',
-          'validation',
+          // UI-AUDIT-3: telemetry (context window, tokens, speed, cache) is technical detail, collapsed.
           h(
-            'dl',
-            { className: 'kv' },
-            kvRow('完成', String(lifecycle.validation.completed), 'c'),
-            kvRow('失败', String(lifecycle.validation.failed), 'f'),
-            kvRow('缺失', String(lifecycle.validation.missing), 'm'),
-            kvRow('纠正轮次', String(lifecycle.correctiveRounds), 'r'),
-            kvRow('移交', String(lifecycle.handoffCount), 'h'),
-            kvRow('结果', outcomeWord(lifecycle), 'o'),
+            'details',
+            { className: 'tech runtime-model__detail' },
+            h('summary', null, '技术细节'),
+            h(
+              'dl',
+              { className: 'kv' },
+              kvRow('上下文窗口', model.contextWindow, 'w'),
+              kvRow('已用 tokens', model.used, 'u'),
+              kvRow('生成速度', model.speed, 's'),
+              kvRow('缓存命中', model.cacheHit, 'c'),
+              kvRow('上下文剩余', model.remaining, 'r'),
+              kvRow('会话费用', model.cost, 'f'),
+            ),
+            props.usageNote === undefined || props.usageNote === null || props.usageNote === ''
+              ? null
+              : h('p', { className: 'rt-note' }, props.usageNote),
           ),
-          h('p', { className: 'sr-only' }, `验证 · 完成 ${String(lifecycle.validation.completed)} · 失败 ${String(lifecycle.validation.failed)} · 缺失 ${String(lifecycle.validation.missing)}`),
         ),
+    // UI-AUDIT-3: 验证 lives on the 产出 tab only (it was shown twice).
     lifecycle === null || lifecycle.tasks.length === 0
       ? null
       : section(
@@ -602,8 +596,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                   },
                   h('span', { className: 'runtime-task__id' }, `任务 ${String(index + 1)}`),
                   h('span', { className: 'runtime-task__meta' }, `${stateWord(task.state)}${task.attemptLabel === null ? '' : ` · ${task.attemptLabel}`}`),
-                  // The task's reference (secondary, meta grey): the handle 详情 and support use.
-                  h('span', { className: 'runtime-task__ref mono' }, task.taskId),
+                  // UI-AUDIT-3: the task id stays in the tooltip and on 详情, not in the list.
                 ),
               ),
             ),
@@ -625,24 +618,8 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
             ? h('button', { type: 'button', className: 'btn btn--text', onClick: () => props.onSelectTab('files') }, `全部 ${String(props.artifacts.length)} 个 · 在「文件」查看`)
             : null,
         ),
-    props.timeline.length === 0
-      ? null
-      : section(
-          '最近活动',
-          'activity',
-          h(
-            'ul',
-            { className: 'runtime-activity act', 'data-testid': 'runtime-activity', 'aria-label': '最近活动' },
-            plainActivity(props.timeline).map((line) => h('li', { key: line.key }, line.text)),
-          ),
-          h(
-            'details',
-            { className: 'tech' },
-            h('summary', null, `技术记录 · ${String(props.timeline.length)} 条`),
-            h('ul', { className: 'tech__list mono' }, props.timeline.map((entry) => h('li', { key: entry.key }, h('span', { className: 'activity__k' }, entry.kind), ` · ${entry.summary}`))),
-          ),
-        ),
-    h('p', { className: 'rt-note', key: 'note' }, '未知的数值显示为 --，不做估算。'),
+    // UI-AUDIT-3: 最近活动 was the conversation's own timeline repeated (the Goal page shows it,
+    // with 技术记录); the "unknown values show --" note is self-evident.
   );
 
   const filesTab = h(
@@ -657,8 +634,8 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
             h(
               'li',
               { key: artifact.artifactId },
-              h('span', { className: 'runtime-files__kind', title: artifact.kind }, artifactKindWord(artifact.kind)),
-              h('span', { className: 'runtime-files__id mono', title: artifact.artifactId }, artifact.artifactId.slice(0, 14)),
+              // UI-AUDIT-3: the artifact id is support detail (tooltip), not list text.
+              h('span', { className: 'runtime-files__kind', title: `${artifact.kind} · ${artifact.artifactId}` }, artifactKindWord(artifact.kind)),
               h(
                 'span',
                 { className: 'runtime-files__actions' },
@@ -692,8 +669,8 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
         kvRow('结果', outcomeWord(lifecycle), 'o'),
         kvRow('验证完成', lifecycle === null ? '--' : String(lifecycle.validation.completed), 'c'),
         kvRow('验证失败', lifecycle === null ? '--' : String(lifecycle.validation.failed), 'f'),
-        kvRow('验证缺失', lifecycle === null ? '--' : String(lifecycle.validation.missing), 'm'),
-        kvRow('移交', lifecycle === null ? '--' : String(lifecycle.handoffCount), 'h'),
+        kvRow('待验证', lifecycle === null ? '--' : String(lifecycle.validation.missing), 'm'),
+        kvRow('纠正轮次', lifecycle === null ? '--' : String(lifecycle.correctiveRounds), 'r'),
       ),
     ),
     h('p', { className: 'rt-note' }, '有产物不等于已交付：是否交付以验证结果为准。'),
