@@ -29,6 +29,7 @@ import {
   type WorkflowTemplate,
   type WorkflowVersion,
 } from '@companyos/core';
+import { canRunGoals, modalityOfRow, type ModelModality } from './models/model-modality.js';
 import type { AgentRuntimeService, ModelRegistryService, RouterApplicationService, RouterOverrideInput, RouterRecommendationInput, SelectionPolicyService, HandoffService, ToolRegistry, WorkflowLifecycle, MemoryService, DecisionService } from '@companyos/engine';
 
 export const WORKFLOW_OPERATIONS = [
@@ -68,6 +69,8 @@ export const WORKFLOW_OPERATIONS = [
   'models.selection',
   // Stage 3: the derived readiness projection (provider / model / executor / workspace).
   'runtime.readiness',
+  // UI-AUDIT-2: whether a per-Goal budget is approved for which model (read-only, no secret).
+  'budget.readiness',
   // Sprint 8: agent execution runtime (executes; never selects a model)
   'agent.prepare',
   'agent.execute',
@@ -339,6 +342,23 @@ export interface ProviderCatalogueRow {
    * rows are what it offers, not what the operator chose.
    */
   readonly configured?: boolean;
+  /** UI-AUDIT-2: the provider of this row is bound (usable) in this process. Absent = bound. */
+  readonly bound?: boolean;
+  /** UI-AUDIT-2: what kind of model this is (model-modality.ts); recorded by the adapter. */
+  readonly metadata?: Readonly<Record<string, unknown>> | null;
+}
+
+/**
+ * UI-AUDIT-2 — the budget facts the composer needs BEFORE a Goal is sent: is a per-Goal
+ * spending cap approved, in which currency, and which (provider, model) pairs it covers.
+ * Only identities and validity leave the main process (no account, credential or price).
+ */
+export interface BudgetReadinessView {
+  readonly state: 'APPROVED' | 'NOT_APPROVED' | 'RESTART_REQUIRED';
+  readonly currency: string | null;
+  readonly capCostMicros: number | null;
+  readonly source: 'provider-setup' | 'operator' | null;
+  readonly covered: readonly { readonly providerId: string; readonly modelId: string; readonly validUntilMs: number; readonly valid: boolean }[];
 }
 
 /** STAGE 3 — the derived readiness projection (main-process facts, never renderer-owned). */
@@ -357,6 +377,10 @@ export interface WorkflowApiDeps {
   readonly providerCatalogue?: () => Promise<readonly ProviderCatalogueRow[]>;
   /** STAGE 3: the derived readiness projection for Settings / Diagnostics. */
   readonly readiness?: ReadinessProvider;
+  /** UI-AUDIT-2: the budget readiness projection (budget.readiness). */
+  readonly budgetReadiness?: () => Promise<BudgetReadinessView> | BudgetReadinessView;
+  /** UI-AUDIT-2: the (provider, model) the deployment / first-run setup configured, if any. */
+  readonly configuredModel?: () => { readonly providerId: string; readonly modelId: string } | null;
   /** Sprint 7.5: selection RULES. It stores and explains; it never chooses. */
   readonly policies?: SelectionPolicyService;
   /** Sprint 8: executes one agent attempt with an EXPLICIT model binding. */
@@ -761,6 +785,14 @@ const readOptionalNumber = (
 };
 
 export function createWorkflowApi(deps: WorkflowApiDeps): WorkflowApi {
+  /** UI-AUDIT-2: a registered model's kind; the configured chat model is always chat. */
+  const modelRecordModality = (record: { readonly providerId: string; readonly providerModelId: string; readonly capabilities?: unknown }): ModelModality => {
+    const configured = deps.configuredModel?.() ?? null;
+    const isConfigured = configured !== null && configured.providerId === record.providerId && configured.modelId === record.providerModelId;
+    const modality = modalityOfRow({ modelId: record.providerModelId, configured: isConfigured });
+    if (!isConfigured && modality === 'unknown' && (record.capabilities as { readonly structuredOutput?: unknown } | undefined)?.structuredOutput === false) return 'image';
+    return modality;
+  };
   const options = (
     payload: Readonly<Record<string, unknown>>,
   ): {
@@ -1175,16 +1207,28 @@ export function createWorkflowApi(deps: WorkflowApiDeps): WorkflowApi {
             return {
               ok: true,
               operation,
-              value: rows.map((row) => ({
-                providerId: row.providerId,
-                providerModelId: row.modelId,
-                displayName: row.displayName,
-                contextWindow: row.contextWindow,
-                maxOutputTokens: row.maxOutputTokens,
-                capabilities: row.capabilities,
-                pricing: row.pricing,
-                configured: row.configured === true,
-              })),
+              value: rows.map((row) => {
+                // UI-AUDIT-2: the kind of model and whether it can run a Goal are main-process
+                // facts; the renderer only lists what it is told can run.
+                const modality = modalityOfRow({ modelId: row.modelId, metadata: row.metadata ?? null, configured: row.configured === true });
+                const declaredNoText = (row.capabilities as { readonly structuredOutput?: unknown } | null)?.structuredOutput === false && row.configured !== true;
+                const bound = row.bound !== false;
+                const chat = canRunGoals(modality) && !declaredNoText;
+                return {
+                  providerId: row.providerId,
+                  providerModelId: row.modelId,
+                  displayName: row.displayName,
+                  contextWindow: row.contextWindow,
+                  maxOutputTokens: row.maxOutputTokens,
+                  capabilities: row.capabilities,
+                  pricing: row.pricing,
+                  configured: row.configured === true,
+                  bound,
+                  modality: declaredNoText && modality === 'unknown' ? 'image' : modality,
+                  goalUsable: bound && chat,
+                  ...(bound ? (chat ? {} : { unusableReason: 'NOT_CHAT_MODEL' }) : { unusableReason: 'PROVIDER_NOT_BOUND' }),
+                };
+              }),
             };
           }
 
@@ -1195,6 +1239,8 @@ export function createWorkflowApi(deps: WorkflowApiDeps): WorkflowApi {
               ok: true,
               operation,
               value: (await deps.models.list({ includeDisabled })).map((record) => ({
+                // UI-AUDIT-2: the registered model's kind (id rule + its declared capability).
+                modality: modelRecordModality(record),
                 modelKey: record.modelKey,
                 displayName: record.displayName,
                 providerId: record.providerId,
@@ -1314,6 +1360,19 @@ export function createWorkflowApi(deps: WorkflowApiDeps): WorkflowApi {
               }
               const manualModelKey = readText(payload, 'manualModelKey', false);
               if (!manualModelKey.ok) return manualModelKey;
+              // UI-AUDIT-2: a model that cannot answer a structured text request (image, video,
+              // embedding, speech …) is never pinned as the model Goals run on. Refused typed
+              // here, at the trusted boundary, whatever the client offered.
+              if (manualModelKey.value !== undefined && deps.models !== undefined) {
+                const record = (await deps.models.list({ includeDisabled: true })).find((entry) => entry.modelKey === manualModelKey.value);
+                if (record !== undefined && !canRunGoals(modelRecordModality(record))) {
+                  return err(invalid(`Model "${record.providerModelId}" is a ${modelRecordModality(record)} model and cannot run Goals.`, {
+                    reason: 'MODEL_NOT_CHAT_CAPABLE',
+                    modality: modelRecordModality(record),
+                    modelKey: record.modelKey,
+                  }));
+                }
+              }
               const lists = {
                 allowedModels: readStringArray(payload, 'allowedModels'),
                 preferredModels: readStringArray(payload, 'preferredModels'),
@@ -1342,6 +1401,11 @@ export function createWorkflowApi(deps: WorkflowApiDeps): WorkflowApi {
                 requireApprovalForOverride: payload['requireApprovalForOverride'] === true,
               });
             });
+
+          case 'budget.readiness': {
+            if (deps.budgetReadiness === undefined) return fail(registryMissing());
+            return { ok: true, operation, value: await deps.budgetReadiness() };
+          }
 
           case 'runtime.readiness': {
             // STAGE 3 — a DERIVED readiness projection (provider / model / executor / workspace).

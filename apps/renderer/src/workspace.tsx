@@ -18,6 +18,7 @@
  * the canonical loaders). The pure loaders are exported too, so tests can assert the
  * canonical reads directly.
  */
+import { plainFailureText } from './typed-error.js';
 import { attemptFailureLabel, blockerText, runFailureReasonLabel, type CanonicalAttemptFailure } from './failure-labels.js';
 import { safeRequest } from './bridge.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -219,7 +220,7 @@ export function WorkspaceSelector({
         setFailure({ code: opened.error ?? 'WORKSPACE_OPEN_FAILED', message: '该目录无法作为工作空间打开。' });
       }
     } catch (error) {
-      setFailure({ code: 'WORKSPACE_SELECT_FAILED', message: String((error as Error)?.message ?? error) });
+      setFailure({ code: 'WORKSPACE_SELECT_FAILED', message: `无法打开目录选择器（${String((error as Error)?.message ?? error)}）。` });
     }
     setPending(false);
   }, [selection, pending, setFailure, onWorkspaceOpened]);
@@ -368,11 +369,10 @@ export function GoalListView({
         <ul className="goal-list">
           {sortGoalsNewestFirst(goals).map((goal) => (
             <li key={goal.runId}>
-              <button className="goal-list__open" onClick={() => onOpen(goal.runId)}>
+              <button className="goal-list__open" title={`目标编号 ${goal.runId}`} onClick={() => onOpen(goal.runId)}>
                 <span className="goal-list__objective">{goal.objective ?? '(未命名目标)'}</span>
                 <span className={`goal-list__state goal-list__state--${runStateModifier(goal)}${isRunEnded(goal) ? '' : ' goal-list__state--live'}`} title={goal.state}>{goalStateWord(goal)}</span>
                 <span className="goal-list__meta">
-                  <span className="goal-list__runid">{goal.runId.slice(0, 14)}</span>
                   {goal.createdAt !== undefined && Number.isFinite(Date.parse(goal.createdAt)) ? new Date(goal.createdAt).toLocaleString('zh-CN', { hour12: false }) : ''}
                 </span>
               </button>
@@ -827,10 +827,14 @@ function ControlPlaneFailure(): [
 
 export function ControlPlaneErrorView({ failure }: { readonly failure: ControlPlaneFailureState | null }) {
   if (failure === null) return null;
+  // UI-AUDIT-2: plain text first; the internal code is behind 详情.
   return (
-    <p className="typed-error" role="alert">
-      <span className="typed-error__code">{failure.code}</span>
-      <span className="typed-error__message">{failure.message}</span>
-    </p>
+    <div className="typed-error" role="alert">
+      <span className="typed-error__message">{plainFailureText(failure)}</span>
+      <details className="tech">
+        <summary>详情</summary>
+        <code className="typed-error__code tech__code">{failure.code}{failure.message !== plainFailureText(failure) ? ` · ${failure.message}` : ''}</code>
+      </details>
+    </div>
   );
 }

@@ -41,6 +41,9 @@ export const createLatestAttemptFailureReader =
     } catch {
       detailCode = null;
     }
+    // UI-AUDIT-2: an attempt refused before dispatch carries no settled row; the model call's
+    // typed refusal (budget / policy) is on the failed agent execution of the same Goal.
+    if (detailCode === null) detailCode = modelCallFailureOf(db, runIds, placeholders)?.detailCode ?? null;
     return {
       runId: attempt.run_id,
       taskId: attempt.task_id,
@@ -86,7 +89,7 @@ const modelCallFailureOf = (db: SqlLike, runIds: readonly string[], placeholders
     ? 'PROVIDER_REASONING_EXHAUSTED'
     : message.startsWith(PROVIDER_OUTPUT_TRUNCATED_MESSAGE)
       ? 'PROVIDER_OUTPUT_TRUNCATED'
-      : null;
+      : terminalAuditReasonOf(db, execution.execution_id);
   return {
     runId: execution.run_id,
     taskId: execution.task_id ?? '',
@@ -96,4 +99,22 @@ const modelCallFailureOf = (db: SqlLike, runIds: readonly string[], placeholders
     detailMessage: null,
     settledAt: execution.finished_at,
   };
+};
+
+/**
+ * UI-AUDIT-2 (user report 2026-11-11: "目标失败 · 未归类的失败原因（POLICY_REFUSED）") — the
+ * typed reason the runtime recorded on the execution's durable terminal audit
+ * (agent.execution_failed {reason}: GOAL_ADMISSION_BOUND_UNPROVEN = no approved budget for
+ * the model, MODEL_BLOCKED_BY_POLICY, …). Codes only; a malformed payload reads as none.
+ */
+const terminalAuditReasonOf = (db: SqlLike, executionId: string): string | null => {
+  const rows = db
+    .prepare("SELECT payload FROM events WHERE aggregate_id = ? AND type = 'agent.execution_failed' ORDER BY rowid DESC LIMIT 1")
+    .all(executionId) as readonly { payload: string }[];
+  try {
+    const payload = rows[0] === undefined ? null : (JSON.parse(rows[0].payload) as { reason?: unknown });
+    return typeof payload?.reason === 'string' && REASON_CODE.test(payload.reason) ? payload.reason : null;
+  } catch {
+    return null;
+  }
 };

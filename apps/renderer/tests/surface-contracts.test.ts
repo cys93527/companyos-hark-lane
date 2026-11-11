@@ -119,6 +119,8 @@ const installBridge = (
   const workflowRequest = vi.fn(async (request: { operation: string; payload?: unknown }) => {
     if (request.operation === 'models.selection') return { ok: true, value: {} };
     if (request.operation.startsWith('models.')) return { ok: true, value: [] };
+    // UI-AUDIT-2: the composer's budget readiness read is not part of these surface contracts.
+    if (request.operation === 'budget.readiness') return { ok: false };
     return reply(request.operation, request.payload);
   });
   const controlPlaneRequest = vi.fn(async (request: { operation: string }) => {
@@ -159,14 +161,14 @@ describe('R4-F1 canonical tool pages', () => {
       .find((node) => (node as MiniElement).getAttribute?.('data-testid') === 'tool-rows');
     expect(toolList?.childNodes).toHaveLength(18);
     expect(dom.textContent).toContain('Tool 17');
-    expect(dom.textContent).toContain('disabled');
-    expect(dom.textContent).not.toContain('尚无注册工具');
+    expect(dom.textContent).toContain('已停用');
+    expect(dom.textContent).not.toContain('还没有可用的工具');
   });
   it('renders empty only for an actual empty canonical page', async () => {
     installBridge(() => page([]));
     const dom = await mount(h(App));
     await click('工具');
-    expect(dom.textContent).toContain('尚无注册工具');
+    expect(dom.textContent).toContain('还没有可用的工具');
     expect(dom.textContent).not.toContain('SURFACE_UNAVAILABLE');
   });
   it('preserves cursor and includeDisabled through multiple pages', async () => {
@@ -215,7 +217,7 @@ describe('R4-F1 canonical tool pages', () => {
     const dom = await mount(h(App));
     await click('工具');
     expect(dom.textContent).toContain('SURFACE_UNAVAILABLE');
-    expect(dom.textContent).not.toContain('尚无注册工具');
+    expect(dom.textContent).not.toContain('还没有可用的工具');
     expect(dom.textContent).not.toContain('加载中');
   });
   it('keeps loading while the real read is unresolved', async () => {
@@ -223,7 +225,7 @@ describe('R4-F1 canonical tool pages', () => {
     const dom = await mount(h(App));
     await click('工具');
     expect(dom.textContent).toContain('加载中');
-    expect(dom.textContent).not.toContain('尚无注册工具');
+    expect(dom.textContent).not.toContain('还没有可用的工具');
   });
   it('keeps a multi-page mount loading until the final page, then shows all rows', async () => {
     let resolveLast: (value: unknown) => void = () => {};
@@ -264,7 +266,7 @@ describe('R4-F1 canonical tool pages', () => {
       rejectTools(new Error('transport'));
     });
     await settle();
-    expect(dom.textContent).toContain('暂无记忆条目');
+    expect(dom.textContent).toContain('知识库还是空的');
     expect(dom.textContent).not.toContain('SURFACE_UNAVAILABLE');
   });
   it('a late response after unmount does not update the detached React root', async () => {
@@ -292,7 +294,7 @@ describe('R4-F1 canonical tool pages', () => {
       h(ToolsSurfaceView, { rows: [], failure: { code: 'FAILED', message: 'read failed' } }),
     );
     expect(dom.textContent).toContain('FAILED');
-    expect(dom.textContent).not.toContain('尚无注册工具');
+    expect(dom.textContent).not.toContain('还没有可用的工具');
   });
 });
 
@@ -305,7 +307,7 @@ describe('R4-F2 Company-scoped knowledge read', () => {
     const dom = await mount(h(App));
     await click('知识库');
     expect(dom.textContent).toContain('SURFACE_UNAVAILABLE');
-    expect(dom.textContent).not.toContain('暂无记忆条目');
+    expect(dom.textContent).not.toContain('知识库还是空的');
   });
   it('uses the canonical retrieval result and current time, preserving expiry and Company filtering', async () => {
     const workflowRequest = vi.fn(async (request: { operation: string; payload?: unknown }) => ({
@@ -327,7 +329,7 @@ describe('R4-F2 Company-scoped knowledge read', () => {
     installBridge(() => ({ ok: true, value: memoryResult([]) }));
     const dom = await mount(h(App));
     await click('知识库');
-    expect(dom.textContent).toContain('暂无记忆条目');
+    expect(dom.textContent).toContain('知识库还是空的');
     expect(dom.textContent).not.toContain('SURFACE_UNAVAILABLE');
   });
   it('rejects a malformed memory result instead of projecting a false empty state', async () => {
@@ -384,7 +386,7 @@ describe('R4-F2 Company-scoped knowledge read', () => {
       operation: 'home.summary',
       payload: { companyId: 'company_default' },
     });
-    expect(dom.textContent).not.toContain('暂无记忆条目');
+    expect(dom.textContent).not.toContain('知识库还是空的');
   });
   it.each([
     { ok: false, error: { code: 'PERMISSION_DENIED' } },
@@ -400,14 +402,14 @@ describe('R4-F2 Company-scoped knowledge read', () => {
       ),
     ).toBe(false);
     expect(dom.textContent).toContain('SURFACE_UNAVAILABLE');
-    expect(dom.textContent).not.toContain('暂无记忆条目');
+    expect(dom.textContent).not.toContain('知识库还是空的');
   });
   it('failed memory read stays an error instead of a knowledge empty state', async () => {
     installBridge(() => ({ ok: false, error: { code: 'PERMISSION_DENIED' } }));
     const dom = await mount(h(App));
     await click('知识库');
     expect(dom.textContent).toContain('SURFACE_UNAVAILABLE');
-    expect(dom.textContent).not.toContain('暂无记忆条目');
+    expect(dom.textContent).not.toContain('知识库还是空的');
     expect(dom.textContent).not.toContain('加载中');
   });
 });

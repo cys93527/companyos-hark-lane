@@ -132,6 +132,80 @@ export const readProviderSetupProfile = (path: string): ProviderSetupProfile => 
   return profile;
 };
 
+/**
+ * UI-AUDIT-2 (user report 2026-11-11) — "CompanyOS 首次配置" for ANY OpenAI-compatible
+ * service, not only the shipped profile. Root cause of "预算为 0（付费调用被拒绝）" on every
+ * Goal: a user whose model came from anywhere but the shipped profile (COS_MODEL_* variables,
+ * another service) had NO supported way to approve a per-Goal budget, so the fail-closed
+ * default cap (0) refused every paid call. The user now attests the service's published
+ * price themselves (CNY per million tokens) and sets the cap; the same parsers, proof and
+ * approval shapes as the shipped profile are used, so the runtime trust path is unchanged.
+ * The runaway bounds (calls, tokens, duration, input bound, proof lifetime) come from the
+ * shipped profile; only identity and price are the user's.
+ */
+export const SETUP_CUSTOM_BILLING_ACCOUNT = 'custom:user-setup:COMPANYOS_MODEL_API_KEY';
+export const SETUP_CUSTOM_DEFAULT_PROVIDER_ID = 'model.openai-compatible';
+export const SETUP_PRICE_CNY_PER_M_MAX = 1000;
+
+export interface CustomProviderInput {
+  readonly baseUrl: string;
+  readonly modelId: string;
+  /** Defaults to the provider id the COS_MODEL_* path uses, so an environment-configured model is covered too. */
+  readonly providerId?: string;
+  /** The user-attested published price, CNY per million tokens (input / output). */
+  readonly inputCnyPerM: number;
+  readonly outputCnyPerM: number;
+  /** Where the user read the price; defaults to the service URL. */
+  readonly pricingSource?: string;
+  readonly now?: number;
+}
+
+const priceToMicros = (value: number, label: string): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > SETUP_PRICE_CNY_PER_M_MAX) {
+    throw new ProviderSetupWriteError('SETUP_PRICE_INVALID', `${label} price must be above 0 and at most ${SETUP_PRICE_CNY_PER_M_MAX} CNY per million tokens`);
+  }
+  return Math.max(1, Math.round(value * 1_000_000));
+};
+
+/** Build a profile for a user-chosen OpenAI-compatible service; throws typed errors, never returns a partial profile. */
+export const buildCustomProviderProfile = (base: ProviderSetupProfile, input: CustomProviderInput): ProviderSetupProfile => {
+  const inputRate = priceToMicros(input.inputCnyPerM, 'input');
+  const outputRate = priceToMicros(input.outputCnyPerM, 'output');
+  const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim().replace(/\/+$/u, '') : '';
+  const modelId = typeof input.modelId === 'string' ? input.modelId.trim() : '';
+  const date = new Date(input.now ?? Date.now()).toISOString().slice(0, 10);
+  const raw = {
+    schema: PROVIDER_SETUP_PROFILE_SCHEMA,
+    providerId: input.providerId?.trim() || SETUP_CUSTOM_DEFAULT_PROVIDER_ID,
+    baseUrl,
+    modelId,
+    upstreamModelIdentity: modelId,
+    maxOutputTokens: base.maxOutputTokens,
+    timeoutMs: base.timeoutMs,
+    structuredOutput: 'json_object',
+    billingAccount: SETUP_CUSTOM_BILLING_ACCOUNT,
+    pricing: {
+      source: input.pricingSource?.trim() || baseUrl,
+      version: `user-attested ${date}: input ${String(input.inputCnyPerM)} CNY, output ${String(input.outputCnyPerM)} CNY per million tokens`,
+      currency: 'CNY',
+      units: 'MICROS_PER_MILLION_TOKENS',
+      rounding: 'CEIL_TOTAL_PER_REQUEST_MICROS',
+      inputRate,
+      outputRate,
+    },
+    inputUpperBound: base.inputUpperBound,
+    maxCalls: base.maxCalls,
+    maxTokens: base.maxTokens,
+    durationMs: base.durationMs,
+    proofValidForMs: base.proofValidForMs,
+  };
+  const profile = parseProviderSetupProfile(raw);
+  if (profile === null) {
+    throw new ProviderSetupWriteError('SETUP_PROFILE_INVALID', 'the service address must be https:// without user, password, query or fragment, the model id 1-128 of A-Z a-z 0-9 . _ : / -, and the provider id model.<name>');
+  }
+  return profile;
+};
+
 export const SETUP_CAP_CNY_MIN = 0.1;
 export const SETUP_CAP_CNY_MAX = 100;
 
@@ -155,7 +229,7 @@ export interface ProviderSetupWriteResult {
 }
 
 export class ProviderSetupWriteError extends Error {
-  constructor(readonly code: 'SETUP_CAP_INVALID' | 'SETUP_APPROVER_INVALID' | 'SETUP_PROFILE_INVALID' | 'SETUP_WRITE_VERIFY_FAILED', message: string) {
+  constructor(readonly code: 'SETUP_CAP_INVALID' | 'SETUP_APPROVER_INVALID' | 'SETUP_PROFILE_INVALID' | 'SETUP_PRICE_INVALID' | 'SETUP_WRITE_VERIFY_FAILED', message: string) {
     super(message);
   }
 }
@@ -310,7 +384,8 @@ export const removeProviderSetup = (userDataDir: string, profile: Pick<ProviderS
   }
   const budgetDir = join(userDataDir, 'budget');
   const approval = readDeploymentBudgetApproval(budgetDir);
-  if (approval !== null && approval.billingScope.account === profile.billingAccount) {
+  // UI-AUDIT-2: either setup flavour (shipped profile or a custom service) is the user's own approval.
+  if (approval !== null && (approval.billingScope.account === profile.billingAccount || approval.billingScope.account === SETUP_CUSTOM_BILLING_ACCOUNT)) {
     rmSync(join(budgetDir, 'approvals.json'), { force: true });
     removed.push('budget/approvals.json');
   }

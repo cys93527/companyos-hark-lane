@@ -68,7 +68,7 @@ import { productionCompositionOptions, productionIsolationResourcesDir, producti
 import { captureRuntimeEnv, createProviderRuntimeEnv, readProviderSetup, PROVIDER_SETUP_DIR, PROVIDER_SETUP_KEY_FILE } from './provider-setup.js';
 import { loadProviderSetupUnprotect } from './provider-setup-dpapi.js';
 import { productionIsolationLaunchConfig } from './executor/isolation/isolation-status-runner.js';
-import { createDeploymentBudgetProofSource } from './deployment-budget-proof.js';
+import { createDeploymentBudgetProofSource, readDeploymentBudgetReadiness } from './deployment-budget-proof.js';
 import { CSP, createWindowOptions, denyAllPermissions } from './security.js';
 import { createWorkflowApi, type WorkflowApi } from './workflows.js';
 import { createControlPlaneIpcHandler, neverReject } from './control-plane-ipc.js';
@@ -625,8 +625,13 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
         // PRIVATE runtime environment; only the boolean leaves the main process).
         const resolved = resolveOpenAiCompatibleConfig(runtimeEnv);
         const configured = resolved.ok ? resolved.value : null;
+        // UI-AUDIT-2: rows of a provider that is not bound in this process (an earlier setup or
+        // endpoint) are listed as such, never offered for a Goal.
+        const core = coreServices;
         return rows.map((row) => ({
           configured: configured !== null && row.providerId === configured.providerId && row.modelId === configured.modelId,
+          bound: core !== null && core.providers.get(row.providerId) !== null,
+          metadata: row.metadata,
           providerId: row.providerId,
           modelId: row.modelId,
           displayName: row.displayName,
@@ -635,6 +640,12 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
           capabilities: row.capabilities,
           pricing: row.pricing,
         }));
+      },
+      // UI-AUDIT-2 — the budget facts the composer needs before a Goal is sent.
+      budgetReadiness: () => readDeploymentBudgetReadiness(join(app.getPath('userData'), 'budget'), deploymentBudgetLoaded),
+      configuredModel: () => {
+        const resolved = resolveOpenAiCompatibleConfig(runtimeEnv);
+        return resolved.ok && resolved.value !== null ? { providerId: resolved.value.providerId, modelId: resolved.value.modelId } : null;
       },
       // STAGE 3 — the derived readiness projection. Computed from facts the trusted main
       // process already owns; the renderer never owns any of them.
@@ -672,10 +683,10 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
           providerDetail:
             provider === null
               ? (refusedAdapter?.message ?? '尚未注册模型提供商（受信外部配置路径）。')
-              : `提供商 ${provider.providerId} · 健康 ${healthStatus}`,
+              : `${readinessProviderName(provider)} · ${READINESS_HEALTH_WORDS[healthStatus] ?? '连接状态未知'}`,
           modelSelected: typeof modelKey === 'string' && modelKey.length > 0,
           modelDetail:
-            typeof modelKey === 'string' && modelKey.length > 0 ? `已选择 ${modelKey}` : '尚未选择公司模型。',
+            typeof modelKey === 'string' && modelKey.length > 0 ? `默认模型：${readinessModelName(modelKey)}` : '尚未选择默认模型。',
           // The executor route is PRODUCT configuration; when it cannot be resolved the
           // canonical external precondition is EXECUTOR_PROVIDER_UNKNOWN.
           executorConfigured: core.executorProviders !== null,
@@ -717,6 +728,28 @@ async function buildWorkflowApi(activeLogger: Logger): Promise<WorkflowApi | nul
 }
 
 /**
+ * UI-AUDIT-2 — readiness detail strings are shown to the user verbatim; they carry the
+ * provider's display name and a plain health word, never a raw provider id / status enum.
+ */
+const READINESS_HEALTH_WORDS: Readonly<Record<string, string>> = {
+  healthy: '连接正常',
+  degraded: '连接不稳定',
+  unavailable: '暂时无法连接',
+  unknown: '连接状态未知',
+};
+
+function readinessProviderName(provider: { readonly providerId: string; readonly displayName: string }): string {
+  const name = provider.displayName.trim();
+  return name.length > 0 && name !== provider.providerId ? name : '模型服务';
+}
+
+/** A model key is `<providerId>:<modelId>`; the user knows the model id they registered. */
+function readinessModelName(modelKey: string): string {
+  const index = modelKey.lastIndexOf(':');
+  return index >= 0 && index < modelKey.length - 1 ? modelKey.slice(index + 1) : modelKey;
+}
+
+/**
  * H17a — the ordinary user's provider setup ("CompanyOS 首次配置", resources/setup). Applied to
  * the PRIVATE runtime environment (AUDIT-D3; never process.env) once, before any composition reads it; a deployment environment
  * that declares the model wins whole. The DPAPI binding is loaded only when a key file exists.
@@ -742,8 +775,11 @@ async function applyInstalledProviderSetup(): Promise<void> {
  * H10 — the operator-attested budget (userData/budget). Read once per composition; with
  * no valid approval this returns {} and the fail-closed default admission stands.
  */
+let deploymentBudgetLoaded = false;
 function deploymentBudgetOptions(): { trustedBudgetProofs?: NonNullable<ReturnType<typeof createDeploymentBudgetProofSource>>['source']; budgetCap?: NonNullable<ReturnType<typeof createDeploymentBudgetProofSource>>['cap'] } {
   const deployment = createDeploymentBudgetProofSource(join(app.getPath('userData'), 'budget'));
+  // UI-AUDIT-2: budget.readiness reports whether THIS composition took an approval.
+  deploymentBudgetLoaded = deployment !== undefined;
   if (deployment === undefined) return {};
   logger.info('deployment budget approval loaded', {
     currency: deployment.source.currency,

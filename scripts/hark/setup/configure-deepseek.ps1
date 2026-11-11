@@ -9,10 +9,20 @@
 #   2. runs configure-provider.mjs under the app's own runtime (ELECTRON_RUN_AS_NODE) to write the NON-secret
 #      provider\model.json and the user's per-Goal budget approval (budget\approvals.json + price proof).
 #   -Remove deletes the key file, model.json and the approval this helper wrote.
+#   -Custom (or answer 2 at the first question) configures any other OpenAI-compatible service: its https address, the
+#      chat model id and its published price (CNY per million tokens, attested by the user), so a per-Goal budget exists
+#      for that model too (without one every paid call is refused: "预算为 0").
 # Exit codes: 0 configured/removed, 2 bad input, 3 write failed, 5 app not found.
 param(
   [double]$CapCny = 0,
   [switch]$KeyFromStdin,
+  # UI-AUDIT-2: any OpenAI-compatible service (address, model, the user's attested price).
+  [switch]$Custom,
+  [string]$BaseUrl = '',
+  [string]$ModelId = '',
+  [string]$ProviderId = '',
+  [double]$InputCnyPerM = 0,
+  [double]$OutputCnyPerM = 0,
   [switch]$Remove,
   [switch]$NoPause,
   [string]$UserData = (Join-Path $env:APPDATA 'CompanyOS'),
@@ -87,15 +97,77 @@ if ($Remove) {
 
 # AUDIT-S9: the app must exist BEFORE anything is asked or written (it used to be checked after the key was replaced).
 if (-not (Test-Path -LiteralPath $AppExe)) { Finish 5 "找不到 CompanyOS 程序：$AppExe" }
-Write-Host 'CompanyOS 首次配置（DeepSeek）'
+Write-Host 'CompanyOS 首次配置'
 Write-Host 'API Key 只保存在本机，用当前 Windows 用户的 DPAPI 加密；CompanyOS 界面不会读取或显示它。'
+
+function Read-EnvSetting([string]$name) {
+  $v = [Environment]::GetEnvironmentVariable($name)
+  if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'User') }
+  if ($v) { return $v.Trim() }
+  return ''
+}
+function Read-Price([string]$label) {
+  $answer = Read-Host $label
+  $value = 0.0
+  if ([string]::IsNullOrWhiteSpace($answer) -or -not [double]::TryParse($answer.Trim(), [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$value)) { return 0 }
+  return $value
+}
+$envBase = Read-EnvSetting 'COS_MODEL_BASE_URL'
+$envModel = Read-EnvSetting 'COS_MODEL_ID'
+$envProvider = Read-EnvSetting 'COS_MODEL_PROVIDER_ID'
+
+# 0. which service (UI-AUDIT-2): the shipped profile, or any other OpenAI-compatible service
+if (-not $Custom -and -not $KeyFromStdin) {
+  Write-Host '要配置哪个模型服务？'
+  Write-Host '  1 = DeepSeek（默认）'
+  Write-Host '  2 = 其他 OpenAI 兼容服务（自己填写服务地址、对话模型和价格）'
+  $choice = Read-Host '输入 1 或 2（直接回车 = 1）'
+  if ($null -eq $choice) { $choice = '' }
+  $choice = $choice.Trim()
+  if ($choice -eq '2') { $Custom = $true } elseif ($choice -ne '' -and $choice -ne '1') { Finish 2 '只能输入 1 或 2。没有保存任何内容。' }
+}
+if ($envBase -or $envModel) {
+  Write-Host '注意：检测到环境变量 COS_MODEL_BASE_URL / COS_MODEL_ID。CompanyOS 会优先使用环境变量里的模型；这里设置的预算只对与环境变量相同的服务地址和模型生效。'
+}
+if ($Custom) {
+  if (-not $BaseUrl) {
+    $hint = ''
+    if ($envBase) { $hint = "（直接回车 = ${envBase}）" }
+    $BaseUrl = Read-Host "服务地址，以 https:// 开头，一般以 /v1 结尾${hint}"
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) { $BaseUrl = $envBase }
+  }
+  if (-not $ModelId) {
+    $hint = ''
+    if ($envModel) { $hint = "（直接回车 = ${envModel}）" }
+    $ModelId = Read-Host "对话模型的 id（不要填图像、视频或向量模型）${hint}"
+    if ([string]::IsNullOrWhiteSpace($ModelId)) { $ModelId = $envModel }
+  }
+  if (-not $ProviderId -and $envProvider) { $ProviderId = $envProvider }
+  if ($null -eq $BaseUrl) { $BaseUrl = '' }
+  if ($null -eq $ModelId) { $ModelId = '' }
+  $BaseUrl = $BaseUrl.Trim()
+  $ModelId = $ModelId.Trim()
+  if ($BaseUrl -notmatch '^https://') { Finish 2 '服务地址必须以 https:// 开头。没有保存任何内容。' }
+  if ($ModelId -notmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$') { Finish 2 '模型 id 格式不对（字母、数字和 . _ : / -，最多 128 个字符）。没有保存任何内容。' }
+  if ($InputCnyPerM -le 0) {
+    if ($KeyFromStdin) { Finish 2 '-Custom 需要 -InputCnyPerM 和 -OutputCnyPerM。没有保存任何内容。' }
+    $InputCnyPerM = Read-Price '输入价格：每百万输入 tokens 多少元（人民币，按服务商公布的价格）'
+  }
+  if ($OutputCnyPerM -le 0) {
+    if ($KeyFromStdin) { Finish 2 '-Custom 需要 -InputCnyPerM 和 -OutputCnyPerM。没有保存任何内容。' }
+    $OutputCnyPerM = Read-Price '输出价格：每百万输出 tokens 多少元（人民币）'
+  }
+  if ($InputCnyPerM -le 0 -or $InputCnyPerM -gt 1000 -or $OutputCnyPerM -le 0 -or $OutputCnyPerM -gt 1000) { Finish 2 '价格必须大于 0 且不超过 1000 元/百万 tokens。没有保存任何内容。' }
+}
 
 # 1. the key
 $plain = $null
 if ($KeyFromStdin) {
   $plain = [Console]::In.ReadLine()
 } else {
-  $secure = Read-Host -AsSecureString '请粘贴 DeepSeek API Key（输入时不显示）'
+  $keyPrompt = '请粘贴 DeepSeek API Key（输入时不显示）'
+  if ($Custom) { $keyPrompt = '请粘贴该服务的 API Key（输入时不显示）' }
+  $secure = Read-Host -AsSecureString $keyPrompt
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 }
@@ -149,10 +221,18 @@ try {
 
 # 4. non-secret model settings + budget approval through the app's own parsers
 $cap = $CapCny.ToString([Globalization.CultureInfo]::InvariantCulture)
-$r = Invoke-SetupNode @('write', '--user-data', $UserData, '--cap-cny', $cap, '--approved-by', $env:USERNAME)
+$writeArgs = @('write', '--user-data', $UserData, '--cap-cny', $cap, '--approved-by', $env:USERNAME)
+if ($Custom) {
+  $inv = [Globalization.CultureInfo]::InvariantCulture
+  $writeArgs = @('write-custom', '--user-data', $UserData, '--cap-cny', $cap, '--approved-by', $env:USERNAME, '--base-url', $BaseUrl, '--model-id', $ModelId, '--input-cny', $InputCnyPerM.ToString($inv), '--output-cny', $OutputCnyPerM.ToString($inv))
+  if ($ProviderId) { $writeArgs += @('--provider-id', $ProviderId) }
+}
+$r = Invoke-SetupNode $writeArgs
 if ($r.exit -ne 0 -or $null -eq $r.result -or -not $r.result.ok) {
   $restored = Restore-PreviousKey
   Finish 3 "配置写入失败（$restored）：$($r.raw)"
 }
 Remove-Item -LiteralPath $bakKey -Force -ErrorAction SilentlyContinue
-Finish 0 "已配置：DeepSeek（deepseek-flash），每个目标花费上限 $cap 元。请重新启动 CompanyOS 后生效；要修改或移除，重新运行「CompanyOS 首次配置」（移除：加 -Remove）。"
+$configured = 'DeepSeek（deepseek-flash）'
+if ($Custom) { $configured = "${ModelId}（${BaseUrl}）" }
+Finish 0 "已配置：$configured，每个目标花费上限 $cap 元。请重新启动 CompanyOS 后生效；要修改或移除，重新运行「CompanyOS 首次配置」（移除：加 -Remove）。"

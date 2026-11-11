@@ -2085,3 +2085,122 @@ form {
   border-top: 0;
   padding-top: 0;
 }
+
+/* ------------------------------------------------ UI-AUDIT-2 (2026-11-11) */
+/* Technical detail (codes, run ids, raw timeline): collapsed, mono, meta grey — never the main text. */
+.tech {
+  margin: 2px 0 0;
+  font-size: var(--fs-11);
+  color: var(--ink-3);
+}
+.tech > summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-block;
+  color: var(--ink-3);
+}
+.tech > summary::-webkit-details-marker {
+  display: none;
+}
+.tech > summary::before {
+  content: '▸ ';
+}
+.tech[open] > summary::before {
+  content: '▾ ';
+}
+.tech__code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+.tech__list {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.typed-error__message .tech {
+  display: block;
+}
+.composer__blocked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+.composer__blocked-action {
+  font-size: var(--fs-12);
+  color: var(--accent-ink);
+}
+.model-notice {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-12);
+  color: var(--ink-2);
+}
+.popover__label {
+  margin: 0 0 var(--sp-1, 4px);
+}
+.popover__warn {
+  font-size: var(--fs-11);
+  color: var(--accent-ink);
+}
+.popover__manage {
+  margin-top: var(--sp-2);
+  border-top: 1px solid var(--rule);
+  padding-top: var(--sp-2);
+  width: 100%;
+  justify-content: flex-start;
+}
+.chat__failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1, 4px);
+}
+.settings-models__list {
+  list-style: none;
+  margin: var(--sp-2) 0;
+  padding: 0;
+}
+.settings-models__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.settings-models__name {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+.settings-models__meta {
+  font-size: var(--fs-12);
+}
+.settings-models__actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+.settings-models__add,
+.settings-models__nonchat {
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-13);
+}
+.settings-models__add > summary,
+.settings-models__nonchat > summary {
+  cursor: pointer;
+  color: var(--ink-2);
+}
+.settings-budget__lines {
+  margin: 0 0 var(--sp-2);
+  padding-left: 1.2em;
+}
+.runtime-task__ref {
+  display: block;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}

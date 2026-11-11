@@ -143,3 +143,47 @@ export const createDeploymentBudgetProofSource = (
   };
   return { source, cap: approval.cap };
 };
+
+/** UI-AUDIT-2: the billing account the first-run setup writes (any profile) — see provider-setup-write.ts. */
+const SETUP_BILLING_ACCOUNT = /:user-setup(:|$)/u;
+
+/**
+ * UI-AUDIT-2 — the budget readiness the composer shows BEFORE a Goal is sent (the user saw
+ * "预算为 0（付费调用被拒绝）" only after a failed run). Read fresh from disk; `loaded` is
+ * whether this process's composition took an approval (the source is read once per
+ * composition), so an approval written after start reads RESTART_REQUIRED, never APPROVED.
+ * Only identities, validity, currency and the cap leave this function — no account, no
+ * credential reference, no price.
+ */
+export const readDeploymentBudgetReadiness = (
+  budgetDir: string,
+  loaded: boolean,
+  now: () => number = Date.now,
+): {
+  readonly state: 'APPROVED' | 'NOT_APPROVED' | 'RESTART_REQUIRED';
+  readonly currency: string | null;
+  readonly capCostMicros: number | null;
+  readonly source: 'provider-setup' | 'operator' | null;
+  readonly covered: readonly { readonly providerId: string; readonly modelId: string; readonly validUntilMs: number; readonly valid: boolean }[];
+} => {
+  const approval = readDeploymentBudgetApproval(budgetDir);
+  if (approval === null) return { state: 'NOT_APPROVED', currency: null, capCostMicros: null, source: null, covered: [] };
+  const t = now();
+  const covered = approval.proofs.flatMap((ref) => {
+    const proof = parseProof(budgetDir, ref);
+    if (proof === null || proof.scope !== 'PRODUCTION_VERIFIED') return [];
+    return [{
+      providerId: proof.identity.providerId,
+      modelId: proof.identity.modelId,
+      validUntilMs: proof.validUntilMs,
+      valid: t >= proof.validFromMs && t < proof.validUntilMs,
+    }];
+  });
+  return {
+    state: loaded ? 'APPROVED' : 'RESTART_REQUIRED',
+    currency: approval.currency,
+    capCostMicros: approval.cap.maxCostMicros,
+    source: SETUP_BILLING_ACCOUNT.test(approval.billingScope.account) ? 'provider-setup' : 'operator',
+    covered,
+  };
+};

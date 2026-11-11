@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { ChatView } from '../src/chat.js';
 import { createLocalDraftStore } from '../src/local-draft-store.js';
-import { memoryStorage, mountApp, unmountApp, WORKSPACE } from './support/audit-app-harness.js';
+import { memoryStorage, mountApp,
+  settle, unmountApp, WORKSPACE } from './support/audit-app-harness.js';
 
 afterEach(() => unmountApp());
 
@@ -60,7 +61,11 @@ describe('AUDIT R3 — action failures have a visible surface', () => {
         return undefined;
       },
     });
-    await app.click('Model X未注册'); // the onboarding row (the dock also shows the name)
+    // UI-AUDIT-2: the provider's only model is chosen automatically (no catalogue list is offered);
+    // its failed registration shows in plain Chinese, the code stays under 详情.
+    await settle();
+    expect(app.view.textContent).toContain('无法注册该模型');
     expect(app.view.textContent).toContain('MODEL_REGISTER_FAILED');
+    expect(app.button('Model X未注册')).toBeNull();
   });
 });

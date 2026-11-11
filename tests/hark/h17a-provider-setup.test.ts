@@ -260,8 +260,9 @@ describe('H17a trusted helper scripts', () => {
     expect(ps1).toContain('[Security.Cryptography.DataProtectionScope]::CurrentUser');
     expect(ps1).toContain('ZeroFreeBSTR');
     expect(ps1).not.toMatch(/[\u201c\u201d\u2018\u2019]/u); // PowerShell treats smart quotes as string delimiters
-    const nodeCalls = ps1.split('\n').filter((l) => l.includes("Invoke-SetupNode @("));
-    expect(nodeCalls.length).toBe(2);
+    // UI-AUDIT-2: remove + the write (its arguments are built in $writeArgs for the shipped profile or -Custom).
+    const nodeCalls = ps1.split('\n').filter((l) => l.includes('Invoke-SetupNode @(') || l.includes('Invoke-SetupNode $writeArgs') || l.includes('$writeArgs = @(') || l.includes('$writeArgs += @('));
+    expect(nodeCalls.length).toBe(5);
     for (const l of nodeCalls) expect(l).not.toMatch(/plain|bytes|blob|secure/iu);
     expect(ps1).not.toMatch(/\$env:COMPANYOS_MODEL_API_KEY\s*=/u);
   });

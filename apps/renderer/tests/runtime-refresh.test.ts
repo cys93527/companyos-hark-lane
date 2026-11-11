@@ -350,7 +350,7 @@ describe('DRA-05 P1 — task ownership across Goal/Run selections (real React)',
     const call = harness.pending.splice(harness.pending.findIndex((item) => item.operation === 'run.task'), 1)[0]!;
     await act(async () => { call.reject(new Error('fixture IPC failure')); });
     await settle();
-    expect(container.textContent).toContain('选择运行页中的任务以查看 canonical 明细。');
+    expect(container.textContent).toContain('在「运行」页点一个任务，查看它的明细。');
   });
 
   it('does not commit a task detail after unmount', async () => {
@@ -377,7 +377,7 @@ describe('DRA-05 P1 — task ownership across Goal/Run selections (real React)',
     next.overview.runId = 'execution_2';
     await respondRuntimeChain(harness, 'run_A', next);
     await respond(harness, 'run.task', taskObservationOf('tsk_A1', 'RUNNING'));
-    expect(container.textContent).toContain('选择运行页中的任务以查看 canonical 明细。');
+    expect(container.textContent).toContain('在「运行」页点一个任务，查看它的明细。');
   });
 });
 
@@ -416,7 +416,7 @@ describe('DRA-05 P2 — uncancellable runtime IPC has bounded deadlines and reco
     await advance(RUNTIME_READ_TIMEOUT_MS);
     await advance(TICK_MS);
     await respond(harness, 'goal.workspace', workspaceOf('run_A', 'FAILED'), 'run_A');
-    expect(container.textContent).not.toContain('目标 · FAILED');
+    expect(container.textContent).not.toContain('目标 · 失败');
     expect(harness.callsOf('run.timeline')).toHaveLength(0);
     await advance(TICK_MS);
     expect(harness.callsOf('goal.workspace')).toHaveLength(3);
@@ -424,7 +424,7 @@ describe('DRA-05 P2 — uncancellable runtime IPC has bounded deadlines and reco
     await respond(harness, 'goal.workspace', workspaceOf('run_A', 'FAILED'), 'run_A');
     await respondRuntimeChain(harness, 'run_A', workspaceOf('run_A', 'EXECUTING'));
     await expandPanel(container);
-    expect(container.textContent).toContain('目标 · EXECUTING');
+    expect(container.textContent).toContain('目标 · 执行中');
     expect(container.textContent).not.toContain('RUNTIME_READ_');
   });
 
@@ -441,7 +441,7 @@ describe('DRA-05 P2 — uncancellable runtime IPC has bounded deadlines and reco
     await respondRuntimeChain(harness, 'run_C', workspaceOf('run_C', 'RECOVERING'));
     await expandPanel(container);
     await respond(harness, 'goal.workspace', workspaceOf('run_B', 'FAILED'), 'run_B');
-    expect(container.textContent).toContain('目标 · RECOVERING');
+    expect(container.textContent).toContain('目标 · 恢复中');
     expect(container.textContent).not.toContain('FAILED');
   });
 
@@ -469,7 +469,7 @@ describe('DRA-05 P2 — uncancellable runtime IPC has bounded deadlines and reco
     await advance(TICK_MS);
     await respondRuntimeChain(harness, 'run_A', workspaceOf('run_A', 'COMPLETED'));
     await expandPanel(container);
-    expect(container.textContent).toContain('目标 · COMPLETED');
+    expect(container.textContent).toContain('目标 · 已完成');
     const calls = harness.callsOf('goal.workspace').length;
     // B and C keep GoalList polling; selected terminal A must still stop.
     await advance(TICK_MS * 4);
@@ -502,7 +502,7 @@ describe('DRA-05 P2 — uncancellable runtime IPC has bounded deadlines and reco
     expect(harness.callsOf('goal.workspace')).toHaveLength(2);
     await respondRuntimeChain(harness, 'run_A', workspaceOf('run_A', 'COMPLETED'));
     await expandPanel(container);
-    expect(container.textContent).toContain('目标 · COMPLETED');
+    expect(container.textContent).toContain('目标 · 已完成');
   });
 
   it('cleans local deadlines and polling on unmount without claiming IPC cancellation', async () => {
@@ -532,7 +532,7 @@ describe('DRA-05 — the controlled refresh drives the open Goal\'s runtime read
     expect(harness.callsOf('goal.workspace').length).toBe(1);
     await respondRuntimeChain(harness, 'run_A', workspaceOf('run_A', 'EXECUTING', { objective: '目标 A' }));
     await expandPanel(container);
-    expect(container.textContent).toContain('目标 · EXECUTING');
+    expect(container.textContent).toContain('目标 · 执行中');
 
     // The controlled refresh (same 4s tick as every other projection) must re-read
     // the OPEN Goal's canonical projections…
@@ -548,7 +548,7 @@ describe('DRA-05 — the controlled refresh drives the open Goal\'s runtime read
       'run_A',
       workspaceOf('run_A', 'COMPLETED', { objective: '目标 A', artifactIds: ['art_9'] }),
     );
-    expect(container.textContent).toContain('目标 · COMPLETED');
+    expect(container.textContent).toContain('目标 · 已完成');
 
     // Every request the renderer made is a READ of the canonical surface.
     for (const call of harness.calls) expect(READ_OPERATIONS).toContain(call.operation);
@@ -573,13 +573,13 @@ describe('DRA-05 — the controlled refresh drives the open Goal\'s runtime read
     expect(workspaceCalls[1]?.payload['runId']).toBe('run_B');
     await respondRuntimeChain(harness, 'run_B', workspaceOf('run_B', 'RECOVERING', { objective: '目标 B' }));
     await expandPanel(container);
-    expect(container.textContent).toContain('目标 · RECOVERING');
+    expect(container.textContent).toContain('目标 · 恢复中');
 
     // Goal A's response arrives LATE — it must be dropped entirely: no panel
     // overwrite, and the discarded chain must not continue to timeline/artifacts.
     await respond(harness, 'goal.workspace', workspaceOf('run_A', 'FAILED', { objective: '目标 A' }), 'run_A');
     await settle();
-    expect(container.textContent).toContain('目标 · RECOVERING');
+    expect(container.textContent).toContain('目标 · 恢复中');
     expect(container.textContent).not.toContain('FAILED');
     expect(harness.callsOf('run.timeline').some((call) => call.payload['runId'] === 'run_A')).toBe(false);
     const runtimeOps = ['goal.workspace', 'run.timeline', 'run.artifacts'];
@@ -617,14 +617,14 @@ describe('DRA-05 — the controlled refresh drives the open Goal\'s runtime read
     await openGoal(container, '目标 A');
     await respondRuntimeChain(harness, 'run_A', workspaceOf('run_A', 'EXECUTING', { objective: '目标 A' }));
     await expandPanel(container);
-    expect(container.textContent).toContain('目标 · EXECUTING');
+    expect(container.textContent).toContain('目标 · 执行中');
 
     // The durable truth turns terminal; the one tick that was already scheduled
     // still runs and delivers it…
     harness.setSummary([{ runId: 'run_A', state: 'COMPLETED', objective: '目标 A' }]);
     await advance(TICK_MS);
     await respondRuntimeChain(harness, 'run_A', workspaceOf('run_A', 'COMPLETED', { objective: '目标 A' }));
-    expect(container.textContent).toContain('目标 · COMPLETED');
+    expect(container.textContent).toContain('目标 · 已完成');
 
     // …and then NO further reads happen, however long time runs.
     const settled = harness.callsOf('goal.workspace').length;
@@ -691,7 +691,7 @@ describe('DRA-05 — the controlled refresh drives the open Goal\'s runtime read
     await respondRuntimeChain(harness, 'run_B', workspaceOf('run_B', 'EXECUTING', { objective: '目标 B' }));
     await settle();
     // The detail belongs to ONE Goal: under Goal B the detail view is empty again.
-    expect(container.textContent).toContain('选择运行页中的任务以查看 canonical 明细。');
+    expect(container.textContent).toContain('在「运行」页点一个任务，查看它的明细。');
     expect(container.textContent).not.toContain('tsk_A1');
 
     // Goal A's late detail response must not appear under Goal B.

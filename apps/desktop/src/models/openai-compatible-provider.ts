@@ -37,6 +37,7 @@ import {
   type SecretRef,
   type StreamChunk,
 } from '@companyos/core';
+import { canRunGoals, classifyUpstreamModel } from './model-modality.js';
 import { reportedCachedInputTokens } from './provider-usage.js';
 
 /** The typed deployment configuration of this adapter (validated, non-secret fields only). */
@@ -428,11 +429,17 @@ export const createOpenAiCompatibleProvider = (deps: OpenAiCompatibleDeps): Mode
         const models: RawModelInfo[] = [];
         for (const entry of data) {
           if (typeof entry?.id !== 'string' || entry.id === '') continue;
+          // UI-AUDIT-2: an image/video/embedding/speech model cannot answer a structured text
+          // request, so it is not declared structured-output (the registry preflight then
+          // refuses it typed as CAPABILITY_MISSING) and its kind is recorded for the selector.
+          // The configured chat model is always chat (see model-modality.ts).
+          const modality = entry.id === config.modelId ? 'chat' : classifyUpstreamModel(entry as Readonly<Record<string, unknown>>, entry.id);
           models.push({
             modelId: entry.id,
             displayName: entry.id,
             contextWindow: 128_000,
-            capabilities: { structuredOutput: true },
+            capabilities: { structuredOutput: canRunGoals(modality) },
+            metadata: { modality },
           });
         }
         if (models.length === 0) {

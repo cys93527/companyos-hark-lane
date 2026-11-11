@@ -9,11 +9,13 @@
  * Tabs: 运行 (lifecycle) · 文件 (canonical artifacts) · 产出 (deliverables + validation +
  * handoffs) · 详情 (run/goal facts). Default: collapsed — the centre stays conversation-first.
  */
-import { blockerText, type CanonicalAttemptFailure } from './failure-labels.js';
+import { blockerText, failureRemedyOf, REMEDY_LABELS, type CanonicalAttemptFailure, type FailureRemedy } from './failure-labels.js';
+import { plainActivity } from './activity.js';
+import { TypedErrorLine } from './typed-error.js';
 import { createElement as h, type JSX } from 'react';
 import { budgetRows, formatMoney, type GoalBudgetRead } from './budget.js';
 import { terminalOutcomeOf } from './run-outcome.js';
-import { riskWord } from './format.js';
+import { artifactKindWord, clockStamp, riskWord, stateWord } from './format.js';
 import type { ModelRuntimeView } from './telemetry.js';
 
 /* ------------------------------------------------- canonical input shapes --- */
@@ -232,7 +234,7 @@ export const projectRuntimeLifecycle = (
       modelKey: detail?.provenance[0]?.modelKey ?? null,
       state: detail?.state ?? 'RUNNING',
       attemptLabel:
-        entry.attempt === null ? null : `#${entry.attempt.attemptNumber} ${entry.attempt.state}`,
+        entry.attempt === null ? null : `第 ${entry.attempt.attemptNumber} 次尝试 · ${stateWord(entry.attempt.state)}`,
     });
   }
   for (const detail of taskDetails ?? []) {
@@ -319,6 +321,8 @@ export interface RuntimePanelViewProps {
   readonly onArtifactReveal?: (artifactId: string, kind: string) => void;
   readonly artifactPreview?: { readonly artifactId: string; readonly text: string; readonly truncated: boolean; readonly kind: string } | null;
   readonly artifactFailure?: { readonly code: string; readonly message: string } | null;
+  /** UI-AUDIT-2: open the setting that fixes a failure (budget / model). */
+  readonly onRemedy?: (remedy: FailureRemedy) => void;
 }
 
 /** Canonical elapsed wall time between two ISO stamps — measured, never estimated. */
@@ -336,8 +340,8 @@ export const failureClassificationOf = (task: CanonicalTaskObservation | null): 
   if (task === null) return '--';
   if (task.state !== 'FAILED') return '—';
   return task.executionAttempts.some((attempt) => attempt.state === 'FAILED')
-    ? 'FAILED（attempt 已判定）'
-    : 'FAILED（无 attempt 明细）';
+    ? '失败（有执行尝试记录）'
+    : '失败（没有执行尝试记录）';
 };
 
 const LIVE_PHASES: ReadonlySet<RuntimePhase> = new Set(['planning', 'executing', 'validating', 'correcting', 'awaiting-user', 'blocked']);
@@ -353,6 +357,23 @@ const displayMoney = (micros: number, currency: Parameters<typeof formatMoney>[1
   const exact = formatMoney(micros, currency);
   const value = (Math.round(micros / 10_000) / 100).toFixed(2);
   return exact.replace(/[0-9]+(?:\.[0-9]+)?/u, value);
+};
+
+/**
+ * UI-AUDIT-2 — the model(s) this goal actually ran on, from task provenance (`<providerId>:<modelId>`
+ * keys shown as the model id). Empty until a task has made a model call.
+ */
+export const goalRanModels = (lifecycle: Pick<RuntimeLifecycleView, 'tasks'> | null): readonly string[] => {
+  if (lifecycle === null) return [];
+  const names: string[] = [];
+  for (const task of lifecycle.tasks) {
+    const key = task.modelKey;
+    if (key === null || key === '') continue;
+    const index = key.lastIndexOf(':');
+    const name = index >= 0 && index < key.length - 1 ? key.slice(index + 1) : key;
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
 };
 
 const kvRow = (label: string, value: string, key: string): JSX.Element[] => [
@@ -419,6 +440,9 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
   const pending = props.pendingApproval ?? null;
   const blockers = props.blockers ?? [];
   const model = props.model ?? null;
+  const ranModels = goalRanModels(lifecycle);
+  const remedy = failureRemedyOf(props.attemptFailure ?? null);
+  const zeroBudget = budget !== null && budget.budget.state === 'ZERO_COST_POLICY';
 
   const runTab = h(
     'div',
@@ -436,10 +460,14 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
               ? null
               : h('small', { className: 'num' }, `${lifecycle.executionState == null ? '' : '执行 · '}阶段 ${String(props.stageProgress.done)}/${String(props.stageProgress.total)} 完成`),
           ),
+          // UI-AUDIT-2: Chinese state words; the canonical enums stay in the tooltip.
           h(
             'p',
-            { className: 'rt-canonical num' },
-            `目标 · ${lifecycle.runState} · 规划 · ${lifecycle.planningState ?? '--'}${lifecycle.executionState == null ? '' : ` · 执行 · ${lifecycle.executionState}`}`,
+            {
+              className: 'rt-canonical num',
+              title: `goal ${lifecycle.runState} · planning ${lifecycle.planningState ?? '--'}${lifecycle.executionState == null ? '' : ` · execution ${lifecycle.executionState}`}`,
+            },
+            `目标 · ${stateWord(lifecycle.runState)} · 规划 · ${lifecycle.planningState === null ? '--' : stateWord(lifecycle.planningState)}${lifecycle.executionState == null ? '' : ` · 执行 · ${stateWord(lifecycle.executionState)}`}`,
           ),
         ),
     blockers.length === 0 && pending === null
@@ -468,6 +496,9 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
                 h('span', { className: 'blocker__text', title: `${blocker.code} · ${blocker.explanation}` }, blockerText(blocker, props.attemptFailure ?? null, lifecycle?.failureReason ?? null)),
               ),
             ),
+          remedy === null || props.onRemedy === undefined
+            ? null
+            : h('button', { type: 'button', className: 'btn btn--quiet btn--small', 'data-testid': 'runtime-remedy', onClick: () => props.onRemedy?.(remedy) }, REMEDY_LABELS[remedy]),
         ),
     budget === null
       ? null
@@ -481,10 +512,13 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
               'div',
               { className: 'cost' },
               // Display figure: money to the cent (the exact settled amount is in the lines below).
-              h('span', { className: 'cost__big num', title: formatMoney(budget.budget.settled.costMicros, budget.budget.currency) }, displayMoney(budget.budget.settled.costMicros, budget.budget.currency)),
-              budget.budget.cap === null
-                ? h('span', { className: 'cost__of' }, '/ 上限 --')
-                : h('span', { className: 'cost__of num' }, `/ 上限 ${displayMoney(budget.budget.cap.costMicros, budget.budget.currency)}`),
+              h('span', { className: 'cost__big num', title: zeroBudget ? undefined : formatMoney(budget.budget.settled.costMicros, budget.budget.currency) }, zeroBudget && budget.budget.currency === null ? '0' : displayMoney(budget.budget.settled.costMicros, budget.budget.currency)),
+              // UI-AUDIT-2: a zero cap is "no budget approved", not "0.00 单位".
+              zeroBudget
+                ? h('span', { className: 'cost__of' }, '/ 未批准预算')
+                : budget.budget.cap === null
+                  ? h('span', { className: 'cost__of' }, '/ 上限 --')
+                  : h('span', { className: 'cost__of num' }, `/ 上限 ${displayMoney(budget.budget.cap.costMicros, budget.budget.currency)}`),
             ),
             budget.budget.cap === null || budget.budget.cap.costMicros <= 0
               ? null
@@ -498,6 +532,9 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
               { className: 'rt-lines num' },
               budgetRows(budget.budget).map((line, index) => h('li', { key: `b${String(index)}` }, line)),
             ),
+            zeroBudget && props.onRemedy !== undefined
+              ? h('button', { type: 'button', className: 'btn btn--text', onClick: () => props.onRemedy?.('budget') }, REMEDY_LABELS.budget)
+              : null,
           ),
         ),
     model === null
@@ -508,7 +545,10 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
           h(
             'dl',
             { className: 'kv', 'data-testid': 'runtime-model' },
-            kvRow('公司模型', model.modelLabel, 'm'),
+            // UI-AUDIT-2: the goal's own model (task provenance), not the company default.
+            ...(ranModels.length > 0
+              ? kvRow('本目标所用模型', ranModels.join('、'), 'm')
+              : kvRow('默认模型（尚未调用）', model.modelLabel, 'm')),
             kvRow('上下文窗口', model.contextWindow, 'w'),
             kvRow('已用 tokens', model.used, 'u'),
             kvRow('生成速度', model.speed, 's'),
@@ -545,25 +585,26 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
           h(
             'ul',
             { className: 'files' },
-            lifecycle.tasks.map((task) =>
+            lifecycle.tasks.map((task, index) =>
               h(
                 'li',
                 { className: 'runtime-tree__row--task', key: task.taskId },
                 h(
                   'button',
-                  { type: 'button', className: 'runtime-task', onClick: () => props.onSelectTask(task.taskId), title: '查看任务明细' },
-                  h('span', { className: 'runtime-task__id mono' }, task.taskId),
-                  h('span', { className: 'runtime-task__meta' }, `${task.state}${task.attemptLabel === null ? '' : ` · 尝试 ${task.attemptLabel}`}`),
+                  {
+                    type: 'button',
+                    className: 'runtime-task',
+                    onClick: () => props.onSelectTask(task.taskId),
+                    // UI-AUDIT-2: ids / role / model keys are support details (tooltip), not list text.
+                    title: ['查看任务明细', task.taskId, task.roleId === null ? null : `角色 ${task.roleId}`, task.modelKey === null ? null : `模型 ${task.modelKey}`]
+                      .filter((part): part is string => part !== null)
+                      .join(' · '),
+                  },
+                  h('span', { className: 'runtime-task__id' }, `任务 ${String(index + 1)}`),
+                  h('span', { className: 'runtime-task__meta' }, `${stateWord(task.state)}${task.attemptLabel === null ? '' : ` · ${task.attemptLabel}`}`),
+                  // The task's reference (secondary, meta grey): the handle 详情 and support use.
+                  h('span', { className: 'runtime-task__ref mono' }, task.taskId),
                 ),
-                task.roleId === null && task.modelKey === null
-                  ? null
-                  : h(
-                      'span',
-                      { className: 'runtime-task__bindings' },
-                      [task.roleId === null ? null : `角色 ${task.roleId}`, task.modelKey === null ? null : `模型 ${task.modelKey}`]
-                        .filter((part): part is string => part !== null)
-                        .join(' · '),
-                    ),
               ),
             ),
           ),
@@ -577,7 +618,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
             'ul',
             { className: 'files' },
             props.artifacts.slice(0, 6).map((artifact) =>
-              h('li', { key: artifact.artifactId }, h('span', { className: 'mono' }, artifact.kind), h('span', { className: 'files__d mono', title: artifact.artifactId }, artifact.artifactId.slice(0, 14))),
+              h('li', { key: artifact.artifactId, title: `${artifact.kind} · ${artifact.artifactId}` }, h('span', null, artifactKindWord(artifact.kind))),
             ),
           ),
           props.artifacts.length > 6
@@ -592,10 +633,16 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
           h(
             'ul',
             { className: 'runtime-activity act', 'data-testid': 'runtime-activity', 'aria-label': '最近活动' },
-            props.timeline.map((entry) => h('li', { key: entry.key }, h('span', { className: 'activity__k' }, entry.kind), ` · ${entry.summary}`)),
+            plainActivity(props.timeline).map((line) => h('li', { key: line.key }, line.text)),
+          ),
+          h(
+            'details',
+            { className: 'tech' },
+            h('summary', null, `技术记录 · ${String(props.timeline.length)} 条`),
+            h('ul', { className: 'tech__list mono' }, props.timeline.map((entry) => h('li', { key: entry.key }, h('span', { className: 'activity__k' }, entry.kind), ` · ${entry.summary}`))),
           ),
         ),
-    h('p', { className: 'rt-note', key: 'note' }, '只投影 canonical 状态；未知值显示 --，不估算。'),
+    h('p', { className: 'rt-note', key: 'note' }, '未知的数值显示为 --，不做估算。'),
   );
 
   const filesTab = h(
@@ -610,8 +657,8 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
             h(
               'li',
               { key: artifact.artifactId },
-              h('span', { className: 'runtime-files__kind mono' }, artifact.kind),
-              h('span', { className: 'runtime-files__id mono', title: artifact.artifactId }, artifact.artifactId),
+              h('span', { className: 'runtime-files__kind', title: artifact.kind }, artifactKindWord(artifact.kind)),
+              h('span', { className: 'runtime-files__id mono', title: artifact.artifactId }, artifact.artifactId.slice(0, 14)),
               h(
                 'span',
                 { className: 'runtime-files__actions' },
@@ -632,7 +679,7 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
         ),
     (props.artifactFailure ?? null) === null
       ? null
-      : h('p', { key: 'failure', className: 'typed-error__message', role: 'alert' }, `${props.artifactFailure!.code} ${props.artifactFailure!.message}`),
+      : h('div', { key: 'failure' }, h(TypedErrorLine, { failure: props.artifactFailure! })),
   );
 
   const outputTab = h(
@@ -649,27 +696,27 @@ export function RuntimePanelView(props: RuntimePanelViewProps): JSX.Element {
         kvRow('移交', lifecycle === null ? '--' : String(lifecycle.handoffCount), 'h'),
       ),
     ),
-    h('p', { className: 'rt-note' }, '产物说明不能替代 canonical 验证结果；此处只投影 canonical 状态。'),
+    h('p', { className: 'rt-note' }, '有产物不等于已交付：是否交付以验证结果为准。'),
   );
 
   const detailTab = h(
     'div',
     { className: 'runtime-detail' },
     props.taskDetail === null
-      ? h('p', { className: 'muted' }, '选择运行页中的任务以查看 canonical 明细。')
+      ? h('p', { className: 'muted' }, '在「运行」页点一个任务，查看它的明细。')
       : section(
           '任务明细',
           'task',
           h(
             'dl',
             { className: 'kv kv--wrap' },
-            kvRow('任务', props.taskDetail.taskId, 't'),
+            kvRow('状态', stateWord(props.taskDetail.state), 's'),
+            kvRow('开始', clockStamp(props.taskDetail.createdAt), 'b'),
             kvRow('角色', props.taskDetail.roleId, 'r'),
             kvRow('模型', props.taskDetail.provenance[0]?.modelKey ?? '--', 'm'),
-            kvRow('Provider', props.taskDetail.provider?.providerKey ?? '--', 'p'),
-            kvRow('状态', `${props.taskDetail.state} · 尝试 ${String(props.taskDetail.attempts)}/${String(props.taskDetail.maxAttempts)}`, 's'),
-            kvRow('开始', props.taskDetail.createdAt, 'b'),
-            kvRow('Provider 状态', props.taskDetail.provider?.state ?? '--', 'ps'),
+            kvRow('执行方', props.taskDetail.provider?.providerKey ?? '--', 'p'),
+            kvRow('执行方状态', props.taskDetail.provider === null ? '--' : stateWord(props.taskDetail.provider.state), 'ps'),
+            kvRow('任务编号', props.taskDetail.taskId, 't'),
             kvRow('耗时', formatElapsed(props.taskDetail.createdAt, props.taskDetail.updatedAt), 'e'),
             kvRow('尝试', `${String(props.taskDetail.attempts)}/${String(props.taskDetail.maxAttempts)}`, 'a'),
             kvRow('失败分类', failureClassificationOf(props.taskDetail), 'fc'),

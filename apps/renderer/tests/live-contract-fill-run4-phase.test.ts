@@ -31,8 +31,8 @@ describe('phase status: planning DONE, execution FAILED', () => {
       blockers: [], pendingApproval: null, onToggleExpanded: () => {}, onSelectTab: () => {}, onSelectTask: () => {},
       stageProgress: { done: 0, total: 5 },
     } as never));
-    expect(html).toContain('目标 · FAILED · 规划 · DONE · 执行 · FAILED');
-    expect(html).not.toContain('规划 · FAILED');
+    expect(html).toContain('目标 · 失败 · 规划 · 已完成 · 执行 · 失败');
+    expect(html).not.toContain('规划 · 失败');
     expect(html).toContain('执行 · 阶段 0/5 完成');
   });
 });

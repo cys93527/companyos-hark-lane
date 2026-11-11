@@ -9,23 +9,34 @@
  * Activity is never progress. A FAILED Goal stays FAILED and is never relabelled
  * "completed with warning".
  */
-import { attemptFailureLabel, runFailureReasonLabel } from './failure-labels.js';
+import { attemptFailureLabel, failureRemedyOf, REMEDY_LABELS, runFailureReasonLabel, type FailureRemedy } from './failure-labels.js';
+import { plainActivity } from './activity.js';
+import { TypedErrorLine } from './typed-error.js';
 import { createElement as h, type JSX, type ReactNode } from 'react';
 
 import { projectRuntimePhase, type RuntimePhase, type CanonicalTimelineEntry, type CanonicalGoalWorkspace } from './runtime-panel.js';
 import { terminalOutcomeOf } from './run-outcome.js';
-import { clockTime } from './format.js';
+import { artifactKindWord, clockTime } from './format.js';
 import type { PlanStepView } from './plan-steps.js';
 
 export type ChatEntry =
   | { readonly kind: 'user'; readonly text: string }
   | { readonly kind: 'goal-accepted'; readonly runId: string; readonly objective: string }
   | { readonly kind: 'phase'; readonly phase: RuntimePhase; readonly runState: string }
-  | { readonly kind: 'activity'; readonly entryKind: string; readonly summary: string; readonly occurredAt?: string | null }
+  | { readonly kind: 'activity'; readonly entryKind: string; readonly summary: string; readonly occurredAt?: string | null; readonly key?: string }
   | { readonly kind: 'validation'; readonly completed: number; readonly failed: boolean; readonly missing: number }
   | { readonly kind: 'artifacts'; readonly artifacts: readonly { readonly artifactId: string; readonly kind: string }[] }
   | { readonly kind: 'outcome'; readonly delivered: boolean }
-  | { readonly kind: 'failed'; readonly reason: string | null; readonly blockerCodes: readonly string[]; readonly detail?: string | null }
+  | {
+      readonly kind: 'failed';
+      readonly reason: string | null;
+      readonly blockerCodes: readonly string[];
+      readonly detail?: string | null;
+      /** UI-AUDIT-2: the one fix the user can take (budget / model), when there is one. */
+      readonly remedy?: FailureRemedy | null;
+      /** UI-AUDIT-2: the internal codes, shown only under 详情. */
+      readonly codes?: readonly string[];
+    }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'cancel-requested' };
 
@@ -60,11 +71,18 @@ export const projectConversation = (
       reason: workspace.overview?.failureReason ?? null,
       blockerCodes: workspace.blockers.map((blocker) => blocker.code),
       detail: attemptFailureLabel(workspace.attemptFailure ?? null),
+      remedy: failureRemedyOf(workspace.attemptFailure ?? null),
+      codes: [
+        workspace.overview?.failureReason ?? null,
+        workspace.attemptFailure?.failureCode ?? null,
+        workspace.attemptFailure?.detailCode ?? null,
+        ...workspace.blockers.map((blocker) => blocker.code),
+      ].filter((code, index, all): code is string => code !== null && code !== '' && all.indexOf(code) === index),
     });
   }
 
   for (const entry of timeline.slice(-8)) {
-    entries.push({ kind: 'activity', entryKind: entry.kind, summary: entry.summary, occurredAt: entry.occurredAt });
+    entries.push({ kind: 'activity', entryKind: entry.kind, summary: entry.summary, occurredAt: entry.occurredAt, key: entry.key });
   }
 
   const overview = workspace.overview;
@@ -110,6 +128,8 @@ export interface ChatViewProps {
   /** UI-AUDIT-17: an ended Goal can hand its description back to the composer (never auto-sends). */
   readonly onReuseObjective?: (() => void) | null;
   readonly reuseDisabledReason?: string | null;
+  /** UI-AUDIT-2: the failure's fix action (opens the budget / model settings). */
+  readonly onRemedy?: ((remedy: FailureRemedy) => void) | null;
 }
 
 const TITLE_MAX = 48;
@@ -141,9 +161,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
       h('h1', { className: 'chat__title' }, '你想把什么事情变成现实？'),
       h('p', { className: 'chat__subtitle muted' }, '在下方用一句话描述目标，CompanyOS 会规划、执行并交付；高风险操作会停下来等你批准。'),
       // AUDIT R3: a failure is never swallowed by the empty state.
-      props.failure === null
-        ? null
-        : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
+      props.failure === null ? null : h(TypedErrorLine, { failure: props.failure }),
     );
   }
   const { title, truncated } = goalTitleOf(props.objective);
@@ -159,16 +177,31 @@ export function ChatView(props: ChatViewProps): JSX.Element {
   const criteria = props.criteria ?? [];
   let lastActivityTime: string | null = null;
   let activityBuffer: { key: string; kind: string; summary: string }[] = [];
+  // UI-AUDIT-2: plain Chinese steps are the activity; the raw timeline is 技术记录 (collapsed).
   const flushActivity = (): void => {
     if (activityBuffer.length === 0) return;
     const lines = activityBuffer;
     activityBuffer = [];
+    const plain = plainActivity(lines.map((line) => ({ key: line.key, kind: line.kind, summary: line.summary })));
     row(`act${lines[0]!.key}`, lastActivityTime, h(
       'div',
-      { className: 'activity', role: 'list', 'aria-label': '活动' },
-      lines.map((line) =>
-        h('div', { key: line.key, className: 'chat__row chat__row--activity', role: 'listitem' },
-          h('span', { className: 'activity__k' }, line.kind), ' · ', line.summary),
+      { className: 'activity' },
+      plain.length === 0
+        ? null
+        : h(
+            'div',
+            { role: 'list', 'aria-label': '活动' },
+            plain.map((line) => h('div', { key: line.key, className: 'chat__row chat__row--activity', role: 'listitem' }, line.text)),
+          ),
+      h(
+        'details',
+        { className: 'tech activity__tech' },
+        h('summary', null, `技术记录 · ${String(lines.length)} 条`),
+        h(
+          'ul',
+          { className: 'tech__list mono' },
+          lines.map((line) => h('li', { key: line.key }, h('span', { className: 'activity__k' }, line.kind), ' · ', line.summary)),
+        ),
       ),
     ));
   };
@@ -234,7 +267,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
         return;
       case 'artifacts':
         row(`f${String(index)}`, null, h('span', { className: 'chat__row chat__row--meta' },
-          entry.artifacts.length === 0 ? '产物 · 暂无' : `产物 · ${entry.artifacts.map((a) => a.kind).join('、')}`));
+          entry.artifacts.length === 0 ? '产物 · 暂无' : `产物 · ${[...new Set(entry.artifacts.map((a) => artifactKindWord(a.kind)))].join('、')}`));
         return;
       case 'outcome':
         row(`o${String(index)}`, null, h('span', { className: entry.delivered ? 'chat__row chat__row--outcome' : 'chat__row chat__row--meta' },
@@ -246,11 +279,23 @@ export function ChatView(props: ChatViewProps): JSX.Element {
       case 'cancel-requested':
         row(`q${String(index)}`, null, h('span', { className: 'chat__row chat__row--cancelled', role: 'status' }, '已请求取消，不再启动新的工作；正在收尾'));
         return;
-      case 'failed':
-        row(`x${String(index)}`, null, h('span', { className: 'chat__row chat__row--failed', role: 'alert' },
-          h('span', { className: 'chat__fail-glyph', 'aria-hidden': true }),
-          `目标失败 · ${entry.detail ?? runFailureReasonLabel(entry.reason) ?? '未给出原因'}`));
+      case 'failed': {
+        const remedy = entry.remedy ?? null;
+        row(`x${String(index)}`, null, h(
+          'div',
+          { className: 'chat__failure' },
+          h('span', { className: 'chat__row chat__row--failed', role: 'alert' },
+            h('span', { className: 'chat__fail-glyph', 'aria-hidden': true }),
+            `目标失败 · ${entry.detail ?? runFailureReasonLabel(entry.reason) ?? '未给出原因'}`),
+          remedy === null || props.onRemedy === undefined || props.onRemedy === null
+            ? null
+            : h('button', { type: 'button', className: 'btn btn--quiet btn--small', 'data-testid': 'failure-remedy', onClick: () => props.onRemedy?.(remedy) }, REMEDY_LABELS[remedy]),
+          entry.codes === undefined || entry.codes.length === 0
+            ? null
+            : h('details', { className: 'tech' }, h('summary', null, '详情'), h('code', { className: 'tech__code' }, entry.codes.join(' · '))),
+        ));
         return;
+      }
       default:
         return;
     }
@@ -284,8 +329,8 @@ export function ChatView(props: ChatViewProps): JSX.Element {
       : h(
           'div',
           { className: 'goal-meta' },
-          h('span', { className: props.header.live ? 'goal-meta__state goal-meta__state--live' : 'goal-meta__state' }, props.header.stateWord),
-          h('span', { className: 'num mono-ish', title: '目标 Run' }, props.header.runId),
+          // UI-AUDIT-2: the run id is a support detail (tooltip), not page text.
+          h('span', { className: props.header.live ? 'goal-meta__state goal-meta__state--live' : 'goal-meta__state', title: `目标编号 ${props.header.runId}` }, props.header.stateWord),
           props.header.tasksText === null ? null : h('span', { className: 'num' }, props.header.tasksText),
           props.header.startedText === null ? null : h('span', { className: 'num' }, props.header.startedText),
         ),
@@ -293,10 +338,8 @@ export function ChatView(props: ChatViewProps): JSX.Element {
     truncated
       ? h('blockquote', { className: 'ask' }, h('span', { className: 'ask__who' }, accepted === null ? '你' : `你 · ${accepted}`), props.objective)
       : null,
-    props.loading ? h('p', { className: 'muted', role: 'status' }, '读取 canonical 状态…') : null,
-    props.failure === null
-      ? null
-      : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
+    props.loading ? h('p', { className: 'muted', role: 'status' }, '正在读取目标状态…') : null,
+    props.failure === null ? null : h(TypedErrorLine, { failure: props.failure }),
     rows.length === 0 ? null : h('div', { className: 'tl' }, rows),
   );
 }

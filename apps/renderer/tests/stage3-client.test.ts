@@ -308,7 +308,7 @@ describe('S3-12..15 settings + readiness', () => {
         onChangeWorkspace: () => {},
       }),
     );
-    for (const section of ['工作区', '模型与提供商', '权限与安全', '运行与诊断', '关于']) {
+    for (const section of ['工作区', '模型', '预算', '权限与安全', '运行与诊断', '关于']) {
       expect(html).toContain(section);
     }
     for (const forbidden of ['Team', 'Pro badge', 'quota', 'subscription', '订阅', '任务配额']) {
@@ -645,7 +645,8 @@ describe('S3-28..32 runtime panel, CoT, secrets, second truths', () => {
     expect(html).toContain('耗时');
     expect(html).toContain('30s');
     expect(html).toContain('2/3');
-    expect(html).toContain('FAILED');
+    // UI-AUDIT-2: the canonical FAILED state reads as 失败 (the enum is not the UI text).
+    expect(html).toContain('失败');
   });
 
   it('S3-30 no secret exposure in the Stage-3 surfaces', () => {

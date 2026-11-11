@@ -378,6 +378,16 @@ export interface AgentRuntimeService {
   }): Promise<Result<ToolInvocationOutcome, DomainError>>;
 }
 
+const TERMINAL_REASON = /^[A-Z][A-Z0-9_]{2,79}$/u;
+/** A typed reason code from an execution error's details (`reason`, else the first refusal); never free text. */
+const terminalReasonOf = (details: Readonly<Record<string, unknown>> | undefined): { readonly reason?: string } => {
+  const reason = details?.['reason'];
+  if (typeof reason === 'string' && TERMINAL_REASON.test(reason)) return { reason };
+  const refusals = details?.['refusals'];
+  const first = Array.isArray(refusals) ? refusals[0] : undefined;
+  return typeof first === 'string' && TERMINAL_REASON.test(first) ? { reason: first } : {};
+};
+
 /** Refusal -> execution error kind. Exhaustive by construction. */
 const REFUSAL_KIND: Readonly<Record<string, ExecutionErrorKind>> = {
   MODEL_NOT_REGISTERED: 'MODEL_UNAVAILABLE',
@@ -940,7 +950,15 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntimeService 
         extra: () =>
           cancelled
             ? { reason: 'invocation-cancelled' }
-            : { errorKind: safe.kind, errorCode: safe.code, retryable: safe.retryable },
+            : {
+                errorKind: safe.kind,
+                errorCode: safe.code,
+                retryable: safe.retryable,
+                // UI-AUDIT-2: the typed admission/policy reason (e.g. GOAL_ADMISSION_BOUND_UNPROVEN,
+                // MODEL_BLOCKED_BY_POLICY) survives on the durable terminal audit, so the boss reads
+                // the real cause instead of an unclassified POLICY_REFUSED.
+                ...terminalReasonOf(safe.details),
+              },
       },
     });
     if (!settled.ok) return settled;

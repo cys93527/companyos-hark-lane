@@ -112,3 +112,67 @@ export const sessionCostText = (usage: GoalUsageProjection | null): string => {
     : telemetry.cost;
   return telemetry.costLabel === 'ESTIMATED' ? `≈${text}` : text;
 };
+
+/**
+ * UI-AUDIT-2: any canonical run / task / attempt state in plain Chinese (runtime panel, task
+ * detail). Live states use the list words; terminal ones their outcome word; unknown -> as given
+ * (it is then shown with the raw value in a tooltip, never invented).
+ */
+const ANY_STATE_WORDS: Readonly<Record<string, string>> = {
+  ...LIVE_STATE_WORDS,
+  RUNNING: '执行中',
+  ACTIVE: '进行中',
+  CLAIMED: '进行中',
+  PENDING: '等待中',
+  QUEUED: '排队中',
+  READY: '就绪',
+  BLOCKED: '已阻塞',
+  DONE: '已完成',
+  COMPLETED: '已完成',
+  SUCCEEDED: '已完成',
+  FAILED: '失败',
+  CANCELLED: '已取消',
+  TIMED_OUT: '已超时',
+  INTERRUPTED: '已中断',
+  SKIPPED: '已跳过',
+  UNKNOWN: UNKNOWN_TEXT,
+};
+export const stateWord = (state: string | null | undefined): string => {
+  if (typeof state !== 'string' || state === '') return UNKNOWN_TEXT;
+  return ANY_STATE_WORDS[state] ?? state;
+};
+
+/** UI-AUDIT-2: artifact kinds in plain Chinese (the canonical kind stays in the tooltip). */
+const ARTIFACT_KIND_WORDS: Readonly<Record<string, string>> = {
+  'companyos:run-goal': '目标记录',
+  'companyos:plan': '计划',
+  'companyos:planning': '规划记录',
+  'companyos:plan-compilation': '执行计划',
+  'companyos:review-findings': '审查结果',
+  'companyos:review-findings-candidate': '审查结果（待确认）',
+  'companyos:summary': '总结',
+  'companyos:report': '报告',
+  'companyos:executor-output': '执行输出',
+  'companyos:work': '工作成果',
+  'companyos:software-work': '工作成果',
+  'companyos:work-role-work': '工作成果',
+  'companyos:file-delivery-report': '文件交付报告',
+  'companyos:attempt-notes:1': '执行笔记',
+  'companyos:reassessment': '重新评估',
+  'companyos:validation-candidate': '验证材料',
+  'companyos:supervisor-application': '执行记录',
+};
+export const artifactKindWord = (kind: string): string => ARTIFACT_KIND_WORDS[kind] ?? (kind.startsWith('companyos:') ? '内部记录' : kind);
+
+/**
+ * UI-AUDIT-2 — who asked for something, in words. Actor ids (`system:dsh-executor`,
+ * `engine.driver`, a role / agent id, the local user) are support details (tooltip), never list text.
+ */
+export const actorWord = (actorId: string | null | undefined): string => {
+  const id = (actorId ?? '').trim().toLowerCase();
+  if (id === '') return UNKNOWN_TEXT;
+  if (id.startsWith('system:dsh') || id.includes('executor')) return '执行器（代码执行）';
+  if (id.startsWith('system:') || id === 'engine' || id.startsWith('engine.')) return '系统';
+  if (id === 'user' || id.startsWith('user:') || id.startsWith('user.') || id.includes('operator') || id === 'local') return '你';
+  return 'AI 员工';
+};

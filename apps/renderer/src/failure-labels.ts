@@ -51,8 +51,66 @@ export const FAILURE_DETAIL_LABELS: Readonly<Record<string, string>> = {
   GOAL_ADMISSION_REFUSED: '模型调用未获准入',
   PROVIDER_OUTPUT_TRUNCATED: '模型回答达到输出上限被截断',
   PROVIDER_REASONING_EXHAUSTED: '模型的思考过程用完了输出上限，没有给出回答',
-  CAPABILITY_MISSING: '模型未能给出可用的回答',
+  CAPABILITY_MISSING: '所选模型不支持执行目标需要的对话（结构化文字）回答',
   PROVIDER_UNAVAILABLE: '模型服务暂时不可用',
+  // UI-AUDIT-2 (user report 2026-11-11: "未归类的失败原因（POLICY_REFUSED）"): the engine's
+  // execution error kinds and the typed admission / policy reasons, in plain Chinese.
+  POLICY_REFUSED: '模型调用被公司规则拒绝（通常是预算未批准或模型不允许）',
+  POLICY_DENIED: '模型调用被公司规则拒绝（通常是预算未批准或模型不允许）',
+  GOAL_ADMISSION_BOUND_UNPROVEN: '所选模型没有批准的预算（预算为 0），付费调用被拒绝',
+  GOAL_ADMISSION_IDENTITY_UNPROVEN: '无法确认所选模型的计费身份，付费调用被拒绝',
+  GOAL_BUDGET_READ_FAILED: '读取目标预算失败，已停止调用模型',
+  GOAL_BUDGET_STATE_INVALID: '目标预算记录异常，已停止调用模型',
+  GOAL_BUDGET_OWNER_INVALID: '目标预算记录异常，已停止调用模型',
+  GOAL_BUDGET_OWNER_CONFLICT: '目标预算记录冲突，已停止调用模型',
+  GOAL_WORKSPACE_NOT_OPEN: '目标的工作空间没有打开',
+  GOAL_WORKSPACE_NOT_BOUND: '目标没有绑定工作空间',
+  GOAL_WORKSPACE_MISMATCH: '当前打开的工作空间不是这个目标的工作空间',
+  GOAL_CANCEL_REQUESTED: '目标已请求取消',
+  MODEL_BLOCKED_BY_POLICY: '公司规则不允许使用所选模型',
+  MODEL_NOT_REGISTERED: '所选模型还没有添加（注册）',
+  MODEL_UNAVAILABLE: '所选模型当前不可用（没有添加，或模型服务里找不到它）',
+  MODEL_DISABLED: '所选模型已停用',
+  COST_LIMIT_EXCEEDED: '超出公司规则允许的费用',
+  LATENCY_LIMIT_EXCEEDED: '超出公司规则允许的响应时间',
+  UNKNOWN_CAPABILITY: '所选模型缺少执行目标需要的能力',
+  INVALID_OUTPUT: '模型的回答格式不对，无法使用',
+  TIMEOUT: '模型调用超时',
+  CANCELLED: '已取消',
+  RATE_LIMITED: '模型服务限流，请稍后再试',
+  AUTH_FAILED: '模型服务拒绝了 API Key（Key 无效、过期或余额不足）',
+  PROVIDER_AUTH_FAILED: '模型服务拒绝了 API Key（Key 无效、过期或余额不足）',
+};
+
+/**
+ * UI-AUDIT-2: the one action that fixes a failure, when there is one the user can take.
+ * `budget` = approve a per-Goal budget (first-run setup), `model` = pick / add a chat model.
+ */
+export type FailureRemedy = 'budget' | 'model';
+
+const REMEDIES: Readonly<Record<string, FailureRemedy>> = {
+  GOAL_ADMISSION_BOUND_UNPROVEN: 'budget',
+  GOAL_ADMISSION_IDENTITY_UNPROVEN: 'budget',
+  GOAL_BUDGET_EXHAUSTED: 'budget',
+  POLICY_REFUSED: 'budget',
+  POLICY_DENIED: 'budget',
+  COST_LIMIT_EXCEEDED: 'budget',
+  CAPABILITY_MISSING: 'model',
+  UNKNOWN_CAPABILITY: 'model',
+  MODEL_BLOCKED_BY_POLICY: 'model',
+  MODEL_NOT_REGISTERED: 'model',
+  MODEL_UNAVAILABLE: 'model',
+  MODEL_DISABLED: 'model',
+};
+
+export const failureRemedyOf = (failure: CanonicalAttemptFailure | null | undefined): FailureRemedy | null => {
+  if (failure === null || failure === undefined) return null;
+  return (failure.detailCode === null ? undefined : REMEDIES[failure.detailCode]) ?? (failure.failureCode === null ? undefined : REMEDIES[failure.failureCode]) ?? null;
+};
+
+export const REMEDY_LABELS: Readonly<Record<FailureRemedy, string>> = {
+  budget: '查看预算设置',
+  model: '选择对话模型',
 };
 
 const KERNEL_TURN_PREFIX = 'EXECUTOR_KERNEL_TURN_';
@@ -67,7 +125,8 @@ export const failureDetailLabel = (code: string | null | undefined): string | nu
   const known = FAILURE_DETAIL_LABELS[code];
   if (known !== undefined) return known;
   if (code.startsWith(KERNEL_TURN_PREFIX)) return `智能体内核异常结束（${code.slice(KERNEL_TURN_PREFIX.length).toLowerCase()}）`;
-  return `未归类的失败原因（${code}）`;
+  // UI-AUDIT-2: an unknown code is never the main text; it stays available in 详情.
+  return '运行失败（原因代码见详情）';
 };
 
 /** The typed failure behind a failed goal, as goal.workspace reads it back. */

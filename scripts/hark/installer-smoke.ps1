@@ -120,6 +120,29 @@ $ErrorActionPreference = 'Stop'
 Check 'h17a-remove' (($removeExit -eq 0) -and -not (Test-Path (Join-Path $userData 'provider\model-api-key.dpapi')) -and -not (Test-Path $approval)) "exit=$removeExit"
 if ($logs) { Get-ChildItem (Join-Path $userData 'logs') -File -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName (Join-Path $Evidence ("app-after-h17a-" + $_.Name)) } }
 
+# UI-AUDIT-2: first-run setup for ANY OpenAI-compatible service (-Custom): model.json for that service and a per-Goal
+# budget approval whose proof covers exactly that (provider, model) - without it every paid call is refused (budget 0).
+$ErrorActionPreference = 'Continue'
+$fakeKey | & $ps -NoProfile -ExecutionPolicy Bypass -File $setupPs1 -KeyFromStdin -Custom -BaseUrl 'https://models.example.invalid/v1' -ModelId 'smoke-chat-1' -InputCnyPerM 1.5 -OutputCnyPerM 6 -CapCny 2 -NoPause *> (Join-Path $Evidence 'uiaudit2-custom-setup.txt')
+$customExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Check 'uiaudit2-custom-setup-exit-0' ($customExit -eq 0) "exit=$customExit"
+$customOk = $false; $customDetail = ''
+try {
+  $m = Get-Content (Join-Path $userData 'provider\model.json') -Raw | ConvertFrom-Json
+  $a = Get-Content $approval -Raw | ConvertFrom-Json
+  $proofHex = ([string]$a.proofs[0]).Substring(7)
+  $pr = Get-Content (Join-Path $userData ("budget\proofs\" + $proofHex + '.json')) -Raw | ConvertFrom-Json
+  $customDetail = "model=$($m.providerId)/$($m.modelId) base=$($m.baseUrl) cap=$($a.cap.maxCostMicros) proof=$($pr.identity.providerId)/$($pr.identity.modelId) in=$($pr.pricing.inputRate) out=$($pr.pricing.outputRate)"
+  $customOk = ($m.providerId -eq 'model.openai-compatible') -and ($m.modelId -eq 'smoke-chat-1') -and ($m.baseUrl -eq 'https://models.example.invalid/v1') -and ($a.cap.maxCostMicros -eq 2000000) -and ($pr.identity.modelId -eq 'smoke-chat-1') -and ($pr.pricing.inputRate -eq 1500000) -and ($pr.pricing.outputRate -eq 6000000)
+} catch { $customDetail = $_.Exception.Message }
+Check 'uiaudit2-custom-setup-files' $customOk $customDetail
+$ErrorActionPreference = 'Continue'
+& $ps -NoProfile -ExecutionPolicy Bypass -File $setupPs1 -Remove -NoPause *> (Join-Path $Evidence 'uiaudit2-custom-remove.txt')
+$customRemoveExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Check 'uiaudit2-custom-remove' (($customRemoveExit -eq 0) -and -not (Test-Path (Join-Path $userData 'provider\model.json')) -and -not (Test-Path $approval)) "exit=$customRemoveExit"
+
 # H16b-3b: ordinary-user isolation setup on the INSTALLED app (Start menu 'CompanyOS 隔离设置'), then the
 # uninstaller must remove it (no account / WFP filter / ACE left behind).
 $isoPs1 = Join-Path $dir 'resources\setup\configure-isolation.ps1'

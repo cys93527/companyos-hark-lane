@@ -28,6 +28,8 @@ export function readDatabaseFailure(value: unknown): DatabaseFailureView | null 
   return null;
 }
 
+const CJK = /[\u4e00-\u9fff]/u;
+
 export function databaseFailureText(failure: DatabaseFailureView): { readonly title: string; readonly body: string } {
   if (failure.code === 'SCHEMA_FROM_NEWER_VERSION') {
     return {
@@ -37,7 +39,7 @@ export function databaseFailureText(failure: DatabaseFailureView): { readonly ti
   }
   return {
     title: '数据库无法打开',
-    body: `本地数据库打开失败，目标与运行功能不可用。${failure.message === '' ? '' : `原因：${failure.message}`}`,
+    body: `本地数据库打开失败，目标与运行功能不可用。${failure.message === '' || !CJK.test(failure.message) ? '' : `原因：${failure.message}`}`,
   };
 }
 
@@ -49,5 +51,7 @@ export function DatabaseFailureBanner(props: { readonly failure: DatabaseFailure
     { className: 'typed-error database-failure', role: 'alert', 'data-failure-code': props.failure.code },
     h('strong', { className: 'typed-error__title' }, text.title),
     h('p', { className: 'typed-error__message' }, text.body),
+    // UI-AUDIT-2: the code and an English cause are support detail, behind 详情.
+    h('details', { className: 'tech' }, h('summary', null, '详情'), h('code', { className: 'tech__code' }, `${props.failure.code}${'message' in props.failure && props.failure.message !== '' ? ` · ${props.failure.message}` : ''}`)),
   );
 }

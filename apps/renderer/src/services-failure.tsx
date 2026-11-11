@@ -23,16 +23,18 @@ export function readServicesFailure(value: unknown): ServicesFailureView | null 
   return null;
 }
 
+const CJK = /[\u4e00-\u9fff]/u;
+
 export function servicesFailureText(failure: ServicesFailureView): { readonly title: string; readonly body: string } {
   if (failure.code === 'MODEL_PROVIDER_REFUSED') {
     return {
       title: '模型提供商未启用',
-      body: `CompanyOS 已启动，但没有启用已配置的模型提供商，暂时无法发送目标。${failure.message === '' ? '' : `原因：${failure.message}`} 请检查模型配置（开始菜单「CompanyOS 首次配置」或 COS_MODEL_* 环境变量）后重新打开 CompanyOS；数据未被改动。`,
+      body: `CompanyOS 已启动，但没有启用已配置的模型提供商，暂时无法发送目标。${failure.message === '' || !CJK.test(failure.message) ? '' : `原因：${failure.message}`} 请检查模型配置（开始菜单「CompanyOS 首次配置」或 COS_MODEL_* 环境变量）后重新打开 CompanyOS；数据未被改动。`,
     };
   }
   return {
     title: '核心服务未能启动',
-    body: `界面可用，但目标与运行功能暂不可用。${failure.message === '' ? '' : `原因：${failure.message}`} 详情见日志 desktop.log；数据未被改动。`,
+    body: `界面可用，但目标与运行功能暂不可用。${failure.message === '' || !CJK.test(failure.message) ? '' : `原因：${failure.message}`} 详情见日志 desktop.log；数据未被改动。`,
   };
 }
 
@@ -44,5 +46,7 @@ export function ServicesFailureBanner(props: { readonly failure: ServicesFailure
     { className: 'typed-error services-failure', role: 'alert', 'data-failure-code': props.failure.code },
     h('strong', { className: 'typed-error__title' }, text.title),
     h('p', { className: 'typed-error__message' }, text.body),
+    // UI-AUDIT-2: the code and an English cause are support detail, behind 详情.
+    h('details', { className: 'tech' }, h('summary', null, '详情'), h('code', { className: 'tech__code' }, `${props.failure.code}${'message' in props.failure && props.failure.message !== '' ? ` · ${props.failure.message}` : ''}`)),
   );
 }

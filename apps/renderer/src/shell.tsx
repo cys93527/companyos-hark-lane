@@ -11,6 +11,9 @@
 import { createElement as h, type JSX, type ReactNode } from 'react';
 import { authorityStatusLabel } from './composer.js';
 import { goalStateWord, isGoalLive } from './format.js';
+import { goalModelOptions, MODALITY_WORDS, selectionFailureText, type ModelOptionRow } from './models.js';
+import { budgetGateFor, formatMoney, type BudgetReadiness } from './budget.js';
+import { TypedErrorLine } from './typed-error.js';
 
 export type ShellView = 'home' | 'chat' | 'knowledge' | 'tools' | 'agents' | 'settings';
 
@@ -210,6 +213,15 @@ export interface SettingsViewProps {
   readonly nodeVersion?: string | null;
   readonly onOpenModelSelector?: () => void;
   readonly onChangeWorkspace?: () => void;
+  /** UI-AUDIT-2: model management (only the user's models choose Goals; the catalogue is added from here). */
+  readonly models?: readonly ModelOptionRow[];
+  readonly modelBusy?: boolean;
+  readonly modelFailure?: { readonly code: string; readonly message: string } | null;
+  readonly onChooseModel?: (option: ModelOptionRow) => void;
+  readonly onAddModel?: (option: ModelOptionRow) => void;
+  readonly onSetModelEnabled?: (option: ModelOptionRow, enabled: boolean) => void;
+  /** UI-AUDIT-2: budget readiness (main's budget.readiness); null = unknown. */
+  readonly budgetReadiness?: BudgetReadiness | null;
 }
 
 export interface ReadinessRow {
@@ -226,15 +238,43 @@ const READINESS_LABELS: Readonly<Record<ReadinessRow['state'], string>> = {
   ERROR: '异常',
 };
 
+const SETUP_STEPS = '在开始菜单运行「CompanyOS 首次配置」：选 1 = DeepSeek，或选 2 = 其他 OpenAI 兼容服务（填写服务地址、对话模型 id 和公布的价格），粘贴 API Key，再填写每个目标最多花多少钱。完成后重新打开 CompanyOS。';
+
+/** UI-AUDIT-2: the budget section's lines (pure; tested without a DOM). */
+export const budgetSettingsLines = (readiness: BudgetReadiness | null | undefined): readonly string[] => {
+  if (readiness === null || readiness === undefined) return ['预算状态读取中…'];
+  if (readiness.state === 'NOT_APPROVED') return ['预算为 0：还没有批准每个目标的花费上限，所有付费模型调用都会被拒绝，目标无法执行。'];
+  const cap = readiness.capCostMicros === null ? '--' : formatMoney(readiness.capCostMicros, readiness.currency);
+  const lines = [
+    `每个目标最多花费 ${cap}${readiness.source === 'provider-setup' ? '（首次配置设置）' : readiness.source === 'operator' ? '（部署方设置）' : ''}`,
+  ];
+  if (readiness.state === 'RESTART_REQUIRED') lines.push('预算已更新，重新打开 CompanyOS 后生效。');
+  for (const entry of readiness.covered) {
+    const until = Number.isFinite(entry.validUntilMs) ? new Date(entry.validUntilMs).toLocaleDateString('zh-CN') : '--';
+    lines.push(`适用模型 ${entry.modelId} · ${entry.valid ? `价格确认有效至 ${until}` : '价格确认已过期（重新运行首次配置）'}`);
+  }
+  if (readiness.covered.length === 0) lines.push('没有适用的模型：预算对任何模型都不生效。');
+  return lines;
+};
+
 /**
- * STAGE 3 settings — five real sections only: 工作区 / 模型与提供商 / 权限与安全 /
- * 运行与诊断 / 关于. No subscription, team or quota advertising; no raw secret storage
- * (there is no safe client-side credential-write seam, so provisioning stays on the
- * trusted external configuration path — `SECURE_PROVIDER_ONBOARDING_PENDING`).
+ * Settings — 工作区 / 模型 / 预算 / 权限与安全 / 运行与诊断 / 关于. No subscription, team or
+ * quota advertising; no raw secret storage (the API key and the budget are written by the
+ * trusted first-run setup outside the renderer, V1 boundary §2). UI-AUDIT-2: the model
+ * section manages WHICH models can run Goals (add from the provider, enable, disable, set
+ * default); the composer only ever lists those.
  */
 export function SettingsView(props: SettingsViewProps): JSX.Element {
   const providerConfigured = props.modelStatus.kind !== 'provider-not-configured';
-  const modelSelected = props.modelStatus.kind === 'selected';
+  const models = props.models ?? [];
+  const goalModels = goalModelOptions(models);
+  const selectedKey = props.modelStatus.kind === 'selected' ? props.modelStatus.modelKey : null;
+  const addable = models.filter((option) => !option.registered && option.configured !== true && option.goalUsable !== false);
+  const disabled = models.filter((option) => option.registered && option.enabled === false && option.goalUsable !== false);
+  const nonChat = models.filter((option) => option.goalUsable === false && option.unusableReason !== 'PROVIDER_NOT_BOUND');
+  const busy = props.modelBusy === true;
+  const budgetLines = budgetSettingsLines(props.budgetReadiness);
+  const budgetMissing = props.budgetReadiness?.state === 'NOT_APPROVED';
   return h(
     'section',
     { className: 'card settings', 'data-testid': 'settings', 'aria-label': '设置' },
@@ -245,39 +285,101 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       h('dt', null, '当前工作空间'),
       h('dd', null, props.workspaceRoot ?? '未选择'),
       h('dt', null, '操作'),
-      h('dd', null, h('button', { type: 'button', onClick: props.onChangeWorkspace }, '更换工作空间')),
+      h('dd', null, h('button', { type: 'button', className: 'btn btn--quiet', onClick: props.onChangeWorkspace }, '更换工作空间')),
     ),
 
-    h('h3', null, '模型与提供商'),
-    h('dl', { className: 'kv' },
-      h('dt', null, '提供商'),
-      h('dd', null, providerConfigured ? '已配置' : '未配置'),
-      h('dt', null, '鉴权状态'),
-      h('dd', null, providerConfigured ? '已配置' : '未配置'),
-      h('dt', null, '可用模型（provider 目录）'),
-      h('dd', null, String(props.catalogueCount)),
-      h('dt', null, '已注册模型'),
-      h('dd', null, String(props.registeredCount)),
-      h('dt', null, '公司模型策略'),
-      h(
-        'dd',
-        null,
-        modelSelected
-          ? `${props.modelStatus.kind === 'selected' ? (props.modelStatus.displayName ?? props.modelStatus.modelKey) : ''}（公司策略 · 手动固定）`
-          : '未选择',
-      ),
-      h('dt', null, '操作'),
-      h(
-        'dd',
-        null,
-        h('button', { type: 'button', onClick: props.onOpenModelSelector }, '选择模型'),
-      ),
-    ),
+    h('h3', { id: 'settings-models' }, '模型'),
+    !providerConfigured
+      ? h('div', { 'data-testid': 'settings-models-empty' },
+          h('p', null, '尚未配置模型提供商。'),
+          h('p', { className: 'muted' }, SETUP_STEPS))
+      : h(
+          'div',
+          { 'data-testid': 'settings-models' },
+          h('p', { className: 'muted' }, '执行目标只会使用下面这些模型（首次配置的模型，和你在这里添加的对话模型）。'),
+          goalModels.length === 0
+            ? h('p', { className: 'model-onboarding__warn' }, '还没有可以执行目标的对话模型。')
+            : h(
+                'ul',
+                { className: 'settings-models__list', 'aria-label': '执行目标用的模型' },
+                goalModels.map((option) => {
+                  const gate = budgetGateFor(props.budgetReadiness ?? null, option);
+                  const isDefault = option.modelKey !== null && option.modelKey === selectedKey;
+                  return h(
+                    'li',
+                    { key: `${option.providerId}/${option.providerModelId}`, className: 'settings-models__row' },
+                    h('span', { className: 'settings-models__name' }, option.displayName),
+                    h(
+                      'span',
+                      { className: 'settings-models__meta muted' },
+                      [option.configured === true ? '首次配置' : '已添加', gate === null ? null : gate.ok ? '预算已批准' : gate.short, isDefault ? '默认' : null]
+                        .filter((part): part is string => part !== null)
+                        .join(' · '),
+                    ),
+                    h(
+                      'span',
+                      { className: 'settings-models__actions' },
+                      isDefault
+                        ? null
+                        : h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => props.onChooseModel?.(option) }, '设为默认'),
+                      option.registered && option.configured !== true && option.modelKey !== null && !isDefault
+                        ? h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => props.onSetModelEnabled?.(option, false) }, '停用')
+                        : null,
+                    ),
+                  );
+                }),
+              ),
+          disabled.length === 0
+            ? null
+            : h(
+                'ul',
+                { className: 'settings-models__list', 'aria-label': '已停用的模型' },
+                disabled.map((option) =>
+                  h('li', { key: `${option.providerId}/${option.providerModelId}`, className: 'settings-models__row' },
+                    h('span', { className: 'settings-models__name muted' }, option.displayName),
+                    h('span', { className: 'settings-models__meta muted' }, '已停用'),
+                    h('span', { className: 'settings-models__actions' },
+                      h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => props.onSetModelEnabled?.(option, true) }, '启用'))),
+                ),
+              ),
+          addable.length === 0
+            ? null
+            : h(
+                'details',
+                { className: 'settings-models__add', 'data-testid': 'settings-models-add' },
+                h('summary', null, `从模型服务添加对话模型（${String(addable.length)} 个可添加）`),
+                h('p', { className: 'muted' }, '添加后可以在输入框右下角选择。注意：预算只对首次配置时填写的模型生效，其他模型要重新运行首次配置才能使用。'),
+                h(
+                  'ul',
+                  { className: 'settings-models__list' },
+                  addable.map((option) =>
+                    h('li', { key: `${option.providerId}/${option.providerModelId}`, className: 'settings-models__row' },
+                      h('span', { className: 'settings-models__name' }, option.displayName),
+                      h('span', { className: 'settings-models__actions' },
+                        h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => props.onAddModel?.(option) }, '添加'))),
+                  ),
+                ),
+              ),
+          nonChat.length === 0
+            ? null
+            : h(
+                'details',
+                { className: 'settings-models__nonchat' },
+                h('summary', null, `不能执行目标的模型（${String(nonChat.length)} 个：图像、视频、向量、语音等）`),
+                h('ul', { className: 'settings-models__list muted' }, nonChat.map((option) =>
+                  h('li', { key: `${option.providerId}/${option.providerModelId}` }, `${option.displayName} · ${MODALITY_WORDS[option.modality ?? ''] ?? '非对话模型'}`))),
+              ),
+          props.modelFailure === null || props.modelFailure === undefined
+            ? null
+            : h(TypedErrorLine, { failure: props.modelFailure, text: selectionFailureText(props.modelFailure) }),
+        ),
+
+    h('h3', { id: 'settings-budget' }, '预算'),
     h(
-      'p',
-      { className: 'muted' },
-      // UI-AUDIT-13: the real provisioning path since H17a (trusted helper outside the renderer).
-      '提供商凭证与预算不在界面中管理：请在开始菜单运行「CompanyOS 首次配置」（DPAPI 加密保存 Key 并设置每个目标的预算），完成后重新打开 CompanyOS。',
+      'div',
+      { 'data-testid': 'settings-budget' },
+      h('ul', { className: budgetMissing ? 'settings-budget__lines model-onboarding__warn' : 'settings-budget__lines' }, budgetLines.map((line, index) => h('li', { key: `l${String(index)}` }, line))),
+      h('p', { className: 'muted' }, `设置或修改预算：${SETUP_STEPS}`),
     ),
 
     h('h3', null, '权限与安全'),
@@ -285,10 +387,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       // AUDIT-R4: the run-state projection is a status, the access policy is chosen per Goal.
       h('dt', null, '当前目标状态'),
       h('dd', null, (props.authority ?? null) === null ? '--' : authorityStatusLabel(props.authority!)),
-      h('dt', null, '访问策略'),
-      h('dd', null, '在输入框的权限按钮中为下一个目标选择（询问权限 / 只读 / 工作区操作），随目标提交并由内核沙箱强制；已创建目标的策略不能在界面中修改。'),
+      h('dt', null, '访问权限'),
+      h('dd', null, '在输入框的「权限」按钮中为下一个目标选择（询问权限 / 只读 / 工作区操作），随目标一起保存并在执行时强制；已创建的目标不能改。'),
       h('dt', null, '高风险操作'),
-      h('dd', null, '仍需 canonical 批准（approval.respond），界面不代替引擎决定。'),
+      h('dd', null, '会先停下来等你在目标页面批准或拒绝。'),
     ),
 
     h('h3', null, '运行与诊断'),
@@ -300,7 +402,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           (props.readiness ?? []).map((row) =>
             h('div', { key: row.label, className: 'readiness-row' },
               h('dt', null, row.label),
-              h('dd', null, `${READINESS_LABELS[row.state]} · ${row.detail}`),
+              h('dd', null, `${READINESS_LABELS[row.state]}${row.detail === '' ? '' : ` · ${row.detail}`}`),
             ),
           ),
         ),
@@ -309,16 +411,25 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     h('dl', { className: 'kv' },
       h('dt', null, 'CompanyOS 版本'),
       h('dd', null, props.appVersion),
-      h('dt', null, 'Electron 版本'),
-      h('dd', null, props.electronVersion ?? '--'),
-      h('dt', null, 'Node 版本'),
-      h('dd', null, props.nodeVersion ?? '--'),
-      h('dt', null, '数据库'),
-      h('dd', null, props.databasePath ?? '--'),
-      h('dt', null, 'schema 版本'),
-      h('dd', null, props.schemaVersion === null ? '--' : String(props.schemaVersion)),
-      h('dt', null, 'IPC 通道'),
-      h('dd', null, props.allowedChannels.length === 0 ? '--' : props.allowedChannels.join(', ')),
+    ),
+    h(
+      'details',
+      { className: 'tech' },
+      h('summary', null, '技术信息'),
+      h('dl', { className: 'kv' },
+        h('dt', null, 'Electron 版本'),
+        h('dd', null, props.electronVersion ?? '--'),
+        h('dt', null, 'Node 版本'),
+        h('dd', null, props.nodeVersion ?? '--'),
+        h('dt', null, '数据库'),
+        h('dd', null, props.databasePath ?? '--'),
+        h('dt', null, 'schema 版本'),
+        h('dd', null, props.schemaVersion === null ? '--' : String(props.schemaVersion)),
+        h('dt', null, '模型服务目录'),
+        h('dd', null, `${String(props.catalogueCount)} 个模型 · 已添加 ${String(props.registeredCount)} 个`),
+        h('dt', null, 'IPC 通道'),
+        h('dd', null, props.allowedChannels.length === 0 ? '--' : props.allowedChannels.join(', ')),
+      ),
     ),
   );
 }

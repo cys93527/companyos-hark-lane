@@ -15,7 +15,7 @@
  */
 import { createElement as h, type JSX, type ReactNode } from 'react';
 
-import type { ModelOptionRow } from './models.js';
+import { goalModelOptions, type ModelOptionRow } from './models.js';
 import { projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
 
 /**
@@ -107,11 +107,25 @@ export interface ModelSelectorViewProps {
   readonly providerConfigured: boolean;
   /** UI-PAPER-INK: the trigger lives in the composer row (the model chip); render the popover only. */
   readonly triggerless?: boolean;
+  /** UI-AUDIT-2: a per-model budget note (e.g. 未批准预算), from main's budget.readiness. */
+  readonly budgetNote?: (option: ModelOptionRow) => string | null;
 }
 
+/**
+ * UI-AUDIT-2 (user report 2026-11-11): the popover lists ONLY the models the user set up
+ * (configured by first-run setup, or registered + enabled in Settings) that main says can run
+ * a Goal. The provider's catalogue (image / video / embedding … models, "待注册") is never a
+ * choice here; adding a model is a Settings action ("管理模型").
+ */
 export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
+  const choices = goalModelOptions(props.options);
   const selected = props.options.find((option) => option.modelKey === props.selectedModelKey) ?? null;
   const label = selected === null ? '选择模型' : selected.displayName;
+  const manage = h(
+    'button',
+    { type: 'button', className: 'popover__manage btn btn--text', 'data-testid': 'model-manage', onClick: props.onOpenSettings },
+    '管理模型（在设置中添加或停用）',
+  );
   return h(
     'div',
     { className: props.triggerless === true ? 'composer__model composer__model--popover-only' : 'composer__model', 'data-testid': 'model-selector', 'aria-label': '模型选择' },
@@ -127,37 +141,53 @@ export function ModelSelectorView(props: ModelSelectorViewProps): JSX.Element {
       ? h(
           'div',
           { className: 'popover', role: 'dialog', 'data-testid': 'model-selector-popover', 'aria-label': '选择模型', ...popoverDialogProps(props.onToggle) },
-          props.providerConfigured
+          !props.providerConfigured
             ? h(
-                'ul',
-                { className: 'popover__list' },
-                props.options.map((option) =>
-                  h(
-                    'li',
-                    { key: `${option.providerId}/${option.providerModelId}` },
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className:
-                          option.modelKey !== null && option.modelKey === props.selectedModelKey
-                            ? 'popover__item popover__item--active'
-                            : 'popover__item',
-                        disabled: props.busy,
-                        onClick: () => props.onChoose(option),
-                      },
-                      h('span', null, option.displayName),
-                      h('span', { className: 'muted' }, option.registered ? '已注册' : '待注册'),
-                    ),
-                  ),
-                ),
-              )
-            : h(
                 'div',
                 { className: 'popover__empty' },
                 h('p', { className: 'muted' }, '尚未配置模型提供商'),
-                h('button', { type: 'button', onClick: props.onOpenSettings }, '前往设置'),
-              ),
+                h('p', { className: 'muted' }, '在开始菜单运行「CompanyOS 首次配置」，完成后重新打开 CompanyOS。'),
+                h('button', { type: 'button', className: 'btn btn--quiet', onClick: props.onOpenSettings }, '前往设置'),
+              )
+            : choices.length === 0
+              ? h(
+                  'div',
+                  { className: 'popover__empty' },
+                  h('p', { className: 'muted' }, '还没有可以执行目标的对话模型'),
+                  manage,
+                )
+              : h(
+                  'div',
+                  null,
+                  h('p', { className: 'popover__label label' }, '执行目标用的模型'),
+                  h(
+                    'ul',
+                    { className: 'popover__list', 'data-testid': 'model-choices' },
+                    choices.map((option) => {
+                      const note = props.budgetNote?.(option) ?? null;
+                      return h(
+                        'li',
+                        { key: `${option.providerId}/${option.providerModelId}` },
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className:
+                              option.modelKey !== null && option.modelKey === props.selectedModelKey
+                                ? 'popover__item popover__item--active'
+                                : 'popover__item',
+                            disabled: props.busy,
+                            'aria-current': option.modelKey !== null && option.modelKey === props.selectedModelKey ? 'true' : undefined,
+                            onClick: () => props.onChoose(option),
+                          },
+                          h('span', null, option.displayName),
+                          h('span', { className: note === null ? 'muted' : 'popover__warn' }, note ?? (option.configured === true ? '首次配置' : '已添加')),
+                        ),
+                      );
+                    }),
+                  ),
+                  manage,
+                ),
         )
       : null,
   );
@@ -242,6 +272,8 @@ export interface ComposerViewProps {
   readonly modelOpen: boolean;
   /** UI-PAPER-INK: why Send is unavailable (database down, no model, …), shown under the field. */
   readonly blockedReason?: string | null;
+  /** UI-AUDIT-2: the one fix for the blocked reason (e.g. 去设置预算 / 改用对话模型). */
+  readonly blockedAction?: { readonly label: string; readonly onClick: () => void } | null;
   /** The line under the field: the approval-boundary hint and the session cost (`--` when unknown). */
   readonly footHint?: string | null;
   readonly sessionCost?: string | null;
@@ -344,7 +376,7 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
           { className: 'composer__right' },
           h(
             'button',
-            { type: 'button', className: 'composer__chip composer__model-slot', onClick: props.onOpenModel, 'aria-expanded': props.modelOpen, 'aria-haspopup': 'dialog', title: '选择公司模型' },
+            { type: 'button', className: 'composer__chip composer__model-slot', onClick: props.onOpenModel, 'aria-expanded': props.modelOpen, 'aria-haspopup': 'dialog', title: '下一个目标使用的模型' },
             props.modelLabel,
             h('span', { className: 'composer__chip-k', 'aria-hidden': true }, '▾'),
           ),
@@ -365,7 +397,14 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
     ),
     props.blockedReason === undefined || props.blockedReason === null
       ? null
-      : h('p', { className: 'composer__blocked', role: 'status', 'data-testid': 'composer-blocked' }, props.blockedReason),
+      : h(
+          'div',
+          { className: 'composer__blocked', role: 'status', 'data-testid': 'composer-blocked' },
+          h('span', null, props.blockedReason),
+          props.blockedAction === undefined || props.blockedAction === null
+            ? null
+            : h('button', { type: 'button', className: 'btn btn--text composer__blocked-action', onClick: props.blockedAction.onClick }, props.blockedAction.label),
+        ),
     h(
       'div',
       { className: 'composer__foot' },
@@ -394,9 +433,9 @@ export interface AuthorityPopoverProps {
 
 /** The three canonical policies with their user-facing labels (Section A vocabulary). */
 export const ACCESS_POLICY_OPTIONS: readonly { readonly value: 'ASK_PERMISSION' | 'READ_ONLY' | 'WORKSPACE_OPERATIONS'; readonly label: string; readonly hint: string }[] = [
-  { value: 'ASK_PERMISSION', label: '询问权限', hint: '正常自主执行；高风险操作停在 canonical 审批边界' },
-  { value: 'READ_ONLY', label: '只读', hint: '内核沙箱强制只读——一切写操作被 DSH 拒绝' },
-  { value: 'WORKSPACE_OPERATIONS', label: '工作区操作', hint: '仅限受信工作空间内的变更；仍需 canonical 审批' },
+  { value: 'ASK_PERMISSION', label: '询问权限', hint: '自动执行；高风险操作会先停下来等你批准' },
+  { value: 'READ_ONLY', label: '只读', hint: '只能读取，任何写入都会被拒绝' },
+  { value: 'WORKSPACE_OPERATIONS', label: '工作区操作', hint: '只能修改当前工作空间里的文件；高风险操作仍需你批准' },
 ];
 
 export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
@@ -408,7 +447,6 @@ export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
     // AUDIT-R4: the next Goal's policy is the selection; the open Goal's run state is a status, not a permission.
     h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '下一个目标'), h('span', null, accessPolicyLabel(props.selectedPolicy) ?? '访问权限')),
     h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '当前目标状态'), h('span', null, authorityStatusLabel(props.authority))),
-    h('div', { className: 'popover__row' }, h('span', { className: 'muted' }, '依据'), h('span', null, props.authority.basis)),
     props.effectiveGoalPolicy === undefined || props.effectiveGoalPolicy === null
       ? null
       : h(
@@ -440,8 +478,8 @@ export function AuthorityPopover(props: AuthorityPopoverProps): JSX.Element {
       'p',
       { className: 'popover__note muted' },
       selectable
-        ? '所选策略随下一个目标以 canonical 命令持久化，并由 DSH 内核沙箱在渲染器之下强制。'
-        : '只读展示：权限由 CompanyOS Authority / Approval 治理，界面不创建、不保存、不切换权限。',
+        ? '所选权限随下一个目标一起保存，执行时由系统强制；已创建的目标不受影响。'
+        : '这里只显示当前权限；权限由系统的批准规则决定。',
     ),
   );
 }

@@ -218,9 +218,10 @@ describe('UX-01..05 chat-first shell', () => {
     // AUDIT-R4: the run-state projection is a STATUS ('等待批准'), never shown as the permission itself
     // (the old assertion that it read '询问权限' encoded the defect).
     expect(html).toContain('等待批准');
-    expect(html).toContain('blocker:APPROVAL_REQUIRED');
+    // UI-AUDIT-2: the internal basis code is not shown to the user any more.
+    expect(html).not.toContain('blocker:APPROVAL_REQUIRED');
     // The UI states plainly that it cannot switch authority.
-    expect(html).toContain('只读展示');
+    expect(html).toContain('这里只显示当前权限');
     const readOnly = projectEffectiveAuthority({ runState: 'IDLE', blockerCodes: [] });
     const workspace = projectEffectiveAuthority({ runState: 'EXECUTING', blockerCodes: [] });
     const ask = projectEffectiveAuthority({ runState: 'WAITING_APPROVAL', blockerCodes: ['APPROVAL_REQUIRED'] });
@@ -473,8 +474,8 @@ describe('UX-13..17 runtime panel projections', () => {
         onSelectTask: () => {},
       }),
     );
-    expect(html).toContain('目标 · EXECUTING');
-    expect(html).toContain('规划 · IDLE');
+    expect(html).toContain('目标 · 执行中');
+    expect(html).toContain('规划 · 待开始');
     expect(html).toContain('task_work_1');
   });
 
@@ -504,7 +505,7 @@ describe('UX-13..17 runtime panel projections', () => {
 
   it('UX-16 attempt information comes from the canonical projection', () => {
     const lifecycle = projectRuntimeLifecycle(GOAL_WORKSPACE, TASK_DETAILS);
-    expect(lifecycle.tasks[0]?.attemptLabel).toBe('#1 ACTIVE');
+    expect(lifecycle.tasks[0]?.attemptLabel).toBe('第 1 次尝试 · 进行中');
   });
 
   it('UX-17 validation authority remains canonical', () => {

@@ -40,7 +40,9 @@ describe('AUDIT-S9 configure-deepseek keeps the previous key on failure', () => 
   });
 
   it('a failed write restores the previous key and only success deletes the backup', () => {
-    const write = ps1.indexOf("Invoke-SetupNode @('write'");
+    // UI-AUDIT-2: the write arguments are built first (shipped profile or -Custom), then one call.
+    const write = ps1.indexOf('$r = Invoke-SetupNode $writeArgs');
+    expect(write).toBeGreaterThan(ps1.indexOf("$writeArgs = @('write',"));
     const after = ps1.slice(write);
     const failBlock = after.slice(after.indexOf('if ($r.exit -ne 0'), after.indexOf('Finish 3'));
     expect(failBlock).toContain('Restore-PreviousKey');

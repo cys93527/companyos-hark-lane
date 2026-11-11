@@ -179,15 +179,15 @@ describe('S4-06..09 selector behavior + restart display', () => {
     );
     for (const label of ['询问权限', '只读', '工作区操作']) expect(html).toContain(label);
     expect(html).toContain('popover__item--active');
-    expect(html).toContain('canonical 命令持久化');
-    expect(html).toContain('DSH 内核沙箱');
+    expect(html).toContain('随下一个目标一起保存');
+    expect(html).toContain('执行时由系统强制');
   });
 
   it('S4-08 the renderer display is never authoritative (stage-3 fallback text preserved without a selector)', () => {
     const html = renderToString(
       h(AuthorityPopover, { authority: { mode: 'read-only', basis: 'no-active-run', mutable: false }, open: true }),
     );
-    expect(html).toContain('只读展示');
+    expect(html).toContain('这里只显示当前权限');
   });
 
   it('S4-09 the renderer stores no authority truth (localStorage only holds the submission-intent outbox)', () => {

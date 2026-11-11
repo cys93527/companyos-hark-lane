@@ -22,7 +22,8 @@ describe('services failure banner', () => {
     expect(refused).toContain('data-failure-code="MODEL_PROVIDER_REFUSED"');
     expect(refused).toContain('模型提供商未启用');
     expect(refused).toContain('model.openai-compatible');
-    expect(servicesFailureText({ code: 'CORE_SERVICES_UNAVAILABLE', message: 'boom' }).body).toContain('boom');
+    expect(servicesFailureText({ code: 'CORE_SERVICES_UNAVAILABLE', message: 'boom' }).body).not.toContain('boom'); // UI-AUDIT-2: an English cause is 详情 only
+    expect(renderToString(h(ServicesFailureBanner, { failure: { code: 'CORE_SERVICES_UNAVAILABLE', message: 'boom' } }))).toContain('CORE_SERVICES_UNAVAILABLE · boom');
     expect(renderToString(h(ServicesFailureBanner, { failure: null }))).toBe('');
   });
 });

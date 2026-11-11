@@ -8,6 +8,8 @@ import { createElement as h, type JSX } from 'react';
 
 import type { WorkflowBridge } from './designer.js';
 import type { ControlPlaneBridge } from './workspace.js';
+import { stateWord } from './format.js';
+import { TypedErrorLine } from './typed-error.js';
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -81,11 +83,11 @@ export function ToolsSurfaceView(props: {
     h('h2', null, '工具'),
     props.failure === null
       ? null
-      : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
+      : h(TypedErrorLine, { failure: props.failure }),
     props.failure !== null ? null : props.rows === null
       ? h('p', { className: 'muted' }, '加载中…')
       : props.rows.length === 0
-        ? h('p', { className: 'muted' }, '尚无注册工具。')
+        ? h('p', { className: 'muted' }, '还没有可用的工具。')
         : h(
             'ul',
             { className: 'surface__list', 'data-testid': 'tool-rows', 'aria-label': '工具列表' },
@@ -94,7 +96,7 @@ export function ToolsSurfaceView(props: {
                 'li',
                 { key: row.id },
                 h('span', null, row.name ?? row.id),
-                h('span', { className: 'surface__state' }, row.enabled ? 'enabled' : 'disabled'),
+                h('span', { className: 'surface__state', title: row.id }, row.enabled ? '已启用' : '已停用'),
               ),
             ),
           ),
@@ -166,11 +168,11 @@ export function KnowledgeSurfaceView(props: {
     h('h2', null, '知识库'),
     props.failure === null
       ? null
-      : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
+      : h(TypedErrorLine, { failure: props.failure }),
     props.failure !== null ? null : props.rows === null
       ? h('p', { className: 'muted' }, '加载中…')
       : props.rows.length === 0
-        ? h('p', { className: 'muted' }, '暂无记忆条目。')
+        ? h('p', { className: 'muted' }, '知识库还是空的。目标执行中记下的公司知识会出现在这里。')
         : h(
             'ul',
             { className: 'surface__list', 'data-testid': 'knowledge-rows', 'aria-label': '知识列表' },
@@ -227,25 +229,22 @@ export function AgentsSurfaceView(props: {
     h('h2', null, '智能体'),
     props.failure === null
       ? null
-      : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
+      : h(TypedErrorLine, { failure: props.failure }),
     // AUDIT R13: a failure replaces the spinner (same guard as Tools / Knowledge).
     props.failure !== null ? null : props.rows === null
       ? h('p', { className: 'muted' }, '加载中…')
       : props.rows.length === 0
-        ? h('p', { className: 'muted' }, '尚无执行记录。')
+        ? h('p', { className: 'muted' }, '还没有智能体执行记录。发送一个目标后，参与执行的智能体会出现在这里。')
         : h(
             'ul',
             { className: 'surface__list', 'data-testid': 'agent-rows', 'aria-label': '智能体列表' },
+            // UI-AUDIT-2: an execution record reads as role + state; ids and model keys are tooltips.
             props.rows.map((row) =>
               h(
                 'li',
-                { key: row.id },
-                h('span', null, row.id),
-                h(
-                  'span',
-                  { className: 'surface__state' },
-                  [row.status, row.roleId, row.modelKey].filter((part): part is string => part !== null).join(' · '),
-                ),
+                { key: row.id, title: [row.id, row.taskId === null ? null : `任务 ${row.taskId}`, row.modelKey === null ? null : `模型 ${row.modelKey}`].filter((part): part is string => part !== null).join(' · ') },
+                h('span', null, row.roleId === null ? '智能体' : `智能体 · ${row.roleId}`),
+                h('span', { className: 'surface__state' }, stateWord(row.status)),
               ),
             ),
           ),

@@ -7,9 +7,10 @@
  * settles a task, forces a retry or edits blocker state itself: it asks, and the engine
  * decides.
  */
+import { TypedErrorLine } from './typed-error.js';
 import { createElement as h, type JSX } from 'react';
 
-import { clockStamp, orUnknown, riskWord } from './format.js';
+import { actorWord, clockStamp, riskWord } from './format.js';
 
 import type { ControlPlaneBridge } from './workspace.js';
 
@@ -150,9 +151,10 @@ export function ApprovalCardView(props: ApprovalCardViewProps): JSX.Element {
     h('p', { className: 'approval-card__reason', id: `approval-reason-${approval.id}` }, approval.reason === '' ? '（未提供原因）' : approval.reason),
     h('dl', { className: 'kv approval-card__kv' },
       h('dt', null, '范围'),
-      h('dd', { className: 'num' }, `Run ${approval.runId}${approval.taskId === null ? '' : ` · Task ${approval.taskId}`}${props.scopeNote == null ? '' : ` · ${props.scopeNote}`}`),
+      // UI-AUDIT-2: plain scope; run / task ids are a tooltip for support.
+      h('dd', { title: `Run ${approval.runId}${approval.taskId === null ? '' : ` · Task ${approval.taskId}`}` }, `${approval.taskId === null ? '本目标' : '本目标的一个任务'}${props.scopeNote == null ? '' : ` · ${props.scopeNote}`}`),
       h('dt', null, '请求方'),
-      h('dd', null, orUnknown(approval.requestedBy)),
+      h('dd', { title: approval.requestedBy === '' ? undefined : approval.requestedBy }, actorWord(approval.requestedBy)),
       h('dt', null, '请求时间'),
       h('dd', { className: 'num', title: approval.requestedAt === '' ? undefined : approval.requestedAt }, approval.requestedAt === '' ? '--' : clockStamp(approval.requestedAt) === '--' ? approval.requestedAt : clockStamp(approval.requestedAt)),
     ),
@@ -175,7 +177,7 @@ export function ApprovalCardView(props: ApprovalCardViewProps): JSX.Element {
         ),
     props.failure === null
       ? null
-      : h('p', { className: 'typed-error__message', role: 'alert' }, `${props.failure.code} ${props.failure.message}`),
+      : h(TypedErrorLine, { failure: props.failure }),
   );
 }
 

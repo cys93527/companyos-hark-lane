@@ -106,12 +106,85 @@ const STATE_LABEL: Record<GoalBudgetView['state'], string> = {
 export const budgetRows = (view: GoalBudgetView): readonly string[] => {
   const m = (x: number): string => formatMoney(x, view.currency);
   const rows = [`费用 · ${STATE_LABEL[view.state]}`];
-  if (view.cap !== null) rows.push(`上限 · ${m(view.cap.costMicros)} · ${String(view.cap.calls)} 次调用 · ${String(view.cap.tokens)} tokens`);
-  rows.push(`已结算 · ${m(view.settled.costMicros)} · ${String(view.settled.calls)} 次 · ${String(view.settled.tokens)} tokens`);
+  // UI-AUDIT-2: a zero cap (no budget approved) is said once in words, not as "0.00 单位" amounts.
+  const zero = view.state === 'ZERO_COST_POLICY';
+  if (view.cap !== null && !zero) rows.push(`上限 · ${m(view.cap.costMicros)} · ${String(view.cap.calls)} 次调用 · ${String(view.cap.tokens)} tokens`);
+  rows.push(zero && view.settled.costMicros === 0
+    ? `已结算 · ${String(view.settled.calls)} 次调用`
+    : `已结算 · ${m(view.settled.costMicros)} · ${String(view.settled.calls)} 次 · ${String(view.settled.tokens)} tokens`);
   if (view.reconciled.calls > 0) rows.push(`其中运营者凭证对账 · ${String(view.reconciled.calls)} 次 · ${m(view.reconciled.costMicros)}`);
   if (view.unknown.calls > 0) rows.push(`未确认 · ${String(view.unknown.calls)} 次 · 最多 ${m(view.unknown.costMicros)}（不会自动重试）`);
   if (view.held.calls > 0) rows.push(`进行中预留 · ${String(view.held.calls)} 次 · 最多 ${m(view.held.costMicros)}`);
-  if (view.remaining !== null) rows.push(`最坏情况下剩余 · ${m(view.remaining.costMicros)} · ${String(view.remaining.calls)} 次`);
-  if (view.currency === null) rows.push('部署未声明币种，金额为原始单位');
+  if (view.remaining !== null && !zero) rows.push(`最坏情况下剩余 · ${m(view.remaining.costMicros)} · ${String(view.remaining.calls)} 次`);
+  // UI-AUDIT-2: a zero cap is the fail-closed default (no budget approved), not a currency question.
+  if (view.state === 'ZERO_COST_POLICY') rows.push('怎么解决 · 在开始菜单运行「CompanyOS 首次配置」设置每个目标的预算，然后重新打开 CompanyOS');
+  else if (view.currency === null) rows.push('未声明币种，金额按原始单位显示');
   return rows;
+};
+
+/* ------------------------------------------------- UI-AUDIT-2: budget before send --- */
+
+/**
+ * UI-AUDIT-2 (user report 2026-11-11): the boss learned "预算为 0（付费调用被拒绝）" only
+ * from a FAILED Goal. Main's `budget.readiness` says, before anything is sent, whether a
+ * per-Goal cap is approved and which (provider, model) pairs it covers; a Goal on a model
+ * with no approved budget is refused at its first paid call, so Send is blocked with the
+ * reason and the fix instead.
+ */
+export interface BudgetReadiness {
+  readonly state: 'APPROVED' | 'NOT_APPROVED' | 'RESTART_REQUIRED';
+  readonly currency: BudgetCurrency | null;
+  readonly capCostMicros: number | null;
+  readonly source: 'provider-setup' | 'operator' | null;
+  readonly covered: readonly { readonly providerId: string; readonly modelId: string; readonly validUntilMs: number; readonly valid: boolean }[];
+}
+
+/** Strict parse; anything malformed => null (unknown: nothing is blocked on a guess). */
+export const parseBudgetReadiness = (value: unknown): BudgetReadiness | null => {
+  const r = rec(value);
+  if (r === null) return null;
+  const state = (['APPROVED', 'NOT_APPROVED', 'RESTART_REQUIRED'] as const).find((s) => s === r['state']);
+  const currency = r['currency'] === null ? null : CURRENCIES.find((c) => c === r['currency']);
+  const cap = r['capCostMicros'] === null ? null : n(r['capCostMicros']);
+  const source = r['source'] === null ? null : (['provider-setup', 'operator'] as const).find((s) => s === r['source']);
+  if (state === undefined || currency === undefined || (r['capCostMicros'] !== null && cap === null) || source === undefined || !Array.isArray(r['covered'])) return null;
+  const covered = (r['covered'] as unknown[]).flatMap((entry) => {
+    const c = rec(entry);
+    if (c === null || typeof c['providerId'] !== 'string' || typeof c['modelId'] !== 'string' || n(c['validUntilMs']) === null || typeof c['valid'] !== 'boolean') return [];
+    return [{ providerId: c['providerId'], modelId: c['modelId'], validUntilMs: c['validUntilMs'] as number, valid: c['valid'] }];
+  });
+  return { state, currency, capCostMicros: cap, source, covered };
+};
+
+export const loadBudgetReadiness = async (bridge: { readonly workflowRequest: (request: { readonly operation: string; readonly payload?: unknown }) => Promise<unknown> }): Promise<BudgetReadiness | null> => {
+  const response = (await bridge.workflowRequest({ operation: 'budget.readiness' })) as { readonly ok?: boolean; readonly value?: unknown } | null;
+  return response?.ok === true ? parseBudgetReadiness(response.value) : null;
+};
+
+export type BudgetGate =
+  | { readonly ok: true; readonly capText: string | null }
+  | { readonly ok: false; readonly kind: 'NOT_APPROVED' | 'NOT_COVERED' | 'EXPIRED' | 'RESTART_REQUIRED'; readonly text: string; readonly short: string };
+
+const SETUP_HINT = '在开始菜单运行「CompanyOS 首次配置」设置每个目标的预算，完成后重新打开 CompanyOS。';
+
+/** Can a Goal on this (provider, model) spend money at all? `null` readiness = unknown = not blocked. */
+export const budgetGateFor = (
+  readiness: BudgetReadiness | null,
+  model: { readonly providerId: string; readonly providerModelId: string; readonly displayName: string } | null,
+): BudgetGate | null => {
+  if (readiness === null || model === null) return null;
+  if (readiness.state === 'NOT_APPROVED') {
+    return { ok: false, kind: 'NOT_APPROVED', short: '预算为 0', text: `预算为 0：还没有批准每个目标的花费上限，发送后所有付费模型调用都会被拒绝。${SETUP_HINT}` };
+  }
+  const match = readiness.covered.filter((entry) => entry.providerId === model.providerId && entry.modelId === model.providerModelId);
+  if (match.length === 0) {
+    return { ok: false, kind: 'NOT_COVERED', short: '未批准预算', text: `「${model.displayName}」没有批准的预算（预算只对首次配置时填写的模型生效），发送后付费调用会被拒绝。请改用已批准预算的模型，或${SETUP_HINT}` };
+  }
+  if (!match.some((entry) => entry.valid)) {
+    return { ok: false, kind: 'EXPIRED', short: '预算已过期', text: `「${model.displayName}」的价格确认已过期（30 天有效），付费调用会被拒绝。${SETUP_HINT}` };
+  }
+  if (readiness.state === 'RESTART_REQUIRED') {
+    return { ok: false, kind: 'RESTART_REQUIRED', short: '重启后生效', text: '预算已设置，但要重新打开 CompanyOS 后才生效。' };
+  }
+  return { ok: true, capText: readiness.capCostMicros === null ? null : `每个目标上限 ${formatMoney(readiness.capCostMicros, readiness.currency)}` };
 };

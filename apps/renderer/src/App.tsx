@@ -33,6 +33,11 @@ import {
 import type { WorkflowBridge } from './designer.js';
 import {
   establishCompanySelection,
+  goalModelOptions,
+  modelUnusableText,
+  registerModel,
+  selectionFailureText,
+  setModelEnabled,
   loadModelCatalogue,
   loadRegisteredModels,
   projectModelSelection,
@@ -88,7 +93,9 @@ import {
 } from './approvals.js';
 import { runArtifactAction } from './artifacts-view.js';
 import { loadGoalUsage, projectTelemetry } from './usage.js';
-import { loadGoalBudget } from './budget.js';
+import { budgetGateFor, loadBudgetReadiness, loadGoalBudget, type BudgetReadiness } from './budget.js';
+import { TypedErrorLine } from './typed-error.js';
+import type { FailureRemedy } from './failure-labels.js';
 import { goalUsedTokens, projectModelRuntime, type ModelRuntimeSnapshot } from './telemetry.js';
 import { GoalList, WorkspaceSelector, type ControlPlaneBridge, type WorkspaceSelectionBridge } from './workspace.js';
 import { createRuntimeReadBudget, RuntimeReadError } from './runtime-read-budget.js';
@@ -124,9 +131,8 @@ function ActionFailureLine(props: {
   return h(
     'div',
     { className: 'typed-error action-failure', role: 'alert', 'data-testid': 'action-failure' },
-    shown.map((failure) =>
-      h('p', { key: failure.code, className: 'typed-error__message' }, `${failure.code} ${failure.message}`),
-    ),
+    // UI-AUDIT-2: plain text first; the code is behind 详情.
+    shown.map((failure) => h(TypedErrorLine, { key: failure.code, failure })),
   );
 }
 
@@ -174,6 +180,10 @@ export function App() {
   // AUDIT R3: model-selection failures have their own surface (onboarding card + dock).
   const [modelFailure, setModelFailure] = useState<{ code: string; message: string } | null>(null);
   const [catalogueCount, setCatalogueCount] = useState(0);
+  // UI-AUDIT-2: budget readiness BEFORE a Goal is sent, and the last model change in plain words.
+  const [budgetReadiness, setBudgetReadiness] = useState<BudgetReadiness | null>(null);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
+  const [settingsFocus, setSettingsFocus] = useState<{ readonly section: 'budget' | 'models'; readonly at: number } | null>(null);
   const [pendingIntent, setPendingIntent] = useState(false);
   const [pendingObjective, setPendingObjective] = useState<string | null>(null);
   const [popover, setPopover] = useState<'model' | 'authority' | 'runtime' | null>(null);
@@ -299,6 +309,7 @@ export function App() {
         ? selection.value.resolvedModelKey
         : null;
     setModelStatus(projectModelSelection(options, companyKey));
+    setBudgetReadiness(await loadBudgetReadiness(workflow).catch(() => null));
   }, [workflow]);
 
   useEffect(() => {
@@ -306,11 +317,19 @@ export function App() {
   }, [refreshModels]);
 
   const chooseModel = useCallback(
-    async (option: ModelOptionRow) => {
+    async (option: ModelOptionRow, notice?: string) => {
       if (workflow === null) return;
+      // UI-AUDIT-2: a model that cannot run Goals is never pinned (main refuses it too).
+      const unusable = modelUnusableText(option);
+      if (unusable !== null) {
+        setModelFailure({ code: 'MODEL_NOT_GOAL_CAPABLE', message: unusable });
+        setPopover(null);
+        return;
+      }
       setModelBusy(true);
       setModelExplanation(null);
       setModelFailure(null);
+      setModelNotice(null);
       try {
         const result = await establishCompanySelection(workflow, {
           providerId: option.providerId,
@@ -318,11 +337,13 @@ export function App() {
           modelKey: option.modelKey,
         });
         if (result.ok) {
-          setModelExplanation(result.explanation);
+          // UI-AUDIT-2: only a refusal needs the card; success is one plain line in the dock.
+          setModelExplanation(result.explanation.accepted ? null : result.explanation);
           setModelStatus({ kind: 'selected', modelKey: result.modelKey, displayName: option.displayName });
+          setModelNotice(notice ?? `已设为执行目标用的模型：${option.displayName}`);
           setSubmissionFailure(null);
         } else {
-          setModelFailure({ code: result.code, message: result.message });
+          setModelFailure({ code: result.code, message: selectionFailureText({ code: result.code, message: result.message }) });
         }
       } catch {
         setModelFailure({ code: 'MODEL_SELECTION_FAILED', message: '模型选择未完成（读取或保存失败），请重试。' });
@@ -344,8 +365,64 @@ export function App() {
     const sole = soleModelOption(modelOptions, modelStatus);
     if (sole === null || soleModelTried.current || modelBusy) return;
     soleModelTried.current = true;
-    void chooseModel(sole);
+    // UI-AUDIT-2: a pinned model that cannot run Goals (chosen from the old full-catalogue list)
+    // is replaced by the configured chat model — said once, in plain words.
+    const previous = modelStatus.kind === 'selected' ? modelOptions.find((option) => option.modelKey === modelStatus.modelKey) ?? null : null;
+    void chooseModel(sole, previous === null ? undefined : `原来选择的「${previous.displayName}」不能执行目标，已改用首次配置的「${sole.displayName}」。`);
   }, [modelOptions, modelStatus, modelBusy, chooseModel]);
+
+  /** UI-AUDIT-2: Settings → 添加 (register only) / 启用 / 停用; each re-reads main's truth. */
+  const addModel = useCallback(async (option: ModelOptionRow) => {
+    if (workflow === null) return;
+    setModelBusy(true);
+    setModelFailure(null);
+    try {
+      const result = await registerModel(workflow, option);
+      if (result.ok) setModelNotice(`已添加模型：${option.displayName}`);
+      else setModelFailure({ code: result.code, message: selectionFailureText(result) });
+    } catch {
+      setModelFailure({ code: 'MODEL_REGISTER_FAILED', message: '无法添加该模型（通信失败），请重试。' });
+    } finally {
+      setModelBusy(false);
+    }
+    await refreshModels().catch(() => undefined);
+  }, [workflow, refreshModels]);
+  const changeModelEnabled = useCallback(async (option: ModelOptionRow, enabled: boolean) => {
+    if (workflow === null || option.modelKey === null) return;
+    setModelBusy(true);
+    setModelFailure(null);
+    try {
+      const result = await setModelEnabled(workflow, option.modelKey, enabled);
+      if (result.ok) setModelNotice(`${enabled ? '已启用' : '已停用'}模型：${option.displayName}`);
+      else setModelFailure({ code: result.code, message: enabled ? '无法启用该模型，请重试。' : '无法停用该模型，请重试。' });
+    } catch {
+      setModelFailure({ code: 'MODEL_ENABLE_FAILED', message: '无法更改模型状态（通信失败），请重试。' });
+    } finally {
+      setModelBusy(false);
+    }
+    await refreshModels().catch(() => undefined);
+  }, [workflow, refreshModels]);
+
+  // UI-AUDIT-2: a failure's fix opens the exact setting (budget / model) — never a dead end.
+  const openRemedy = useCallback((remedy: FailureRemedy) => {
+    if (remedy === 'model') {
+      setPopover('model');
+      return;
+    }
+    setView('settings');
+    setSettingsFocus({ section: 'budget', at: Date.now() });
+  }, []);
+  useEffect(() => {
+    if (settingsFocus === null || view !== 'settings') return;
+    const doc = (globalThis as { document?: { getElementById?: (id: string) => { scrollIntoView?: (options?: unknown) => void } | null } }).document;
+    const target = typeof doc?.getElementById === 'function' ? doc.getElementById(`settings-${settingsFocus.section}`) : null;
+    if (target !== null && typeof target?.scrollIntoView === 'function') target.scrollIntoView({ block: 'start' });
+  }, [settingsFocus, view]);
+  // Settings re-reads the budget (the user may have just run first-run setup and reopened).
+  useEffect(() => {
+    if (workflow === null || view !== 'settings') return;
+    void loadBudgetReadiness(workflow).then(setBudgetReadiness).catch(() => undefined);
+  }, [workflow, view]);
 
   /* ----------------------------------------------- canonical workspace change --- */
   // BUG BASH closure: the ONE shared change-workspace flow (Settings + composer chip).
@@ -784,7 +861,7 @@ export function App() {
         }
       } catch {
         if (!cancelled) {
-          setSurfaceFailure({ code: 'SURFACE_UNAVAILABLE', message: '无法读取 canonical 数据，请稍后重试。' });
+          setSurfaceFailure({ code: 'SURFACE_UNAVAILABLE', message: '暂时无法读取这里的数据，请稍后再打开。' });
         }
       }
     })();
@@ -1099,7 +1176,12 @@ export function App() {
   const sessionCost = useMemo(() => sessionCostText(usageProjection), [usageProjection]);
 
   const modelLabel = modelStatus.kind === 'selected' ? (modelStatus.displayName ?? modelStatus.modelKey) : '选择模型';
-  const modelReady = modelStatus.kind === 'selected';
+  // UI-AUDIT-2: "ready" = a model that can run Goals is selected AND a budget covers it (when known).
+  const selectedOption = modelStatus.kind === 'selected' ? modelOptions.find((option) => option.modelKey === modelStatus.modelKey) ?? null : null;
+  const selectedUnusable = modelUnusableText(selectedOption);
+  const budgetGate = budgetGateFor(budgetReadiness, selectedOption);
+  const usableModels = goalModelOptions(modelOptions);
+  const modelReady = modelStatus.kind === 'selected' && selectedUnusable === null && (budgetGate === null || budgetGate.ok);
   const modelView = useMemo(() => ({ ...projectModelRuntime(modelSnapshot), cost: sessionCost }), [modelSnapshot, sessionCost]);
   const databaseFailure = readDatabaseFailure(database?.failure);
   const servicesFailure = readServicesFailure(database?.services);
@@ -1210,7 +1292,7 @@ export function App() {
 
   // UI-AUDIT-13: the model card is shown only when it needs the user (nothing selected, or the
   // feedback of a choice just made) — not as a permanent block on every Goal.
-  const onboarding = modelStatus.kind !== 'selected' || modelFailure !== null || modelExplanation !== null
+  const onboarding = modelStatus.kind !== 'selected' || selectedUnusable !== null || modelFailure !== null || modelExplanation !== null
     ? h(ModelOnboardingView, {
         status: modelStatus,
         options: modelOptions,
@@ -1219,7 +1301,10 @@ export function App() {
         failure: modelFailure,
         explanation: modelExplanation,
         onSelect: (option: ModelOptionRow) => void chooseModel(option),
-        onOpenSettings: () => setView('settings'),
+        onOpenSettings: () => {
+          setView('settings');
+          setSettingsFocus({ section: 'models', at: Date.now() });
+        },
       })
     : null;
 
@@ -1242,7 +1327,7 @@ export function App() {
         'div',
         { className: 'other-approvals', role: 'status', 'data-testid': 'other-goal-approvals' },
         h('p', null, `其他目标待批准 · ${otherPendingApprovals.length} 项（在左侧打开对应目标后处理）`),
-        h('ul', null, otherPendingApprovals.map((decision) => h('li', { key: decision.runId }, `${pendingApprovalOf(decision)?.reason ?? '需要批准'} · 范围 Run ${decision.runId}`))),
+        h('ul', null, otherPendingApprovals.map((decision) => h('li', { key: decision.runId, title: `Run ${decision.runId}` }, pendingApprovalOf(decision)?.reason ?? '需要批准'))),
       );
 
   const goalList = h(GoalList, {
@@ -1278,6 +1363,7 @@ export function App() {
     liveLine,
     onReuseObjective: reuseObjective,
     reuseDisabledReason: reuseObjective !== null && draft.trim() !== '' ? '输入框里已有内容' : null,
+    onRemedy: openRemedy,
   });
 
   const center =
@@ -1298,6 +1384,13 @@ export function App() {
           // The model selector is the composer's popover; it opens where the user is.
           onOpenModelSelector: () => setPopover('model'),
           onChangeWorkspace: changeWorkspace,
+          models: modelOptions,
+          modelBusy,
+          modelFailure,
+          onChooseModel: (option: ModelOptionRow) => void chooseModel(option),
+          onAddModel: (option: ModelOptionRow) => void addModel(option),
+          onSetModelEnabled: (option: ModelOptionRow, enabled: boolean) => void changeModelEnabled(option, enabled),
+          budgetReadiness,
         })
       : view === 'tools'
         ? h(ToolsSurfaceView, { rows: toolRows, failure: surfaceFailure })
@@ -1348,13 +1441,24 @@ export function App() {
         ],
   });
 
-  const blockedReason = databaseFailure !== null
-    ? '本地数据库不可用，暂时不能创建目标（见上方说明）。'
+  // UI-AUDIT-2: every reason Send is unavailable, in order, each with its one fix — so a Goal
+  // that would certainly be refused (no budget, non-chat model) is never sent.
+  const openModelPicker = { label: '选择对话模型', onClick: () => setPopover('model') };
+  const openBudgetSettings = { label: '查看预算设置', onClick: () => openRemedy('budget') };
+  const blocked: { readonly reason: string; readonly action: { readonly label: string; readonly onClick: () => void } | null } | null = databaseFailure !== null
+    ? { reason: '本地数据库不可用，暂时不能创建目标（见上方说明）。', action: null }
     : modelStatus.kind === 'provider-not-configured'
-      ? '尚未配置模型提供商：请在开始菜单运行「CompanyOS 首次配置」，完成后重新打开 CompanyOS。'
-      : !modelReady
-        ? '先选择公司模型（输入框右下角）后才能发送。'
-        : null;
+      ? { reason: '尚未配置模型提供商：请在开始菜单运行「CompanyOS 首次配置」，完成后重新打开 CompanyOS。', action: { label: '查看设置', onClick: () => openRemedy('budget') } }
+      : modelOptions.length > 0 && usableModels.length === 0
+        ? { reason: '还没有可以执行目标的对话模型：请在设置里添加对话模型，或重新运行「CompanyOS 首次配置」。', action: { label: '管理模型', onClick: () => { setView('settings'); setSettingsFocus({ section: 'models', at: Date.now() }); } } }
+        : selectedUnusable !== null
+          ? { reason: `${selectedUnusable}。请改选对话模型。`, action: openModelPicker }
+          : modelStatus.kind !== 'selected'
+            ? { reason: '先选择执行目标用的模型（输入框右下角）后才能发送。', action: openModelPicker }
+            : budgetGate !== null && !budgetGate.ok
+              ? { reason: budgetGate.text, action: budgetGate.kind === 'NOT_COVERED' && usableModels.length > 1 ? openModelPicker : openBudgetSettings }
+              : null;
+  const blockedReason = blocked?.reason ?? null;
 
   return h(AppShellView, {
     view,
@@ -1393,10 +1497,13 @@ export function App() {
       h(ActionFailureLine, {
         failures: [
           submissionFailure,
-          // The chat column already shows the model failure in the onboarding card.
-          view === 'home' || view === 'chat' ? null : modelFailure,
+          // The chat column already shows the model failure in the onboarding card; Settings in its model section.
+          view === 'home' || view === 'chat' || view === 'settings' ? null : modelFailure,
         ],
       }),
+      modelNotice === null
+        ? null
+        : h('p', { className: 'model-notice', role: 'status', 'data-testid': 'model-notice' }, modelNotice),
       h(ComposerView, {
         draft,
         ready: modelReady && workspaceRoot !== null && !pendingIntent && databaseFailure === null,
@@ -1418,6 +1525,7 @@ export function App() {
         authorityOpen: popover === 'authority',
         modelOpen: popover === 'model',
         blockedReason,
+        blockedAction: blocked?.action ?? null,
         footHint: openGoalRunId !== null && view === 'chat'
           ? '发送会创建一个新目标，当前目标不受影响；高风险操作会停在批准边界，由你决定'
           : '高风险操作会停在批准边界，由你决定',
@@ -1449,8 +1557,13 @@ export function App() {
             onOpenSettings: () => {
               setPopover(null);
               setView('settings');
+              setSettingsFocus({ section: 'models', at: Date.now() });
             },
             providerConfigured: modelOptions.length > 0,
+            budgetNote: (option: ModelOptionRow) => {
+              const gate = budgetGateFor(budgetReadiness, option);
+              return gate === null || gate.ok ? null : gate.short;
+            },
           }),
         ],
         extras: h(
@@ -1506,6 +1619,7 @@ export function App() {
       onArtifactReveal: (artifactId: string, kind: string) => void runArtifact('reveal', artifactId, kind),
       artifactPreview,
       artifactFailure,
+      onRemedy: openRemedy,
     }),
   });
 }

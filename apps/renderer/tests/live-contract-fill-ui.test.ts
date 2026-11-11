@@ -66,7 +66,8 @@ describe('UI defect (b): Chinese blocker labels + the real typed failure reason'
     expect(blockerText(RUN_FAILED, null, 'execution_failed')).toBe('运行失败 · 执行失败');
     expect(blockerText({ code: 'RUN_PAUSED' }, CEILING)).toBe('运行已暂停');
     expect(failureDetailLabel('EXECUTOR_KERNEL_TURN_ERROR')).toBe('智能体内核异常结束（error）');
-    expect(failureDetailLabel('X_NEW')).toBe('未归类的失败原因（X_NEW）');
+    // UI-AUDIT-2: an unknown code is never the main text (it stays under 详情).
+    expect(failureDetailLabel('X_NEW')).toBe('运行失败（原因代码见详情）');
     expect(runFailureReasonLabel('route_failed')).toBe('没有可用的执行路线');
     expect(attemptFailureLabel(null)).toBeNull();
   });
@@ -90,7 +91,10 @@ describe('UI defect (b): Chinese blocker labels + the real typed failure reason'
     const entries = projectConversation(workspace as never, 'x', []);
     const html = renderToString(h(ChatView, { objective: 'x', entries, loading: false, failure: null }));
     expect(html).toContain('目标失败 · 模型单次回复达到输出上限');
-    expect(html).not.toContain('execution_failed');
+    // UI-AUDIT-2: the raw codes are support detail, inside the collapsed 详情 only.
+    const main = html.replace(/<details[\s\S]*?<\/details>/gu, '');
+    expect(main).not.toContain('execution_failed');
+    expect(html).toMatch(/<details class="tech"><summary>详情<\/summary><code class="tech__code">[^<]*execution_failed/u);
   });
 });
 
@@ -119,6 +123,6 @@ describe('UI defect (c): a single configured model is selected automatically', (
     const { readFileSync } = await import('node:fs');
     const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
     expect(source).toMatch(/soleModelOption\(modelOptions, modelStatus\)/u);
-    expect(source).toMatch(/soleModelTried\.current = true;\s*void chooseModel\(sole\);/u);
+    expect(source).toMatch(/soleModelTried\.current = true;[\s\S]{0,600}void chooseModel\(sole,/u);
   });
 });
