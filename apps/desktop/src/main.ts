@@ -753,8 +753,8 @@ function readinessModelName(modelKey: string): string {
 
 /**
  * H17a — the ordinary user's provider setup ("CompanyOS 首次配置", resources/setup). Applied to
- * the PRIVATE runtime environment (AUDIT-D3; never process.env) once, before any composition reads it; a deployment environment
- * that declares the model wins whole. The DPAPI binding is loaded only when a key file exists.
+ * the PRIVATE runtime environment (AUDIT-D3; never process.env) once, before any composition reads it. V017: the user's
+ * setup wins over COS_MODEL_* environment variables; a complete environment declaration is used only without a setup. The DPAPI binding is loaded only when a key file exists.
  * Logged by state and counts only — never a name of a secret, never a value.
  */
 async function applyInstalledProviderSetup(): Promise<void> {
@@ -767,10 +767,12 @@ async function applyInstalledProviderSetup(): Promise<void> {
   runtimeEnv = applied.runtimeEnv;
   const result = applied.result;
   providerSetupSource = result.source;
+  providerSetupEnvironmentDetected = result.environmentDetected;
   logger.info('provider setup', {
     source: result.source,
     setupState: result.setupState,
     reasonCode: result.reasonCode,
+    environmentDetected: result.environmentDetected,
     appliedCount: result.applied.length,
     ...(dpapi.detail === null ? {} : { unprotectDetail: dpapi.detail }),
   });
@@ -778,6 +780,7 @@ async function applyInstalledProviderSetup(): Promise<void> {
 
 let providerSetupAppliedFingerprint = '';
 let providerSetupSource: 'environment' | 'provider-setup' | 'none' = 'none';
+let providerSetupEnvironmentDetected = false;
 let appWindow: BrowserWindow | null = null;
 
 /** UI-AUDIT-3: the shipped preset (deployment data), installed beside the Start-menu helper; dev falls back to the repo copy. */
@@ -814,7 +817,8 @@ function providerSettings(): Promise<ProviderSettingsService> {
       readShippedProfile: readShippedProviderProfile,
       protect: dpapi.protect,
       unprotect: dpapi.unprotect,
-      environmentDeclared: providerSetupSource === 'environment',
+      environmentDetected: providerSetupEnvironmentDetected,
+      environmentInUse: providerSetupSource === 'environment',
       appliedFingerprint: providerSetupAppliedFingerprint,
       confirm: async (request) => {
         const text = providerSettingsConfirmText(request);

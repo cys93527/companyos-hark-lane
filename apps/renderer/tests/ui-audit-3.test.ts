@@ -160,6 +160,41 @@ describe('设置 → 模型服务: the API key goes one way', () => {
   });
 });
 
+describe('V017 设置 → 模型服务: environment variables are never a dead end', () => {
+  const statusOnly = (status: ProviderSettingsStatusView) => vi.fn(async (): Promise<ProviderSettingsResultView> => ({ ok: true, code: 'OK', message: '', status }));
+
+  it('env vars without a key and no setup: the edit form (service / key / budget) is shown with a small note', async () => {
+    const view = await render(h(ModelServiceSection, { request: statusOnly({ ...STATUS_EMPTY, environmentDetected: true }) }));
+    expect(elementsWithAttribute(view, 'data-testid', 'settings-service-form')).toHaveLength(1);
+    expect(elementsWithAttribute(view, 'data-testid', 'service-api-key')).toHaveLength(1);
+    expect(elementsWithAttribute(view, 'data-testid', 'service-cap')).toHaveLength(1);
+    expect(view.textContent).toContain('检测到系统环境变量 COS_MODEL_*，保存后以这里的设置为准。');
+    expect(view.textContent).not.toContain('这里的设置不会生效');
+  });
+
+  it('a complete environment model in use: summary + an edit button that opens the form (budget editable)', async () => {
+    const view = await render(h(ModelServiceSection, { request: statusOnly({ ...STATUS_EMPTY, source: 'environment', environmentDetected: true }) }));
+    expect(view.textContent).not.toContain('这里的设置不会生效');
+    expect(view.textContent).toContain('以这里的设置为准');
+    const edit = elementsWithAttribute(view, 'data-testid', 'settings-service-edit')[0]!;
+    await act(async () => { dispatchMiniEvent(edit, 'click'); });
+    expect(elementsWithAttribute(view, 'data-testid', 'settings-service-form')).toHaveLength(1);
+    expect(elementsWithAttribute(view, 'data-testid', 'service-cap')).toHaveLength(1);
+  });
+
+  it('the user setup in use with env vars present: summary, edit button, and the note', async () => {
+    const view = await render(h(ModelServiceSection, { request: statusOnly({ ...STATUS_SET, restartRequired: false, environmentDetected: true }) }));
+    expect(view.textContent).toContain('已保存 · ****ABCD');
+    expect(elementsWithAttribute(view, 'data-testid', 'settings-service-edit')).toHaveLength(1);
+    expect(view.textContent).toContain('保存后以这里的设置为准');
+  });
+
+  it('no source string says the settings here have no effect', () => {
+    const src = readFileSync(new URL('../src/provider-settings-view.tsx', import.meta.url), 'utf8');
+    expect(src).not.toContain('不会生效');
+  });
+});
+
 describe('composer: only what a message needs', () => {
   it('workspace, model and 发送 — no 权限 / 工具 chips, no approval explainer, no session cost, no draft buttons', () => {
     const html = renderToStaticMarkup(h(ComposerView, {

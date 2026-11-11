@@ -49,7 +49,7 @@ describe('H17a provider setup — read', () => {
     const env: Record<string, string | undefined> = {};
     const setup = readProviderSetup(fresh(), unprotect);
     expect(setup).toEqual({ state: 'NOT_CONFIGURED' });
-    expect(applyProviderSetupOverlay(env, setup)).toEqual({ source: 'none', setupState: 'NOT_CONFIGURED', reasonCode: null, applied: [] });
+    expect(applyProviderSetupOverlay(env, setup)).toEqual({ source: 'none', setupState: 'NOT_CONFIGURED', reasonCode: null, applied: [], environmentDetected: false });
     expect(env).toEqual({});
   });
 
@@ -72,13 +72,38 @@ describe('H17a provider setup — read', () => {
     expect(JSON.stringify(result)).not.toContain('api.deepseek.com');
   });
 
-  it('a deployment environment that declares ANY model field wins whole (no mixing)', () => {
+  it('V017: the user setup wins over COS_MODEL_* environment variables, every model name from the setup (no mixing)', () => {
     const ud = configured();
-    const env: Record<string, string | undefined> = { COS_MODEL_BASE_URL: 'https://operator.example' };
+    const env: Record<string, string | undefined> = {
+      COS_MODEL_BASE_URL: 'https://operator.example', COS_MODEL_ID: 'env-model', COS_MODEL_PROVIDER_ID: 'model.env',
+      COS_MODEL_TIMEOUT_MS: '5', COS_MODEL_ROUTING_MODE: 'env-route', COMPANYOS_MODEL_API_KEY: 'env-key-0123456789', PATH: '/bin',
+    };
     const result = applyProviderSetupOverlay(env, readProviderSetup(ud, unprotect));
-    expect(result).toMatchObject({ source: 'environment', applied: [] });
-    expect(env['COMPANYOS_MODEL_API_KEY']).toBeUndefined();
-    expect(env['COS_MODEL_ID']).toBeUndefined();
+    expect(result).toMatchObject({ source: 'provider-setup', environmentDetected: true });
+    expect(env['COS_MODEL_BASE_URL']).toBe('https://api.deepseek.com');
+    expect(env['COS_MODEL_ID']).toBe('deepseek-flash');
+    expect(env['COS_MODEL_PROVIDER_ID']).toBe('model.deepseek');
+    expect(env['COMPANYOS_MODEL_API_KEY']).toBe(KEY);
+    expect(env['COS_MODEL_TIMEOUT_MS']).not.toBe('5');
+    expect(env['COS_MODEL_ROUTING_MODE']).toBeUndefined();
+    expect(env['PATH']).toBe('/bin');
+    expect(JSON.stringify(result)).not.toContain(KEY);
+  });
+
+  it('V017: an environment declaration without a key and no setup is NOT a provider (partial names removed)', () => {
+    const env: Record<string, string | undefined> = { COS_MODEL_BASE_URL: 'https://api.deepseek.com', COS_MODEL_ID: 'deepseek-v4.1-flash', COS_MODEL_PROVIDER_ID: 'model.deepseek', PATH: '/bin' };
+    const result = applyProviderSetupOverlay(env, readProviderSetup(fresh(), unprotect));
+    expect(result).toMatchObject({ source: 'none', environmentDetected: true, applied: [] });
+    expect(env).toEqual({ PATH: '/bin' });
+    expect(resolveOpenAiCompatibleConfig(env)).toEqual({ ok: true, value: null });
+  });
+
+  it('V017: a complete environment declaration is used only when there is no user setup', () => {
+    const env: Record<string, string | undefined> = { COS_MODEL_BASE_URL: 'https://operator.example/v1', COS_MODEL_ID: 'op-model', COMPANYOS_MODEL_API_KEY: 'env-key-0123456789' };
+    const result = applyProviderSetupOverlay(env, readProviderSetup(fresh(), unprotect));
+    expect(result).toMatchObject({ source: 'environment', environmentDetected: true, applied: [] });
+    expect(env['COS_MODEL_ID']).toBe('op-model');
+    expect(env['COMPANYOS_MODEL_API_KEY']).toBe('env-key-0123456789');
   });
 
   it('partial or broken setups are INVALID with a typed reason and apply nothing', () => {

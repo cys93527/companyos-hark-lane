@@ -60,7 +60,8 @@ const harness = (over: Partial<ProviderSettingsDeps> & { answer?: boolean; fetch
     readShippedProfile: () => PROFILE,
     protect: xor,
     unprotect: xor,
-    environmentDeclared: false,
+    environmentDetected: false,
+    environmentInUse: false,
     appliedFingerprint: providerSettingsFingerprint(dir),
     confirm: async (request) => {
       confirms.push(request);
@@ -171,11 +172,29 @@ describe('UI-AUDIT-3 provider settings: save (key one way, budget only by the us
     expect(existsSync(join(h.dir, 'provider'))).toBe(false);
   });
 
-  it('a deployment environment that declares the model owns it: settings refuse to save', async () => {
-    const h = harness({ environmentDeclared: true });
-    expect((await h.service.handle('save', { mode: 'preset', apiKey: KEY, capCny: 3 })).code).toBe('ENVIRONMENT_MANAGED');
-    expect(h.service.status().source).toBe('environment');
-    expect(h.confirms).toHaveLength(0);
+  it('V017: COS_MODEL_* environment variables never block saving — the user setup wins after restart', async () => {
+    const h = harness({ environmentDetected: true, environmentInUse: true });
+    const before = h.service.status();
+    expect(before.source).toBe('environment');
+    expect(before.environmentDetected).toBe(true);
+    const r = await h.service.handle('save', { mode: 'preset', apiKey: KEY, capCny: 3 });
+    expect(r.code).toBe('OK');
+    expect(r.restartRequired).toBe(true);
+    expect(h.confirms).toHaveLength(1);
+    const after = h.service.status();
+    expect(after.source).toBe('settings');
+    expect(after.state).toBe('CONFIGURED');
+    expect(after.capCny).toBe(3);
+    expect(after.environmentDetected).toBe(true);
+    expect(JSON.stringify(after)).not.toContain(KEY);
+  });
+
+  it('V017: leftover env variables without a key and no setup → not configured, source none, saving works', async () => {
+    const h = harness({ environmentDetected: true, environmentInUse: false });
+    const s = h.service.status();
+    expect(s).toMatchObject({ source: 'none', state: 'NOT_CONFIGURED', environmentDetected: true, capCny: null });
+    expect((await h.service.handle('save', { mode: 'preset', apiKey: KEY, capCny: 2 })).code).toBe('OK');
+    expect(h.service.status().capCny).toBe(2);
   });
 
   it('a host without DPAPI cannot take a key in-app (and says so); nothing is written', async () => {

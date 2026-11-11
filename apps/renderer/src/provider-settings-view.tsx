@@ -25,6 +25,8 @@ export interface ProviderServiceView {
 export interface ProviderSettingsStatusView {
   readonly keyEntrySupported: boolean;
   readonly source: 'environment' | 'settings' | 'none';
+  /** COS_MODEL_* environment variables exist on this PC (note only; saving here wins). */
+  readonly environmentDetected?: boolean;
   readonly state: 'NOT_CONFIGURED' | 'CONFIGURED' | 'INVALID';
   readonly problem: string | null;
   readonly service: ProviderServiceView | null;
@@ -147,12 +149,22 @@ export const serviceSummaryRows = (status: ProviderSettingsStatusView): readonly
   if (status.service !== null) {
     rows.push(['服务', `${status.service.host} · ${status.service.modelId}${status.service.kind === 'preset' ? '（推荐）' : ''}`]);
   }
-  rows.push(['API Key', status.keyHint === null ? '未保存' : `已保存 · ${status.keyHint}`]);
+  const fromEnvironment = status.source === 'environment' && status.service === null;
+  if (fromEnvironment) rows.push(['服务', '由系统环境变量 COS_MODEL_* 提供']);
+  rows.push(['API Key', fromEnvironment ? '由系统环境变量提供' : status.keyHint === null ? '未保存' : `已保存 · ${status.keyHint}`]);
   if (status.service !== null && status.service.inputCnyPerM > 0) {
     rows.push(['价格', `输入 ${String(status.service.inputCnyPerM)} 元 / 输出 ${String(status.service.outputCnyPerM)} 元（每百万 tokens）`]);
   }
   rows.push(['每个目标最多花费', status.capCny === null ? '未设置（预算为 0，目标无法执行）' : `${String(status.capCny)} 元`]);
   return rows;
+};
+
+/** V017 — the only thing environment variables change in this view: a small note (never a dead end). */
+export const environmentNoteOf = (status: ProviderSettingsStatusView): string | null => {
+  if (status.environmentDetected !== true) return null;
+  return status.source === 'environment'
+    ? '当前使用系统环境变量 COS_MODEL_* 提供的模型服务。在这里保存后，以这里的设置为准（重启后生效）。'
+    : '检测到系统环境变量 COS_MODEL_*，保存后以这里的设置为准。';
 };
 
 export interface ModelServiceSectionProps {
@@ -178,6 +190,7 @@ export function ModelServiceSection(props: ModelServiceSectionProps): JSX.Elemen
       setStatus(answer.status);
       setForm(formFromStatus(answer.status));
       setEditing(answer.status.state !== 'CONFIGURED' && answer.status.source !== 'environment');
+      // V017: the form is never a dead end — an environment-provided model can still be replaced here.
     } else {
       setNotice({ ok: false, text: answer.message });
     }
@@ -222,7 +235,7 @@ export function ModelServiceSection(props: ModelServiceSectionProps): JSX.Elemen
   };
   const test = () => void run('test', testPayloadOf(form, peekSecretField(keyField.current)));
   const set = (patch: Partial<ServiceForm>) => setForm((current) => ({ ...current, ...patch }));
-  const environment = status.source === 'environment';
+  const environmentNote = environmentNoteOf(status);
 
   const restartBanner = status.restartRequired
     ? h(
@@ -309,7 +322,7 @@ export function ModelServiceSection(props: ModelServiceSectionProps): JSX.Elemen
       { className: 'settings-service__actions' },
       h('button', { type: 'submit', className: 'btn btn--primary', disabled: busy || !status.keyEntrySupported }, busy ? '处理中…' : '保存'),
       h('button', { type: 'button', className: 'btn btn--quiet', disabled: busy, onClick: test }, '测试连接'),
-      status.state === 'CONFIGURED' ? h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => { setEditing(false); setForm(formFromStatus(status)); takeSecretField(keyField.current); setNotice(null); } }, '取消') : null,
+      status.state === 'CONFIGURED' || status.source === 'environment' ? h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => { setEditing(false); setForm(formFromStatus(status)); takeSecretField(keyField.current); setNotice(null); } }, '取消') : null,
     ),
   );
 
@@ -317,20 +330,18 @@ export function ModelServiceSection(props: ModelServiceSectionProps): JSX.Elemen
     'div',
     { className: 'settings-service', 'data-testid': 'settings-service' },
     restartBanner,
-    environment ? h('p', { className: 'muted' }, '模型服务由部署环境提供，这里的设置不会生效。') : null,
+    environmentNote === null ? null : h('p', { className: 'muted', 'data-testid': 'settings-service-env-note' }, environmentNote),
     status.problem === null ? null : h('p', { className: 'model-onboarding__warn' }, status.problem),
-    status.state === 'CONFIGURED' || environment ? summary : null,
-    editing && !environment
+    status.state === 'CONFIGURED' || status.source === 'environment' ? summary : null,
+    editing
       ? formView
-      : environment
-        ? null
-        : h(
-            'div',
-            { className: 'settings-service__actions' },
-            h('button', { type: 'button', className: 'btn btn--quiet', disabled: busy, onClick: () => { setEditing(true); setNotice(null); } }, '修改服务、Key 或预算'),
-            h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: test }, '测试连接'),
-            h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => void run('remove') }, '移除'),
-          ),
+      : h(
+          'div',
+          { className: 'settings-service__actions' },
+          h('button', { type: 'button', className: 'btn btn--quiet', disabled: busy, 'data-testid': 'settings-service-edit', onClick: () => { setEditing(true); setNotice(null); } }, status.source === 'environment' ? '在这里设置服务、Key 和预算' : '修改服务、Key 或预算'),
+          h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: test }, '测试连接'),
+          status.state === 'NOT_CONFIGURED' ? null : h('button', { type: 'button', className: 'btn btn--text', disabled: busy, onClick: () => void run('remove') }, '移除'),
+        ),
     notice === null ? null : h('p', { className: notice.ok ? 'settings-service__notice' : 'settings-service__notice model-onboarding__warn', role: notice.ok ? 'status' : 'alert', 'data-testid': 'settings-service-notice' }, notice.text),
   );
 }

@@ -127,7 +127,7 @@ if (-not $Custom -and -not $KeyFromStdin) {
   if ($choice -eq '2') { $Custom = $true } elseif ($choice -ne '' -and $choice -ne '1') { Finish 2 '只能输入 1 或 2。没有保存任何内容。' }
 }
 if ($envBase -or $envModel) {
-  Write-Host '注意：检测到环境变量 COS_MODEL_BASE_URL / COS_MODEL_ID。CompanyOS 会优先使用环境变量里的模型；这里设置的预算只对与环境变量相同的服务地址和模型生效。'
+  Write-Host '注意：检测到环境变量 COS_MODEL_BASE_URL / COS_MODEL_ID。这里保存的设置会优先于环境变量（重启 CompanyOS 后生效）。'
 }
 if ($Custom) {
   if (-not $BaseUrl) {

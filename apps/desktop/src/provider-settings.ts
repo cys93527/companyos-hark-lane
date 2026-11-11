@@ -71,8 +71,13 @@ export interface ProviderServiceView {
 export interface ProviderSettingsStatus {
   /** In-app key entry needs DPAPI (Windows x64 with the shipped binding). */
   readonly keyEntrySupported: boolean;
-  /** environment = the deployment environment declares the model (it wins; settings are inert). */
+  /**
+   * settings = the user's own setup (it always wins, V017); environment = no user setup and this
+   * run uses a complete COS_MODEL_* environment declaration; none = no usable model.
+   */
   readonly source: 'environment' | 'settings' | 'none';
+  /** COS_MODEL_* / key environment variables exist on this PC (a note only; saving here still wins). */
+  readonly environmentDetected: boolean;
   readonly state: 'NOT_CONFIGURED' | 'CONFIGURED' | 'INVALID';
   /** Plain Chinese, never a path or a value. */
   readonly problem: string | null;
@@ -95,7 +100,6 @@ export type ProviderSettingsCode =
   | 'KEY_REQUIRED'
   | 'KEY_INVALID'
   | 'KEY_ENTRY_UNSUPPORTED'
-  | 'ENVIRONMENT_MANAGED'
   | 'PROFILE_MISSING'
   | 'SERVICE_INVALID'
   | 'PRICE_INVALID'
@@ -137,8 +141,10 @@ export interface ProviderSettingsDeps {
   readonly readShippedProfile: () => ProviderSetupProfile | null;
   readonly protect: ProviderSetupProtect;
   readonly unprotect: ProviderSetupUnprotect;
-  /** The deployment environment declares the model (COS_MODEL_* / key): it wins, settings are inert. */
-  readonly environmentDeclared: boolean;
+  /** V017: some COS_MODEL_* / key environment variable is set (shown as a note; never blocks saving). */
+  readonly environmentDetected: boolean;
+  /** V017: this run uses a complete environment declaration because there was no user setup at startup. */
+  readonly environmentInUse: boolean;
   /** providerSettingsFingerprint() at startup (what this run applied). */
   readonly appliedFingerprint: string;
   /** MAIN-owned native confirm dialog. Resolves true ONLY on the user's explicit click. */
@@ -306,7 +312,8 @@ export const createProviderSettingsService = (deps: ProviderSettingsDeps): Provi
               : '模型服务设置已损坏，请重新保存。';
     return {
       keyEntrySupported: deps.protect !== null,
-      source: deps.environmentDeclared ? 'environment' : setup.state === 'NOT_CONFIGURED' ? 'none' : 'settings',
+      source: setup.state !== 'NOT_CONFIGURED' ? 'settings' : deps.environmentInUse ? 'environment' : 'none',
+      environmentDetected: deps.environmentDetected,
       state: setup.state,
       problem,
       service,
@@ -350,7 +357,6 @@ export const createProviderSettingsService = (deps: ProviderSettingsDeps): Provi
   const save = async (payload: unknown): Promise<ProviderSettingsResult> => {
     const input = parseSave(payload);
     if (input === null) return result(false, 'INVALID_REQUEST', '设置内容无效。');
-    if (deps.environmentDeclared) return result(false, 'ENVIRONMENT_MANAGED', '模型服务由部署环境变量提供，这里的设置不会生效。');
     const shipped = deps.readShippedProfile();
     if (shipped === null) return result(false, 'PROFILE_MISSING', '安装包缺少模型服务资料，请重新安装 CompanyOS。');
     const apiKey = typeof input.apiKey === 'string' && input.apiKey !== '' ? input.apiKey.trim() : null;

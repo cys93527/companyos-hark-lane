@@ -32,15 +32,21 @@ describe('AUDIT-D3 provider key stays out of the host environment', () => {
     expect(host['COMPANYOS_ACTOR']).toBe('user_owner'); // non-secret names stay
   });
 
-  it('a deployment-declared key is moved out of the host env (still wins whole in the runtime env)', () => {
+  it('a deployment-declared key is moved out of the host env; V017: the user setup still wins in the runtime env', () => {
     const host: Record<string, string | undefined> = {
       [MODEL_PROVIDER_ENV.apiKey]: 'deploy-key-0123456789', [MODEL_PROVIDER_ENV.baseUrl]: 'https://d.invalid', [MODEL_PROVIDER_ENV.modelId]: 'dm',
       COMPANYOS_OTHER_TOKEN: 'tok-xyz', COMPANYOS_TEST_MODE: 'OFFLINE',
     };
     const runtime = captureRuntimeEnv(host);
+    const runtimeCopy = { ...runtime };
     const { runtimeEnv, result } = createProviderRuntimeEnv(runtime, CONFIGURED);
-    expect(result.source).toBe('environment');
-    expect(runtimeEnv[MODEL_PROVIDER_ENV.apiKey]).toBe('deploy-key-0123456789');
+    expect(result.source).toBe('provider-setup');
+    expect(result.environmentDetected).toBe(true);
+    expect(runtimeEnv[MODEL_PROVIDER_ENV.apiKey]).toBe(KEY);
+    expect(runtimeEnv[MODEL_PROVIDER_ENV.baseUrl]).toBe('https://model.invalid/v1');
+    const envOnly = createProviderRuntimeEnv(runtimeCopy, { state: 'NOT_CONFIGURED' });
+    expect(envOnly.result.source).toBe('environment');
+    expect(envOnly.runtimeEnv[MODEL_PROVIDER_ENV.apiKey]).toBe('deploy-key-0123456789');
     expect(runtimeEnv['COMPANYOS_OTHER_TOKEN']).toBe('tok-xyz');
     expect(host[MODEL_PROVIDER_ENV.apiKey]).toBeUndefined();
     expect(host['COMPANYOS_OTHER_TOKEN']).toBeUndefined();

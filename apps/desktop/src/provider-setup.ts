@@ -17,11 +17,11 @@
  *
  *   main process at startup (this module):
  *     - readProviderSetup(): NOT_CONFIGURED | CONFIGURED | INVALID (typed reason, fail closed)
- *     - applyProviderSetupOverlay(): when the deployment environment declares no model
- *       endpoint/key, the configured values are placed in the PRIVATE runtime environment
- *       (createProviderRuntimeEnv, AUDIT-D3 — never the MAIN process environment)
- *       before composition (exactly the shape a CI/operator deployment uses). A deployment
- *       environment that declares ANY model field wins whole; the two are never mixed.
+ *     - applyProviderSetupOverlay(): the user's CONFIGURED setup is placed in the PRIVATE runtime
+ *       environment (createProviderRuntimeEnv, AUDIT-D3 — never the MAIN process environment)
+ *       before composition. V017: the user's setup always wins over COS_MODEL_* environment
+ *       variables (all model names come from it; the two are never mixed); a complete
+ *       environment declaration (endpoint + model + key) is used only when there is no setup.
  *
  * The renderer never sees any of it: no IPC reads or writes these files, and the summary
  * this module returns for logging/status carries names and states only — never values.
@@ -135,7 +135,7 @@ export const readProviderSetup = (userDataDir: string, unprotect: ProviderSetupU
   return { state: 'CONFIGURED', model, apiKey };
 };
 
-/** The environment names a deployment uses to declare the model endpoint (any one present = the deployment owns it). */
+/** The environment names a deployment uses to declare the model endpoint (any one present = an environment declaration was detected). */
 export const PROVIDER_SETUP_DEPLOYMENT_NAMES: readonly string[] = [
   MODEL_PROVIDER_ENV.providerId,
   MODEL_PROVIDER_ENV.baseUrl,
@@ -143,13 +143,32 @@ export const PROVIDER_SETUP_DEPLOYMENT_NAMES: readonly string[] = [
   MODEL_PROVIDER_ENV.apiKey,
 ];
 
+/** Every model name the runtime reads (the user's setup owns all of them when it is applied). */
+const ALL_MODEL_ENV_NAMES: readonly string[] = Object.values(MODEL_PROVIDER_ENV);
+
+const nonEmpty = (env: Readonly<Record<string, string | undefined>>, name: string): boolean => (env[name] ?? '').trim() !== '';
+
+/** V017 — any COS_MODEL_* / key name is set in the environment (shown to the user as a note only). */
+export const environmentModelDetected = (env: Readonly<Record<string, string | undefined>>): boolean =>
+  PROVIDER_SETUP_DEPLOYMENT_NAMES.some((name) => nonEmpty(env, name));
+
+/**
+ * V017 — the environment declares a USABLE model: endpoint, model id AND key. A declaration
+ * without a key (e.g. leftover COS_MODEL_* variables from an earlier manual setup) is not a
+ * provider and must never shadow the user's own setup.
+ */
+export const environmentModelComplete = (env: Readonly<Record<string, string | undefined>>): boolean =>
+  nonEmpty(env, MODEL_PROVIDER_ENV.baseUrl) && nonEmpty(env, MODEL_PROVIDER_ENV.modelId) && nonEmpty(env, MODEL_PROVIDER_ENV.apiKey);
+
 export interface ProviderSetupOverlayResult {
-  /** environment = the deployment environment declared the model; provider-setup = the user's setup was applied. */
+  /** provider-setup = the user's setup was applied (it always wins); environment = no user setup, a complete environment declaration is used; none = no usable model. */
   readonly source: 'environment' | 'provider-setup' | 'none';
   readonly setupState: ProviderSetupState['state'];
   readonly reasonCode: ProviderSetupReason | null;
   /** Names written into the environment (values are never reported). */
   readonly applied: readonly string[];
+  /** Some COS_MODEL_* / key name was set in the environment (whether or not it is used). */
+  readonly environmentDetected: boolean;
 }
 
 /** The overlay values for a CONFIGURED setup (names → values). Exposed for tests; never log it. */
@@ -165,24 +184,29 @@ export const providerSetupEnvValues = (setup: Extract<ProviderSetupState, { stat
 });
 
 /**
- * Apply the user's setup to the MAIN process environment. Precedence: a deployment
- * environment that declares any model field wins whole (nothing is merged); otherwise a
- * CONFIGURED setup is written; NOT_CONFIGURED/INVALID write nothing (the app stays
- * "model not configured", fail closed, exactly as before H17a).
+ * Apply the user's setup to the (private runtime) environment. V017 precedence:
+ *   1. the user's own CONFIGURED setup (设置 → 模型服务 or the Start-menu helper) wins: every
+ *      model name is taken from it and any other COS_MODEL_* value is removed, so an environment
+ *      endpoint is never mixed with the setup's key;
+ *   2. otherwise a COMPLETE environment declaration (base URL + model id + key) is used as is;
+ *   3. otherwise no model: every partial COS_MODEL_* value is removed (fail closed, "not configured").
  */
 export const applyProviderSetupOverlay = (env: NodeJS.ProcessEnv | Record<string, string | undefined>, setup: ProviderSetupState): ProviderSetupOverlayResult => {
   const reasonCode = setup.state === 'INVALID' ? setup.reasonCode : null;
-  const deploymentDeclared = PROVIDER_SETUP_DEPLOYMENT_NAMES.some((name) => (env[name] ?? '').trim() !== '');
-  if (deploymentDeclared) return { source: 'environment', setupState: setup.state, reasonCode, applied: [] };
-  if (setup.state !== 'CONFIGURED') return { source: 'none', setupState: setup.state, reasonCode, applied: [] };
-  const values = providerSetupEnvValues(setup);
-  const applied: string[] = [];
-  for (const [name, value] of Object.entries(values)) {
-    if ((env[name] ?? '').trim() !== '') continue; // an explicit non-model deployment value (e.g. timeout) still wins
-    env[name] = value;
-    applied.push(name);
+  const environmentDetected = environmentModelDetected(env);
+  if (setup.state === 'CONFIGURED') {
+    const values = providerSetupEnvValues(setup);
+    for (const name of ALL_MODEL_ENV_NAMES) delete env[name];
+    const applied: string[] = [];
+    for (const [name, value] of Object.entries(values)) {
+      env[name] = value;
+      applied.push(name);
+    }
+    return { source: 'provider-setup', setupState: setup.state, reasonCode, applied, environmentDetected };
   }
-  return { source: 'provider-setup', setupState: setup.state, reasonCode, applied };
+  if (environmentModelComplete(env)) return { source: 'environment', setupState: setup.state, reasonCode, applied: [], environmentDetected };
+  if (environmentDetected) for (const name of ALL_MODEL_ENV_NAMES) delete env[name];
+  return { source: 'none', setupState: setup.state, reasonCode, applied: [], environmentDetected };
 };
 
 /**
